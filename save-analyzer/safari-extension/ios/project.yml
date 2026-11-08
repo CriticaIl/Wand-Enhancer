@@ -1,0 +1,64 @@
+# Alternative to the committed SaveForge.xcodeproj: regenerate it with XcodeGen
+#   brew install xcodegen && cd save-analyzer/safari-extension/ios && xcodegen
+# (Only needed if the committed project ever fails to open.)
+name: SaveForge
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "15.4"
+settings:
+  base:
+    SAVEFORGE_BUNDLE_PREFIX: com.example
+targets:
+  SaveForge:
+    type: application
+    platform: iOS
+    sources:
+      - SaveForge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(SAVEFORGE_BUNDLE_PREFIX).SaveForge
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SaveForge
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - target: SaveForge Extension
+        embed: true
+  SaveForge Extension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SaveForge Extension
+      - path: ../extension/manifest.json
+        buildPhase: resources
+      - path: ../extension/background.js
+        buildPhase: resources
+      - path: ../extension/inject-fallback.js
+        buildPhase: resources
+      - path: ../extension/trainer.js
+        buildPhase: resources
+      - path: ../extension/images
+        type: folder
+        buildPhase: resources
+      - path: ../extension/_locales
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - sdk: SafariServices.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(SAVEFORGE_BUNDLE_PREFIX).SaveForge.Extension
+        INFOPLIST_FILE: SaveForge Extension/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SaveForge Trainer
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic

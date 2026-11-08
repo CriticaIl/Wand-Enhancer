@@ -1,0 +1,14 @@
+{
+  "extension_name": {
+    "message": "SaveForge Trainer",
+    "description": "The display name for the extension."
+  },
+  "extension_description": {
+    "message": "Opens the SaveForge floating trainer over the browser game on the current page. Runs only when you tap it.",
+    "description": "Description of what the extension does."
+  },
+  "action_title": {
+    "message": "Open SaveForge Trainer",
+    "description": "Toolbar button title."
+  }
+}

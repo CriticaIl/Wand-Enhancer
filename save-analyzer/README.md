@@ -21,6 +21,7 @@ SaveForge also includes a **floating trainer overlay** that runs directly over b
   - from the Game tab, using the **SaveForge Trainer** bookmarklet (works on any site) or "Open trainer over game" for same-site games
   - on an imported save, via the app's floating button (saved edits, then Export)
 - **Demo games:** original demo games for trying it are in `demo-games/` (on GitHub Pages: `…/save-analyzer/demo-games/`).
+- **iOS Safari extension:** `safari-extension/` packages the same trainer as a Safari Web Extension with a ready Xcode project (iOS app + extension). It asks for website access only when you tap it. If you don't have a Mac, there are fallbacks: the free Userscripts app (`standalone/saveforge-trainer.user.js`) or a Shortcuts share-sheet action. See [safari-extension/README.md](safari-extension/README.md).
 
 ## Using it on iPhone
 
@@ -105,7 +106,7 @@ The **Game** tab opens any http(s) game URL in a frame, with the floating mod me
 ```sh
 cd save-analyzer
 npm install          # esbuild (build), lz-string + pako (reference implementations for tests)
-npm test             # 99 tests: codecs, pickle, samples round trip, engines, trainer, browser e2e
+npm test             # 111 tests: codecs, pickle, samples, engines, trainer, Safari extension, browser e2e
 npm run build        # -> standalone/SaveForge.html
 npm run samples      # regenerate samples/ (needs python3) and the embedded copies
 npm run serve        # http://localhost:8080/ (unbundled modules) and /standalone/

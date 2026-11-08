@@ -2,3 +2,6 @@ samples/** binary
 standalone/SaveForge.html -diff linguist-generated
 src/ui/sample-data.js -diff linguist-generated
 standalone/trainer.js -diff linguist-generated
+safari-extension/extension/trainer.js -diff linguist-generated
+standalone/saveforge-trainer.user.js -diff linguist-generated
+safari-extension/ios/SaveForge.xcodeproj/project.pbxproj -diff linguist-generated

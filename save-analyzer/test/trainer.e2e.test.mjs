@@ -331,3 +331,19 @@ test('SaveForge app: floating trainer edits an imported save; Game tab opens the
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('userscript fallback: launcher button opens the trainer, edits apply live, button returns after closing', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/crystal-quest/');
+  await page.addScriptTag({ content: await readFile(join(ROOT, 'standalone/saveforge-trainer.user.js'), 'utf8') });
+  const launcher = page.locator('button[aria-label="Open SaveForge Trainer"]');
+  await launcher.click();
+  await page.locator('saveforge-trainer .chip[aria-pressed=true]', { hasText: 'RPG Maker' }).waitFor();
+  const t = T(page);
+  await t.nav('Money');
+  await t.setNumber('Gold', 4321);
+  await page.locator('#gold', { hasText: '4321' }).waitFor({ timeout: 3000 });
+  await page.locator('saveforge-trainer .hbtn[aria-label="Close trainer"]').click();
+  await launcher.waitFor({ state: 'visible', timeout: 3000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

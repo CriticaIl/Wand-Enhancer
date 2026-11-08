@@ -13,6 +13,7 @@
   "devDependencies": {
     "esbuild": "0.25.0",
     "lz-string": "1.5.0",
-    "pako": "2.1.0"
+    "pako": "2.1.0",
+    "xcode": "^3.0.1"
   }
 }
