@@ -39,7 +39,8 @@
     };
     var Engine = {
       show: function () { render(); },
-      play: function (title) { active.title = title; render(); localStorage.setItem('lanterntale.save', JSON.stringify(active)); },
+      // like SugarCube: every navigation creates a new moment with a *copy* of the variables
+      play: function (title) { active = { title: title, variables: JSON.parse(JSON.stringify(active.variables)) }; render(); localStorage.setItem('lanterntale.save', JSON.stringify(active)); },
     };
     function render() {
       document.getElementById('passages').innerHTML = story[active.title](active.variables);

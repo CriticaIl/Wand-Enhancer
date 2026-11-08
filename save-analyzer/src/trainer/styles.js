@@ -131,5 +131,20 @@ textarea.field { height: 90px; font-size: 15px; padding: 10px 12px; font-weight:
 .orb .n { position: absolute; top: -6px; right: -6px; min-width: 22px; height: 22px; border-radius: 11px; background: #fbbf24; color: #1b1300; font-size: 12px; font-weight: 900; line-height: 22px; padding: 0 6px; }
 .toast { position: absolute; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); pointer-events: none; padding: 10px 14px; border-radius: 10px; background: rgba(10,12,18,.95); border: 1px solid #2c3346; font-weight: 700; max-width: 90vw; animation: in .2s; }
 .toast.bad { border-color: #fb7185; color: #fecdd3; }
+/* verification statuses, compatibility, settings, translations */
+.st { display: inline-block; min-width: 16px; margin-right: 4px; font-weight: 900; }
+.st-verified { color: #3df5a7; } .st-adjusted { color: #7dd3fc; } .st-reverted, .st-failed { color: #fb7185; } .st-locked { color: #fbbf24; } .st-checking { color: #94a3b8; } .st-reload, .st-export { color: #fbbf24; }
+.row.sel .st-verified { color: #047857; } .row.sel .st-reverted, .row.sel .st-failed { color: #be123c; }
+.statusbox { padding: 10px 12px; border-radius: 10px; background: #111522; border: 1px solid #262c3d; font-size: 13px; color: #dbe3f0; margin: 6px 0; }
+.statusbox b { display: block; margin-bottom: 2px; }
+.statusbox.st-verified { border-color: rgba(61,245,167,.45); background: rgba(61,245,167,.08); }
+.statusbox.st-adjusted { border-color: rgba(125,211,252,.45); background: rgba(125,211,252,.08); }
+.statusbox.st-reverted, .statusbox.st-failed { border-color: rgba(251,113,133,.5); background: rgba(251,113,133,.08); }
+.statusbox.st-locked, .statusbox.st-reload, .statusbox.st-export { border-color: rgba(251,191,36,.45); background: rgba(251,191,36,.08); }
+.compat { display: flex; align-items: center; gap: 8px; padding: 6px 12px 0; background: #050608; font-size: 11.5px; color: #cbd5e1; }
+.cdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #64748b; }
+.cdot.full { background: #3df5a7; box-shadow: 0 0 8px #3df5a7; } .cdot.partial { background: #a3e635; } .cdot.saves { background: #fbbf24; } .cdot.none { background: #fb7185; }
+.setrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1e2433; }
+.tr { padding: 8px 0; border-bottom: 1px solid #1e2433; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 `;

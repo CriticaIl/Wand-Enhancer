@@ -66,6 +66,65 @@ Many pages expose website globals that have nothing to do with the game.
 
 **4. Engines that can't be read live are named in Diagnostics:** Ren'Py web, Construct 3, Harlowe, GameMaker, Unity WebGL and Godot.
 
+## How an edit reaches the game (and how SaveForge knows)
+
+Before 1.4, values were read and written through object references cached when the trainer first scanned. Games often *replace* their state objects:
+
+- SugarCube copies `State.variables` on every passage.
+- RPG Maker replaces `$gameParty` and friends when a save loads.
+- Many JS games rebuild their state object each tick.
+
+After that, SaveForge wrote into a copy the game no longer used, and the row showed SaveForge's own number. The pipeline is now:
+
+1. **Detect**: engine adapters, then scored generic globals (see above), or **Find a value** (a value scanner that narrows the number you see in the game down to the variable holding it).
+2. **Resolve on every access**: each value is looked up again from the engine's live root at the moment of reading or writing. Engines that replace objects are therefore always written in their current state.
+3. **Write through the engine** where it has a setter:
+
+   | Engine | Setters used |
+   | --- | --- |
+   | RPG Maker | `gainGold`, `gainItem`, `$gameSwitches.setValue`, `$gameVariables.setValue`, `setHp`/`setMp`/`setTp`, `changeLevel` |
+   | Phaser | `registry.set`, `scene.data.set` |
+   | Construct 2 | writes the global-variable object itself |
+
+   Everything else is a direct property write.
+4. **Read back from the game's own object** immediately, then again at 0.4 s and 1.5 s:
+
+   | Result | Status |
+   | --- | --- |
+   | Still there | **Applied and verified** |
+   | Moved on from your value, e.g. a counter | Still **verified** |
+   | Engine clamped it | **Adjusted** |
+   | Back to the old value | **Reverted** |
+   | Write rejected or object gone | **Failed** |
+
+   Storage edits show **Requires reload** and are checked again after the reload. Read-only values say why.
+5. **Lock** (optional): re-applies your value every 100 ms through the same path and counts how often the game changed it. It stops when unlocked or when the trainer closes.
+
+**The script context matters.** Userscripts runs SaveForge in the page's own JavaScript world only with `@inject-into page`. An isolated extension world cannot see the game's variables. Diagnostics checks this on demand with a one-line page script and shows *page*, *isolated* or *unknown* (unknown means the page blocks inline scripts).
+
+## English translation (offline)
+
+`src/core/translate.js` translates variable names and short text values from 12 languages with a built-in game-vocabulary dictionary:
+
+- Spanish, French, German, Portuguese, Italian, Dutch, Polish and Turkish
+- Russian
+- Japanese, Chinese and Korean, using dictionary-based word segmentation because these are written without spaces
+
+It also expands common abbreviations (hp, atk, flg, cnt…).
+
+Results are labelled as:
+
+| Label | Meaning |
+| --- | --- |
+| *Translation* | Every foreign word was in the dictionary |
+| *Partial translation* | Unknown words are shown in quotes |
+| *Guessed meaning* | Abbreviations only |
+| *Not translated* | The language was detected, but the words aren't in the dictionary |
+
+The original key is always kept and used for editing. Translated names also feed categorisation and the ⓘ explanations, so `所持金` is understood as money.
+
+"Translate online" is opt-in per text. It asks first and opens Google Translate with just that string.
+
 ## The three kinds of edit
 
 | Badge | Meaning | Undo | Persistence |

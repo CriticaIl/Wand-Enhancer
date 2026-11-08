@@ -80,6 +80,7 @@ const T = (page) => ({
     await this.rowByName(label).locator('.num').click();
     await page.locator('saveforge-trainer .sheet .field').fill(String(value));
     await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+    await leaveEdit(page);
   },
   async info(label) {
     await this.rowByName(label).locator('.info').click();
@@ -91,6 +92,12 @@ const T = (page) => ({
     while (await b.isEnabled()) await b.click();
   },
 });
+
+/** After a live edit the sheet stays open to show verification; tap Done (or Back) to return. */
+async function leaveEdit(scope) {
+  const done = scope.locator('saveforge-trainer .sheet .btn', { hasText: /^Done$/ });
+  if (await done.count()) await done.first().click();
+}
 
 test('generic live editing: Neon Courier reacts immediately; undo and restore work', { skip, timeout: 60000 }, async () => {
   const { page, ctx, errors } = await openGame('/demo-games/neon-courier/');
@@ -327,6 +334,7 @@ test('SaveForge app: floating trainer edits an imported save; Game tab opens the
   await frame.locator('saveforge-trainer .row').filter({ has: frame.locator('.name', { hasText: 'Gold' }) }).first().locator('.num').click();
   await frame.locator('saveforge-trainer .sheet .field').fill('31415');
   await frame.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await leaveEdit(frame);
   await frame.locator('#gold', { hasText: '31415' }).waitFor({ timeout: 3000 });
   assert.deepEqual(errors, []);
   await ctx.close();
@@ -347,5 +355,150 @@ test('Phaser 3-style game: registry, scene properties and scene data are live; g
   await t.rowByName('Shield').locator('.toggle').click();
   await page.locator('#shield', { hasText: 'ON' }).waitFor({ timeout: 3000 });
   assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// ---------------------------------------------------------------- edits must reach the game (verification)
+const statusText = (page) => page.locator('saveforge-trainer .sheet .statusbox').first();
+
+test('SugarCube-style: edits reach the current passage even after the game copied its variables (no stale writes)', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/lantern-tale/');
+  await inject(page);
+  const t = T(page);
+  // the story moves on: SugarCube-like engines copy State.variables into a new moment
+  await page.evaluate(() => window.SugarCube.Engine.play('Stall'));
+  await page.evaluate(() => window.SugarCube.Engine.play('Market'));
+  await t.search('gold');
+  await t.rowByName('$gold').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('640');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await statusText(page).filter({ hasText: 'Applied and verified' }).waitFor({ timeout: 4000 });
+  assert.equal(await page.evaluate(() => window.SugarCube.State.variables.gold), 640, 'the variables the story uses now');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('RPG Maker-style: engine setters are used and clamping is reported as “adjusted”, not as success', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/crystal-quest/');
+  await inject(page);
+  const t = T(page);
+  await t.search('potion');
+  await t.rowByName('Item #1 · Potion').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('500');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await statusText(page).filter({ hasText: 'adjusted' }).waitFor({ timeout: 4000 });
+  assert.match(await statusText(page).innerText(), /adjusted it to 99/);
+  assert.match(await statusText(page).innerText(), /gainItem\(\)/);
+  assert.equal(await page.locator('#potions').innerText(), '99');
+  await leaveEdit(page);
+  await t.search('bridge');
+  await t.rowByName('Switch #3 · Bridge open').locator('.toggle').click();
+  await page.locator('#bridge', { hasText: 'YES' }).waitFor({ timeout: 3000 });
+  const calls = await page.evaluate(() => window.setterCalls);
+  assert.ok(calls.gainItem >= 1 && calls.setValue >= 1, JSON.stringify(calls));
+  await page.locator('saveforge-trainer .row .st-verified').first().waitFor({ timeout: 4000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Overwritten values are detected (Reverted) and Lock keeps re-applying them; replaced state objects still work', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/sakura-market/');
+  await inject(page);
+  const t = T(page);
+  // hud.bank is a display copy the game overwrites every frame
+  await t.search('bank');
+  await t.rowByName('Bank').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('5000');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await statusText(page).filter({ hasText: 'Reverted by the game' }).waitFor({ timeout: 4000 });
+  assert.match(await statusText(page).innerText(), /changed it back to 1000/);
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Lock value' }).click();
+  await page.waitForTimeout(600);
+  const lock = await page.evaluate(() => {
+    const p = window.__saveforgeTrainer.provider();
+    const [id, l] = [...p.locks][0];
+    return { reapplied: l.reapplied, value: l.value, state: p.statusOf(id).state };
+  });
+  assert.equal(lock.state, 'locked');
+  assert.ok(lock.reapplied > 3, `re-applied ${lock.reapplied} times`);
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Unlock' }).click();
+  assert.equal(await page.evaluate(() => window.__saveforgeTrainer.provider().locks.size), 0);
+  await leaveEdit(page);
+  // run is replaced with a new object 5×/s: the edit must land in the live object and stay
+  await t.search('distance');
+  await t.rowByName('Distance').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('90000');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await statusText(page).filter({ hasText: 'Applied and verified' }).waitFor({ timeout: 4000 });
+  assert.ok(Number(await page.locator('#dist').innerText()) >= 90000);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('English: foreign variable names get English labels and ⓘ translations; editing still uses the original key', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/sakura-market/');
+  await inject(page);
+  const t = T(page);
+  await t.nav('Settings');
+  await page.locator('saveforge-trainer .setrow', { hasText: 'Show English labels' }).locator('.toggle').click();
+  await t.home();
+  await t.search('money');
+  const row = t.rowByName('Money held');
+  await row.waitFor();
+  assert.match(await row.locator('.sub2').innerText(), /所持金/, 'original name kept under the English label');
+  await row.locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('8888');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await page.locator('#money', { hasText: '8888' }).waitFor({ timeout: 3000 });
+  assert.equal(await page.evaluate(() => window.データ.所持金), 8888);
+  await leaveEdit(page);
+  await t.rowByName('Money held').locator('.info').click();
+  const info = await page.locator('saveforge-trainer .sheet').innerText();
+  assert.match(info, /In English/i);
+  assert.match(info, /Translation · Japanese/i);
+  assert.match(info, /所持金/);
+  assert.match(info, /currency/, 'explanation understands the translated name');
+  // Spanish too
+  await t.home();
+  await t.search('coins');
+  assert.ok(await t.rowByName('Coins').isVisible());
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Find a value: scan, change in game, scan again, then edit the real variable', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/neon-courier/');
+  await inject(page);
+  const t = T(page);
+  await t.nav('Find a value');
+  await page.locator('saveforge-trainer .sheet .field').fill('250');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'First scan' }).click();
+  await page.locator('#deliver').dispatchEvent('click'); // +40 credits in the game
+  await page.locator('saveforge-trainer .sheet .field').fill('290');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Next scan' }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: /^Edit these/ }).click();
+  await page.locator('saveforge-trainer .chip[aria-pressed=true]', { hasText: 'Found values' }).waitFor();
+  await t.setNumber('Credits', 7777);
+  await page.locator('#credits', { hasText: '7777' }).waitFor({ timeout: 3000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Apply & Reload is verified after the reload', { skip, timeout: 60000 }, async () => {
+  const { page, ctx } = await openGame('/test/fixtures/demo-game/');
+  await page.waitForFunction(() => document.title === 'saved');
+  await inject(page);
+  const t = T(page);
+  await t.chip('Saves in storage');
+  await page.locator('saveforge-trainer .badge.reload').first().waitFor();
+  await t.search('coins');
+  await t.setNumber('Coins', 321);
+  await page.locator('saveforge-trainer .row .st-reload').first().waitFor();
+  await page.locator('saveforge-trainer .tool.primary').click();
+  await Promise.all([page.waitForEvent('load'), page.locator('saveforge-trainer .btn.warn', { hasText: 'Apply & Reload' }).click()]);
+  await page.locator('#coins', { hasText: '321' }).waitFor({ timeout: 5000 });
+  await inject(page);
+  await t.chip('Saves in storage');
+  await page.locator('saveforge-trainer .row .name', { hasText: 'After reload: 1/1 edits kept' }).waitFor({ timeout: 5000 });
   await ctx.close();
 });

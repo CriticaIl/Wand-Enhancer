@@ -113,14 +113,38 @@ function withStore(win, mode, fn) {
   });
 }
 
+/** The stored per-site mode, or null when the user never chose one for this site. */
 export async function getMode(win) {
   try {
-    if (!(await dbExists(win))) return 'auto';
+    if (!(await dbExists(win))) return null;
     const v = await withStore(win, 'readonly', (s) => s.get('userscript:mode'));
-    return MODES.includes(v) ? v : 'auto';
+    return MODES.includes(v) ? v : null;
   } catch {
-    return 'auto';
+    return null;
   }
+}
+
+/**
+ * Is this script running in the page's own JavaScript world (where the game's
+ * variables live) or in an isolated extension world (where edits cannot reach
+ * the game)? Asked only on demand, by injecting a one-line page <script>.
+ */
+export function probeContext(win) {
+  const doc = win.document;
+  const attr = 'data-saveforge-probe';
+  try {
+    const el = doc.createElement('script');
+    el.textContent = `document.documentElement.setAttribute('${attr}', typeof window.__saveforgeUserscript)`;
+    (doc.head || doc.documentElement).appendChild(el);
+    el.remove();
+  } catch {
+    /* ignore */
+  }
+  const v = doc.documentElement.getAttribute(attr);
+  doc.documentElement.removeAttribute(attr);
+  if (v === 'object') return { world: 'page', detail: 'Same JavaScript context as the game, so edits reach the game’s own objects.' };
+  if (v === 'undefined') return { world: 'isolated', detail: 'An isolated extension context: the game’s variables are not visible and edits cannot reach them.' };
+  return { world: 'unknown', detail: 'The page blocks inline scripts (Content-Security-Policy), so this could not be checked directly. If engines or game state were detected, the script can see the game.' };
 }
 
 export async function setMode(win, mode) {

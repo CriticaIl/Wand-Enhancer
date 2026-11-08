@@ -20,6 +20,12 @@ function meta(src) {
   return { head, out };
 }
 
+/** After a live edit the sheet stays open to show verification; tap Done (or Back) to return. */
+async function leaveEdit(scope) {
+  const done = scope.locator('saveforge-trainer .sheet .btn', { hasText: /^Done$/ });
+  if (await done.count()) await done.first().click();
+}
+
 test('metadata: installable and updatable from GitHub Pages, page context, no special grants', () => {
   const { head, out } = meta(USERSCRIPT);
   assert.equal(out.version[0], pkg.version, '@version follows package.json so managers see updates');
@@ -111,6 +117,7 @@ test('game pages get the launcher automatically; trainer edits live; launcher re
   await page.locator('saveforge-trainer .row').filter({ has: page.locator('.name', { hasText: 'Gold' }) }).first().locator('.num').click();
   await page.locator('saveforge-trainer .sheet .field').fill('2024');
   await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await leaveEdit(page);
   await page.locator('#gold', { hasText: '2024' }).waitFor({ timeout: 3000 });
   // ⓘ explanation
   await page.locator('saveforge-trainer .row .info').first().click();
@@ -136,6 +143,7 @@ test('#saveforge opens the trainer anywhere; Apply & Reload works through the us
   await page.locator('saveforge-trainer .row').filter({ has: page.locator('.name', { hasText: 'Coins' }) }).first().locator('.num').click();
   await page.locator('saveforge-trainer .sheet .field').fill('5150');
   await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await leaveEdit(page);
   await page.locator('saveforge-trainer .tool.primary').click();
   await Promise.all([page.waitForEvent('load'), page.locator('saveforge-trainer .btn.warn', { hasText: 'Apply & Reload' }).click()]);
   await page.locator('#coins', { hasText: '5150' }).waitFor({ timeout: 5000 });
@@ -188,6 +196,7 @@ test('games inside a cross-origin iframe (itch.io-style): launcher and live trai
   await frame.locator('saveforge-trainer .row').filter({ has: frame.locator('.name', { hasText: 'Pick Level' }) }).first().locator('.num').click();
   await frame.locator('saveforge-trainer .sheet .field').fill('77');
   await frame.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await leaveEdit(frame);
   await frame.locator('#pick', { hasText: '77' }).waitFor({ timeout: 3000 });
   assert.deepEqual(errors, []);
   await ctx.close();
@@ -236,6 +245,7 @@ test('portal: #saveforge on the portal page opens the trainer in the game frame 
   await game.locator('saveforge-trainer .row').filter({ has: game.locator('.name', { hasText: 'Lives' }) }).first().locator('.num').click();
   await game.locator('saveforge-trainer .sheet .field').fill('9');
   await game.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await leaveEdit(game);
   await game.locator('#lives', { hasText: '9' }).waitFor({ timeout: 3000 });
   // ⓘ tells where the variable comes from
   await game.locator('saveforge-trainer .row .info').first().click();
@@ -284,5 +294,79 @@ test('portal: opened on the portal page itself, website globals are not shown as
   await sheet.locator('button', { hasText: 'Include website globals' }).click();
   assert.ok((await page.evaluate(() => window.__saveforgeTrainer.provider().entries.length)) > 0);
   assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// ---------------------------------------------------------------- launcher reliability (games that are hard to detect)
+
+test('late-loading games: the launcher appears when the game shows up after the old detection window', { skip, timeout: 40000 }, async () => {
+  const { ctx, page, errors } = await newPage();
+  await page.goto(`${base()}/test/fixtures/late-game/?delay=7000`);
+  await page.waitForTimeout(6500);
+  assert.equal(await page.locator('saveforge-launcher').count(), 0, 'nothing before the game exists');
+  await launcher(page).waitFor({ timeout: 8000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('manual activation: a three-finger tap opens SaveForge on a page where nothing was detected', { skip, timeout: 30000 }, async () => {
+  const { ctx, page, errors } = await newPage();
+  await page.goto(`${base()}/plain.html`);
+  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    const t = (i) => new Touch({ identifier: i, target: document.body, clientX: 50 + i * 40, clientY: 200 });
+    const touches = [t(1), t(2), t(3)];
+    document.body.dispatchEvent(new TouchEvent('touchstart', { touches, targetTouches: touches, changedTouches: touches, bubbles: true }));
+  });
+  await page.locator('saveforge-trainer .row').first().waitFor({ timeout: 5000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('“always visible” script variant shows the launcher on any permitted page; per-site hide still works', { skip, timeout: 30000 }, async () => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  await ctx.addInitScript({ content: readFileSync(join(ROOT, 'standalone/saveforge-trainer-always.user.js'), 'utf8') });
+  const page = await ctx.newPage();
+  await page.goto(`${base()}/plain.html`);
+  await launcher(page).waitFor({ timeout: 4000 });
+  assert.equal(await page.evaluate(() => window.__saveforgeUserscript.mode), 'always');
+  await page.evaluate(() => (location.hash = '#saveforge-off'));
+  await page.locator('saveforge-launcher').waitFor({ state: 'detached', timeout: 3000 });
+  const meta = readFileSync(join(ROOT, 'standalone/saveforge-trainer-always.meta.js'), 'utf8');
+  assert.match(meta, /@name\s+SaveForge Trainer \(always visible\)/);
+  assert.match(meta, /saveforge-trainer-always\.meta\.js/);
+  await ctx.close();
+});
+
+test('game in a same-site frame the manager does not inject into (srcdoc): #saveforge opens the trainer there', { skip, timeout: 30000 }, async () => {
+  const { ctx, page, errors } = await newPage();
+  await page.goto(`${base()}/test/fixtures/srcdoc-game/`);
+  const frame = page.frameLocator('#g');
+  await frame.locator('#gems', { hasText: '7' }).waitFor();
+  await page.evaluate(() => (location.hash = '#saveforge'));
+  await frame.locator('saveforge-trainer .row').first().waitFor({ timeout: 6000 });
+  assert.equal(await page.locator('body > saveforge-trainer').count(), 0, 'not on the portal page');
+  await frame.locator('saveforge-trainer .tool[aria-label="Search"]').click();
+  await frame.locator('saveforge-trainer .search input').fill('gems');
+  await frame.locator('saveforge-trainer .row').filter({ has: frame.locator('.name', { hasText: 'Gems' }) }).first().locator('.num').click();
+  await frame.locator('saveforge-trainer .sheet .field').fill('70');
+  await frame.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await frame.locator('#gems', { hasText: '70' }).waitFor({ timeout: 3000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Diagnostics reports the script context (page world = edits can reach the game)', { skip, timeout: 30000 }, async () => {
+  const { ctx, page } = await newPage();
+  await page.goto(`${base()}/demo-games/tap-miner/`);
+  await launcher(page).waitFor({ timeout: 6000 });
+  await launcher(page).click();
+  await page.locator('saveforge-trainer .row .lbl', { hasText: 'Diagnostics' }).first().click();
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('dd', { hasText: /^page:/ }).waitFor({ timeout: 5000 });
+  assert.match(await sheet.innerText(), /Same JavaScript context as the game/);
+  // compatibility indicator on the main menu
+  await page.locator('saveforge-trainer .tool[aria-label="Back"]').click();
+  assert.match(await page.locator('saveforge-trainer .compat').innerText(), /Full live editing · Construct 2/);
   await ctx.close();
 });

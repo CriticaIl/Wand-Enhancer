@@ -83,13 +83,41 @@ function rpgMaker(win) {
     evidence: 'DataManager.makeSaveContents and $gameParty are present',
     channel: 'live',
     note: 'Connected to the running RPG Maker engine ($gameParty, $gameActors, $gameVariables, $gameSwitches). Changes apply immediately; save in-game to keep them.',
-    snapshot() {
-      // the same objects the engine writes into a save file, so save profiles apply unchanged
+    root() {
+      // the same objects the engine writes into a save file, so save profiles apply unchanged;
+      // rebuilt on every access because loading a save replaces $gameParty and friends
       const contents = DM.makeSaveContents();
-      const keep = ['system', 'switches', 'variables', 'selfSwitches', 'actors', 'party'];
       const obj = {};
-      for (const k of keep) if (contents[k]) obj[k] = contents[k];
-      return buildLiveTree(obj, { maxNodes: 60000, maxDepth: 8, rootLabel: 'RPG Maker' });
+      for (const k of ['system', 'switches', 'variables', 'selfSwitches', 'actors', 'party']) if (contents[k]) obj[k] = contents[k];
+      return obj;
+    },
+    snapshot() {
+      return buildLiveTree(this.root(), { maxNodes: 60000, maxDepth: 8, rootLabel: 'RPG Maker' });
+    },
+    /** Uses RPG Maker's own methods so clamping, refreshes and event updates happen like in-game. */
+    setter(id, ref, v) {
+      const seg = id.split('/');
+      const n = Number(seg[seg.length - 1]);
+      const cur = ref.obj[ref.key];
+      const P = win.$gameParty;
+      try {
+        if (seg[1] === 'party' && seg[2] === '_gold' && typeof P.gainGold === 'function') return P.gainGold(v - cur), 'gainGold()';
+        if (seg[1] === 'party' && ['_items', '_weapons', '_armors'].includes(seg[2]) && typeof P.gainItem === 'function') {
+          const table = { _items: win.$dataItems, _weapons: win.$dataWeapons, _armors: win.$dataArmors }[seg[2]];
+          if (table && table[n]) return P.gainItem(table[n], v - (cur || 0)), 'gainItem()';
+        }
+        if (seg[1] === 'switches' && seg[2] === '_data' && typeof win.$gameSwitches.setValue === 'function') return win.$gameSwitches.setValue(n, v), 'setValue()';
+        if (seg[1] === 'variables' && seg[2] === '_data' && typeof win.$gameVariables.setValue === 'function') return win.$gameVariables.setValue(n, v), 'setValue()';
+        if (seg[1] === 'actors' && seg.length === 5) {
+          const actor = ref.obj;
+          const m = { _hp: 'setHp', _mp: 'setMp', _tp: 'setTp' }[seg[4]];
+          if (m && typeof actor[m] === 'function') return actor[m](v), `${m}()`;
+          if (seg[4] === '_level' && typeof actor.changeLevel === 'function') return actor.changeLevel(v, false), 'changeLevel()';
+        }
+      } catch {
+        return false;
+      }
+      return false;
     },
     liveName(id) {
       const seg = id.split('/');
@@ -133,10 +161,13 @@ function sugarCube(win) {
     evidence: 'window.SugarCube.State.variables is present',
     channel: 'live',
     note: 'Connected to SugarCube.State.variables (the active moment). Story logic sees changes immediately; text already on screen updates when the passage is re-rendered. Save in-game to keep them.',
+    root() {
+      // mirror SugarCube's save layout so the existing SugarCube profile labels apply ($name).
+      // State.variables is read on every access: SugarCube makes a new copy on each passage.
+      return { state: { history: [{ title: safe(() => SC.State.passage) || 'current', variables: SC.State.variables }], index: 0 } };
+    },
     snapshot() {
-      // mirror SugarCube's save layout so the existing SugarCube profile labels apply ($name)
-      const shell = { state: { history: [{ title: safe(() => SC.State.passage) || 'current', variables: SC.State.variables }], index: 0 } };
-      return buildLiveTree(shell, { maxNodes: 60000, maxDepth: 14, rootLabel: 'SugarCube' });
+      return buildLiveTree(this.root(), { maxNodes: 60000, maxDepth: 14, rootLabel: 'SugarCube' });
     },
     actions: [
       {
@@ -176,9 +207,12 @@ function construct2(win) {
       }
       return buildLiveTree({ globals }, { rootLabel: 'Construct 2' });
     },
-    afterWrite(id, ref) {
-      const gv = byName.get(ref.key);
-      if (gv) gv.data = ref.obj[ref.key];
+    resolve(id) {
+      const m = /^\$\/globals\/([^/]+)$/.exec(id);
+      if (!m) return null;
+      const name = m[1].replace(/~1/g, '/').replace(/~0/g, '~');
+      const gv = rt.all_global_vars.find((g) => g && g.name === name);
+      return gv ? { obj: gv, key: 'data' } : null;
     },
   };
 }
@@ -253,7 +287,7 @@ function genericGlobals(win, hasEngine) {
     includeAll: false,
     note: 'Game-state variables found in the page’s global JavaScript, with website globals (analytics, ads, page data) filtered out. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
     /** Samples numeric values twice so state that changes while the game runs counts as evidence. */
-    async prepare(ms = 700) {
+    async prepare(ms = 500) {
       const first = new Map(pageGlobals.map((k) => [k, sampleNumbers(read(k))]));
       await new Promise((r) => win.setTimeout(r, ms));
       const changes = new Map(pageGlobals.map((k) => [k, countChanges(first.get(k), sampleNumbers(read(k)))]));
@@ -268,6 +302,7 @@ function genericGlobals(win, hasEngine) {
         .filter((r) => this.includeAll || r.kind === 'game')
         .map((r) => r.name);
     },
+    root: () => win,
     snapshot() {
       const keys = this.included();
       return buildLiveTree(win, { rootKeys: keys, maxNodes: 30000, maxDepth: 7, rootLabel: 'window' });
@@ -349,6 +384,38 @@ function phaser(win) {
       children.push(scenesNode);
       const root = { id: '$', key: 'Phaser', type: 'object', value: undefined, editable: false, children, meta: {} };
       return { root, refs, count, truncated };
+    },
+    resolve(id) {
+      const seg = id.split('/').map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~'));
+      const walk = (obj, rest) => {
+        for (let i = 0; i < rest.length - 1; i++) {
+          obj = obj?.[rest[i]];
+          if (!obj || typeof obj !== 'object') return null;
+        }
+        return { obj, key: rest[rest.length - 1] };
+      };
+      if (seg[1] === 'registry') return walk(game.registry.list, seg.slice(2));
+      if (seg[1] === 'scenes') {
+        const scene = game.scene.scenes.find((sc) => (safe(() => sc.sys.settings.key) || 'scene') === seg[2]);
+        if (!scene) return null;
+        if (seg[3] === 'data' && scene.data && typeof scene.data.list === 'object') return walk(scene.data.list, seg.slice(4));
+        return walk(scene, seg.slice(3));
+      }
+      return null;
+    },
+    /** registry.set / data.set fire Phaser's changedata events, like in-game changes. */
+    setter(id, ref, v) {
+      const seg = id.split('/');
+      try {
+        if (seg[1] === 'registry' && seg.length === 3 && typeof game.registry.set === 'function') return game.registry.set(ref.key, v), 'registry.set()';
+        if (seg[1] === 'scenes' && seg[3] === 'data' && seg.length === 5) {
+          const scene = game.scene.scenes.find((sc) => (safe(() => sc.sys.settings.key) || 'scene') === seg[2].replace(/~1/g, '/').replace(/~0/g, '~'));
+          if (scene && typeof scene.data.set === 'function') return scene.data.set(ref.key, v), 'data.set()';
+        }
+      } catch {
+        return false;
+      }
+      return false;
     },
     sourceOf(id) {
       if (id.startsWith('$/registry')) return `${gameVar}.registry (Phaser data registry)`;

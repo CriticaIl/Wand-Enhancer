@@ -1,5 +1,7 @@
 # SaveForge Trainer on iPhone: no Mac, no Xcode
 
+> **New in 1.4:** edits are verified in the game (✓ / ≈ / ↺ / ✕ marks), with Lock, Find a value, English labels and translations, a three-finger tap to open, an always-visible variant and better late-game detection. Quick guide: [TESTING-ON-IPHONE.md](TESTING-ON-IPHONE.md).
+
 This puts the full GTA-style SaveForge Trainer on your iPhone through a free userscript manager for Safari. You get the draggable menu, live editing, Apply & Reload, backups and the ⓘ explanations, all from the same code as the SaveForge web app.
 
 **Script address:** https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer.user.js

@@ -49,10 +49,10 @@ export function openTrainer(win, extra = {}) {
       return 'page';
     }
   })();
-  const { frameReports, openInFrame, ...rest } = extra;
-  const engines = detectLiveEngines(win);
-  const limitations = liveLimitations(win);
-  const sources = engines.map((e) => ({
+  const { frameReports, openInFrame, contextInfo, ...rest } = extra;
+  let engines = detectLiveEngines(win);
+  let limitations = liveLimitations(win);
+  const sourceFor = (e) => ({
     id: e.id,
     label: e.name,
     channel: e.channel,
@@ -60,7 +60,17 @@ export function openTrainer(win, extra = {}) {
       if (e.prepare) await e.prepare();
       return new LiveProvider(win, e, createStore(win, `${origin}|${e.id}`));
     },
-  }));
+  });
+  const sources = engines.map(sourceFor);
+  const engineInfo = () => engines.map((e) => ({ id: e.id, name: e.name, channel: e.channel }));
+  // "Rescan game": engines that finished loading after the trainer opened become new sources
+  const rescanSources = () => {
+    const now = detectLiveEngines(win);
+    const added = now.filter((e) => !engines.some((x) => x.id === e.id));
+    engines = [...engines, ...added];
+    limitations = liveLimitations(win);
+    return added.map(sourceFor);
+  };
   sources.push({
     id: 'storage',
     label: 'Saves in storage',
@@ -72,6 +82,7 @@ export function openTrainer(win, extra = {}) {
     const generic = engines.find((e) => e.id === 'generic');
     const frames = listGameFrames(win, frameReports ? await frameReports() : []);
     return {
+      context: contextInfo ? await contextInfo() : { world: 'page', detail: 'Running in the page’s own JavaScript context (bookmarklet, extension or same-site frame).' },
       frame: frameLabel(win),
       href: safe(() => win.location.href),
       engines: engines.map((e) => ({ id: e.id, name: e.name, channel: e.channel, evidence: e.evidence || (e.id === 'generic' ? 'page globals scored as game state' : '') })),
@@ -101,6 +112,9 @@ export function openTrainer(win, extra = {}) {
     sources,
     limitations,
     diagnostics,
+    engineInfo: engineInfo(),
+    engineInfoRefresh: engineInfo,
+    rescanSources,
     store: createStore(win, `${origin}|ui`),
     onClose: () => {
       delete win.__saveforgeTrainer;

@@ -10,12 +10,16 @@
 // On ordinary websites nothing is added, stored or loaded.
 
 import { openTrainer } from '../trainer/inject.js';
-import { getMode, looksLikeGame, setMode } from './activation.js';
+import { getMode, looksLikeGame, probeContext, setMode } from './activation.js';
 
 const VERSION = typeof __SAVEFORGE_VERSION__ === 'string' ? __SAVEFORGE_VERSION__ : 'dev';
+// 'auto' for the normal script; the "always visible" variant is built with 'always'
+const DEFAULT_MODE = typeof __SAVEFORGE_DEFAULT_MODE__ === 'string' ? __SAVEFORGE_DEFAULT_MODE__ : 'auto';
+// re-check for games that appear late (lazy loaders, "Play" buttons, ads before the game)
+const DETECT_SCHEDULE = [1500, 4000, 8000, 15000, 30000, 60000];
 const HELP_URL = 'https://github.com/CriticaIl/Wand-Enhancer/blob/claude/html5-game-save-analyzer-ogbcnf/save-analyzer/USERSCRIPT.md';
 
-export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
+export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs = 180000 } = {}) {
   if (win.__saveforgeUserscript) return win.__saveforgeUserscript;
   const doc = win.document;
   let launcher = null;
@@ -109,6 +113,23 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
         openInFrame(found);
         return null;
       }
+      // same-site frames where the manager did not inject the script (srcdoc, about:blank, blob frames)
+      for (const el of doc.querySelectorAll('iframe')) {
+        let child = null;
+        try {
+          child = el.contentWindow;
+          void child.location.href; // throws for other sites
+        } catch {
+          continue;
+        }
+        if (!child || child.__saveforgeUserscript) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 200 || r.height < 150) continue;
+        if ((await looksLikeGame(child)).game) {
+          toast('Opening SaveForge in the game frame…');
+          return openTrainer(child, { onClose: () => delete child.__saveforgeTrainer });
+        }
+      }
     }
     return openHere();
   }
@@ -118,6 +139,8 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
     const ctl = openTrainer(win, {
       frameReports: () => pingFrames(500),
       openInFrame,
+      contextInfo: async () => probeContext(win),
+      siteMode: { get: async () => mode, set: (m) => changeMode(m) },
       onClose: () => {
         delete win.__saveforgeTrainer;
         if (mode !== 'never' && (mode === 'always' || detected)) showLauncher();
@@ -285,23 +308,56 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
   win.addEventListener('hashchange', () => {
     handleHash();
   });
+  // three-finger tap anywhere opens SaveForge (manual activation where detection fails);
+  // the event is only observed, never blocked, so the game still receives it
+  win.addEventListener(
+    'touchstart',
+    (e) => {
+      if (mode === 'never' || !e.touches || e.touches.length < 3 || win.__saveforgeTrainer) return;
+      open();
+    },
+    { passive: true, capture: true },
+  );
+
+  async function detectOnce() {
+    if (mode !== 'auto' || detected || win.__saveforgeTrainer) return true;
+    const res = await looksLikeGame(win);
+    if (!res.game) return false;
+    detected = res.reason;
+    reportUp();
+    showLauncher();
+    return true;
+  }
+
   (async () => {
-    mode = await getMode(win);
+    mode = (await getMode(win)) || DEFAULT_MODE;
     if (handleHash()) {
       /* handled */
     } else if (mode === 'always') showLauncher();
-    else if (mode === 'auto') {
-      for (const delay of detectDelays) {
-        await new Promise((r) => win.setTimeout(r, delay));
-        if (mode !== 'auto' || launcher || win.__saveforgeTrainer) break;
-        const res = await looksLikeGame(win);
-        if (res.game) {
-          detected = res.reason;
-          reportUp();
-          showLauncher();
-          break;
-        }
+    if (mode === 'auto') {
+      // games often appear late: watch the DOM for new canvases/frames as well as re-checking on a schedule
+      let timer = 0;
+      let observer = null;
+      const stopAt = Date.now() + watchMs;
+      try {
+        observer = new win.MutationObserver((records) => {
+          if (detected || Date.now() > stopAt) return observer.disconnect();
+          const relevant = records.some((r) => [...r.addedNodes].some((n) => n.nodeType === 1 && /^(CANVAS|IFRAME|SCRIPT|OBJECT|EMBED)$/.test(n.nodeName)));
+          if (!relevant) return;
+          win.clearTimeout(timer);
+          timer = win.setTimeout(() => detectOnce().then((done) => done && observer.disconnect()), 1200);
+        });
+        observer.observe(doc.documentElement, { childList: true, subtree: true });
+      } catch {
+        observer = null;
       }
+      let waited = 0;
+      for (const at of detectDelays) {
+        await new Promise((r) => win.setTimeout(r, at - waited));
+        waited = at;
+        if (await detectOnce()) break;
+      }
+      if (detected) observer?.disconnect();
     }
   })().catch((e) => {
     // never leak errors into the host website

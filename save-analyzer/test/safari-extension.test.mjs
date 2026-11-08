@@ -20,6 +20,12 @@ const EXT = join(ROOT, 'safari-extension/extension');
 const IOS = join(ROOT, 'safari-extension/ios');
 const manifest = JSON.parse(readFileSync(join(EXT, 'manifest.json'), 'utf8'));
 
+/** After a live edit the sheet stays open to show verification; tap Done (or Back) to return. */
+async function leaveEdit(scope) {
+  const done = scope.locator('saveforge-trainer .sheet .btn', { hasText: /^Done$/ });
+  if (await done.count()) await done.first().click();
+}
+
 test('manifest: MV3, only activeTab + scripting, no standing website access', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.deepEqual(manifest.permissions.sort(), ['activeTab', 'scripting']);
@@ -228,6 +234,7 @@ test('real extension: tapping the button opens the live trainer on a game page',
     await page.locator('saveforge-trainer .row').filter({ has: page.locator('.name', { hasText: 'Gold' }) }).first().locator('.num').click();
     await page.locator('saveforge-trainer .sheet .field').fill('8888');
     await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+    await leaveEdit(page);
     await page.locator('#gold', { hasText: '8888' }).waitFor({ timeout: 3000 });
     // ⓘ is present on every variable row
     const rows = await page.locator('saveforge-trainer .row:has(.toggle), saveforge-trainer .row:has(.num)').count();

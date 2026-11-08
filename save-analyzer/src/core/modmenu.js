@@ -3,6 +3,7 @@
 
 import { classifyByEngine } from '../adapters/profiles.js';
 import { walk } from './model.js';
+import { toEnglish } from './translate.js';
 
 export const CATEGORIES = [
   { id: 'currency', name: 'Money & Currency', icon: 'coin' },
@@ -35,6 +36,26 @@ const RULES = [
 ];
 const INVENTORY_PARENT = /(^| )(inventory|inv|items?|bag|backpack|weapons?|armou?rs?|equipment|equip|stash|cargo|loot|pouch|chest)( |$)/;
 
+const enCache = new Map();
+/** English words for a non-English name (offline dictionary translations only, never guesses). */
+function englishWords(s) {
+  if (enCache.has(s)) return enCache.get(s);
+  let out = null;
+  const r = toEnglish(s);
+  if (r.kind === 'translation' || r.kind === 'partial') out = r.parts.map((p) => (p.en ? p.en.replace(/[()]/g, '') : p.src)).join(' ');
+  if (enCache.size > 20000) enCache.clear();
+  enCache.set(s, out);
+  return out;
+}
+
+/** Words for *understanding* a name (categories, explanations): non-English names use their offline translation. */
+export function meaningWords(s) {
+  const raw = String(s);
+  const en = /^[\x00-\x7f]*$/.test(raw) && !/[a-z]{4,}/i.test(raw.replace(/[A-Z][a-z]+/g, '')) ? null : englishWords(raw.replace(/^store\./, ''));
+  return en ? words(en) : words(raw);
+}
+
+/** Words for *displaying* a name: always the original (translation is opt-in via “Show English labels”). */
 export function words(s) {
   return String(s)
     .replace(/^[_$@.]+/, '')
@@ -52,10 +73,10 @@ export function humanize(key) {
 }
 
 function heuristicCategory(node, parents) {
-  const own = words(node.key);
+  const own = meaningWords(node.key);
   const near = parents
     .slice(-3)
-    .map((p) => words(p.key))
+    .map((p) => meaningWords(p.key))
     .join(' ');
   for (const [cat, re] of RULES) if (re.test(own)) return adjust(cat, node);
   if ((node.type === 'int' || node.type === 'float') && INVENTORY_PARENT.test(near)) return 'inventory';

@@ -21,6 +21,7 @@ SaveForge also includes a **floating trainer overlay** that runs directly over b
   - from the Game tab, using the **SaveForge Trainer** bookmarklet (works on any site) or "Open trainer over game" for same-site games
   - on an imported save, via the app's floating button (saved edits, then Export)
 - **Demo games:** original demo games for trying it are in `demo-games/` (on GitHub Pages: `…/save-analyzer/demo-games/`).
+- **Since 1.4, edits reach the game and are verified:** values are resolved live, engine setters are used, and every edit is read back and watched. Reverted, adjusted and failed edits are reported, and a value can be locked. The trainer also has Find a value, offline English translation, and more reliable activation. See [TESTING-ON-IPHONE.md](TESTING-ON-IPHONE.md).
 - **iPhone without a Mac:** install `standalone/saveforge-trainer.user.js` with the free **Userscripts** Safari extension. A launcher appears only on game pages, `#saveforge` opens the trainer anywhere, and updates come through `@updateURL`. See [USERSCRIPT.md](USERSCRIPT.md).
 - **iOS Safari extension:** `safari-extension/` packages the same trainer as a Safari Web Extension with a ready Xcode project (iOS app + extension). It asks for website access only when you tap it. If you don't have a Mac, there are fallbacks: the free Userscripts app (`standalone/saveforge-trainer.user.js`) or a Shortcuts share-sheet action. See [safari-extension/README.md](safari-extension/README.md).
 
@@ -107,7 +108,7 @@ The **Game** tab opens any http(s) game URL in a frame, with the floating mod me
 ```sh
 cd save-analyzer
 npm install          # esbuild (build), lz-string + pako (reference implementations for tests)
-npm test             # 122 tests: codecs, pickle, samples, engines, trainer, userscript, Safari extension, browser e2e
+npm test             # 139 tests: codecs, pickle, samples, engines, trainer, userscript, Safari extension, browser e2e
 npm run build        # -> standalone/SaveForge.html
 npm run samples      # regenerate samples/ (needs python3) and the embedded copies
 npm run serve        # http://localhost:8080/ (unbundled modules) and /standalone/

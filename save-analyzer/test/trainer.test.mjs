@@ -199,3 +199,137 @@ test('game-state classifier: website globals out, game state in, mutation eviden
   // known website globals never get mutation credit
   assert.equal(applyMutation(classifyGlobal('dataLayer', []), 5).kind, 'website');
 });
+
+// ---------------------------------------------------------------- translation (offline)
+test('translation: dictionary words are translations, abbreviations are guesses, unknown text is not invented', async () => {
+  const { toEnglish, englishLabel } = await import('../src/core/translate.js');
+  const t = (s) => toEnglish(s);
+  const cases = [
+    ['所持金', 'translation', 'Japanese', 'money held'],
+    ['最大体力', 'translation', 'Japanese', 'maximum'],
+    ['好感度', 'translation', 'Japanese', 'affection level'],
+    ['金币数量', 'translation', 'Chinese', 'gold coins quantity'],
+    ['경험치', 'translation', 'Korean', 'experience points'],
+    ['золото', 'translation', 'Russian', 'gold'],
+    ['уровеньИгрока', 'translation', 'Russian', 'level player'],
+    ['monedasTotales', 'translation', 'Spanish', 'coins total'],
+    ['pièces', 'translation', 'French', 'coins'],
+    ['schlüsselAnzahl', 'translation', 'German', 'key number of'],
+    ['moedas', 'translation', 'Portuguese', 'coins'],
+    ['punteggio', 'translation', 'Italian', 'score'],
+  ];
+  for (const [src, kind, lang, en] of cases) {
+    const r = t(src);
+    assert.equal(r.kind, kind, `${src}: ${JSON.stringify(r)}`);
+    assert.equal(r.languageName, lang, src);
+    assert.ok(r.english.includes(en), `${src} → ${r.english}`);
+    assert.equal(r.original, src, 'original preserved');
+  }
+  const abbr = t('atkBonus');
+  assert.equal(abbr.kind, 'guess');
+  assert.match(abbr.english, /attack bonus/);
+  assert.equal(t('gold').kind, 'english');
+  assert.equal(t('playerName').kind, 'english');
+  const unknown = t('ヴァルハラ');
+  assert.equal(unknown.kind, 'none', 'unknown Japanese word is not invented');
+  assert.equal(unknown.languageName, 'Japanese');
+  assert.equal(unknown.english, 'ヴァルハラ');
+  const partial = t('¿Dónde está la llave?');
+  assert.equal(partial.kind, 'partial');
+  assert.match(partial.english, /key/);
+  // labels keep structure and $ prefixes
+  assert.equal(englishLabel('$monedas').text, '$Coins');
+  assert.equal(englishLabel('Reid · HP').text, 'Reid · Health points');
+  assert.equal(englishLabel('gold'), null);
+});
+
+// ---------------------------------------------------------------- verification
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+function liveWith(engine) {
+  return new LiveProvider({}, { id: 't', name: 'Test', channel: 'live', note: '', ...engine }, memStore());
+}
+
+test('verification: verified, adjusted, reverted and failed are reported from the game object, not from SaveForge', async () => {
+  const game = { gold: 10, hp: 50, score: 0, locked: 3 };
+  const p = liveWith({
+    root: () => game,
+    snapshot: () => buildLiveTree(game),
+    setter(id, ref, v) {
+      if (id === '$/hp') {
+        ref.obj.hp = Math.min(v, 100); // engine clamps
+        return 'setHp()';
+      }
+      if (id === '$/locked') return 'noop()'; // engine ignores the write
+      return false;
+    },
+  });
+  const id = (k) => p.entries.find((e) => e.key === k).nodeId;
+  const [g] = await p.set({ id: id('gold'), value: '999' }).verified;
+  assert.equal(g.state, 'verified');
+  assert.equal(game.gold, 999);
+  const [h] = await p.set({ id: id('hp'), value: '500' }).verified;
+  assert.equal(h.state, 'adjusted');
+  assert.equal(h.observed, 100);
+  const r = p.set({ id: id('score'), value: '77' }).verified;
+  setTimeout(() => (game.score = 1), 100); // the game overwrites the edit
+  assert.equal((await r)[0].state, 'reverted');
+  assert.equal((await r)[0].observed, 1);
+  const [f] = await p.set({ id: id('locked'), value: '9' }).verified;
+  assert.equal(f.state, 'failed');
+});
+
+test('verification: edits follow the live object when the game replaces it (no stale snapshot writes)', async () => {
+  const world = { state: { coins: 5 } };
+  const p = liveWith({ root: () => world, snapshot: () => buildLiveTree(world) });
+  const coins = p.entries.find((e) => e.key === 'coins').nodeId;
+  const old = world.state;
+  world.state = { ...world.state }; // the game rebuilt its state object after the scan
+  const [st] = await p.set({ id: coins, value: '500' }).verified;
+  assert.equal(st.state, 'verified');
+  assert.equal(world.state.coins, 500, 'written to the object the game uses now');
+  assert.equal(old.coins, 5, 'the stale copy was not touched');
+  assert.equal(p.value(coins), 500);
+});
+
+test('lock: re-applies a value the game keeps overwriting, reports it, and stops when unlocked', async () => {
+  const game = { gold: 10 };
+  const p = liveWith({ root: () => game, snapshot: () => buildLiveTree(game) });
+  const id = p.entries[0].nodeId;
+  p.lock(id, 400);
+  assert.equal(game.gold, 400);
+  game.gold = 3;
+  await tick(250);
+  assert.equal(game.gold, 400);
+  assert.ok(p.locks.get(id).reapplied >= 1);
+  assert.equal(p.statusOf(id).state, 'locked');
+  p.unlock(id);
+  game.gold = 3;
+  await tick(250);
+  assert.equal(game.gold, 3);
+  p.dispose();
+});
+
+test('restore original: one tap puts back the value from before SaveForge changed it', async () => {
+  const game = { lives: 3 };
+  const p = liveWith({ root: () => game, snapshot: () => buildLiveTree(game) });
+  const id = p.entries[0].nodeId;
+  await p.set({ id, value: '99' }).verified;
+  await p.restoreOriginal(id).verified;
+  assert.equal(game.lives, 3);
+});
+
+test('find a value: first and next scan narrow down to the real variable', async () => {
+  const { firstScan, nextScan } = await import('../src/trainer/scan.js');
+  const win = { shop: { price: 120 }, game: { player: { gold: 120, gems: 4 } }, ui: { label: '120' } };
+  const r = firstScan(win, 120);
+  assert.equal(r.paths.length, 3);
+  win.game.player.gold = 90;
+  win.ui.label = '90';
+  const left = nextScan(win, r.paths, 90);
+  assert.deepEqual(left.map((p) => p.join('.')).sort(), ['game.player.gold', 'ui.label']);
+  // getters are never run while scanning
+  let ran = 0;
+  Object.defineProperty(win, 'trap', { enumerable: true, get: () => ran++ });
+  firstScan(win, 1);
+  assert.equal(ran, 0);
+});

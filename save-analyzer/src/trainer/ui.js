@@ -3,7 +3,9 @@
 // variables stay smooth on iPhone Safari.
 
 import { sliderRange } from '../core/modmenu.js';
-import { SECTIONS } from './providers.js';
+import { englishLabel, onlineTranslateUrl, toEnglish } from '../core/translate.js';
+import { firstScan, foundValuesEngine, nextScan } from './scan.js';
+import { LiveProvider, SECTIONS, STATUS } from './providers.js';
 import { TRAINER_CSS } from './styles.js';
 
 const ROW_H = 52;
@@ -33,6 +35,7 @@ const ICONS = {
   info: 'M12 2a10 10 0 110 20 10 10 0 010-20zm-1 8v7h2v-7zm0-4v2h2V6z',
 };
 const CHANNEL_LABEL = { live: 'Live', 'live-generic': 'Live*', reload: 'Apply & Reload', file: 'Saved edit', readonly: 'Read-only' };
+const STATUS_MARK = { checking: '…', verified: '✓', adjusted: '≈', reverted: '↺', failed: '✕', locked: '🔒', reload: '⟳', export: '⤓', readonly: '' };
 
 /**
  * Mounts the trainer.
@@ -93,6 +96,8 @@ export function mountTrainer(win, opts) {
     recent: [],
     query: '',
     status: null,
+    englishLabels: false,
+    scan: { target: '', paths: null, kept: [], history: [], info: '' },
   };
   const store = opts.store;
 
@@ -112,8 +117,9 @@ export function mountTrainer(win, opts) {
   const subEl = h('div', { class: 'sub' });
   const bodyEl = h('div', { class: 'body' });
   const descEl = h('div', { class: 'desc' });
+  const compatEl = h('div', { class: 'compat', title: 'Compatibility of this game with SaveForge' });
   const toolsEl = h('div', { class: 'tools' });
-  panel.append(banner, sourcesEl, subEl, bodyEl, descEl, toolsEl);
+  panel.append(banner, sourcesEl, compatEl, subEl, bodyEl, descEl, toolsEl);
   const orb = h('button', { class: 'orb', 'aria-label': 'Open SaveForge trainer' }, ic('logo'));
   root.append(panel, orb);
   shadow.append(root);
@@ -222,6 +228,7 @@ export function mountTrainer(win, opts) {
     const scope = S.sourceId;
     S.favorites = new Set(await store.get(`fav:${scope}`, []));
     S.recent = await store.get(`recent:${scope}`, []);
+    S.englishLabels = !!(await store.get('englishLabels', false));
   }
   function saveFavs() {
     store?.set(`fav:${S.sourceId}`, [...S.favorites]);
@@ -234,11 +241,40 @@ export function mountTrainer(win, opts) {
   }
 
   function onProviderChange(reason, ids) {
+    if (reason === 'status') {
+      // verification results arrive later: update rows / open status boxes in place
+      if (listRefresh) listRefresh();
+      for (const id of ids) if (statusBoxes.has(id)) fillStatus(statusBoxes.get(id), id);
+      updateOrb();
+      return;
+    }
     if (reason === 'edit' || reason === 'undo' || reason === 'redo') pushRecent(ids);
     if (reason === 'rescan') {
       S.stack = [{ type: 'home' }];
     }
+    if ((reason === 'edit' || reason === 'undo' || reason === 'redo') && top().type === 'edit' && S.provider?.kind === 'live') {
+      // keep the edit sheet open so the verification result is visible
+      if (listRefresh) listRefresh();
+      renderTools();
+      return;
+    }
     renderAll();
+  }
+  const statusBoxes = new Map(); // id -> element showing live verification status
+
+  function statusOf(id) {
+    return S.provider?.statusOf ? S.provider.statusOf(id) : null;
+  }
+  function fillStatus(el, id) {
+    clear(el);
+    const st = statusOf(id);
+    if (!st) {
+      el.className = 'statusbox';
+      el.append(S.provider.kind === 'live' ? 'Not changed by SaveForge yet. After an edit SaveForge reads the value back from the game and watches whether the game keeps it.' : '');
+      return;
+    }
+    el.className = `statusbox st-${st.state}`;
+    el.append(h('b', null, `${STATUS_MARK[st.state] || ''} ${STATUS[st.state] || st.state}`), h('div', null, st.detail || ''));
   }
 
   function renderSources() {
@@ -269,6 +305,8 @@ export function mountTrainer(win, opts) {
     if (!p.entries.length) {
       items.push({ kind: 'nav', label: 'No game variables found here', icon: 'info', count: '', hint: 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
     }
+    if (p.reloadSummary) items.push({ kind: 'nav', label: `After reload: ${p.reloadSummary.ok}/${p.reloadSummary.total} edits kept`, icon: p.reloadSummary.ok === p.reloadSummary.total ? 'shield' : 'info', count: '', hint: p.reloadSummary.ok === p.reloadSummary.total ? 'Every value written with Apply & Reload was still in storage after the game reloaded.' : 'The game overwrote some values when it reloaded (for example an autosave). Recent shows which.', view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
+    if (p.locks?.size) items.push({ kind: 'nav', label: `Locked values`, icon: 'lock', count: p.locks.size, hint: 'Values SaveForge keeps re-applying. Open to unlock.', view: { type: 'locks' } });
     for (const sec of SECTIONS) {
       const entries = p.entries.filter((e) => e.section === sec.id && (sec.id !== 'advanced' || e.category !== 'internal'));
       if (entries.length) items.push({ kind: 'nav', label: sec.name, icon: sec.icon, count: entries.length, view: { type: 'list', title: sec.name, entries } });
@@ -279,7 +317,9 @@ export function mountTrainer(win, opts) {
     items.push({ kind: 'nav', label: 'Backups & restore', icon: 'shield', count: '', view: { type: 'backups' } });
     if (opts.diagnostics) items.push({ kind: 'nav', label: 'Diagnostics', icon: 'info', count: '', hint: 'Detected engine, frame, and where each variable comes from.', view: { type: 'diagnostics' } });
     for (const a of p.actions || []) items.push({ kind: 'action', label: a.label, icon: 'refresh', hint: a.hint, run: a.run });
-    if (p.kind === 'live') items.push({ kind: 'action', label: 'Rescan variables', icon: 'refresh', hint: 'Re-read the game’s variables (for values created after the trainer opened).', run: () => p.rescan() });
+    items.push({ kind: 'nav', label: 'Find a value', icon: 'search', count: '', hint: 'Unknown game? Type a number you see on screen, change it in the game, scan again: SaveForge finds the real variable.', view: { type: 'findvalue' } });
+    items.push({ kind: 'action', label: 'Rescan game', icon: 'refresh', hint: 'Look for the game again: engines that finished loading, new variables, new saves.', run: () => rescanGame() });
+    items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
     return items;
   }
 
@@ -292,7 +332,7 @@ export function mountTrainer(win, opts) {
       if (!q) return [];
       const out = [];
       for (const e of p.entries) {
-        if (e.search.includes(q) || (p.liveName(e.nodeId) || '').toLowerCase().includes(q)) out.push(e);
+        if (e.search.includes(q) || (p.liveName(e.nodeId) || '').toLowerCase().includes(q) || (S.englishLabels && labelOf(e).text.toLowerCase().includes(q))) out.push(e);
         if (out.length >= 2000) break;
       }
       return out;
@@ -311,8 +351,13 @@ export function mountTrainer(win, opts) {
 
   function renderSub() {
     clear(subEl);
+    compatEl.style.display = S.provider && top().type === 'home' ? '' : 'none';
+    if (S.provider) {
+      const c = compatibility();
+      clear(compatEl).append(h('span', { class: `cdot ${c.level}` }), c.label);
+    }
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -347,6 +392,15 @@ export function mountTrainer(win, opts) {
     if (v.type === 'apply') return renderApply();
     if (v.type === 'about') return renderAbout();
     if (v.type === 'diagnostics') return renderDiagnostics();
+    if (v.type === 'findvalue') return renderFindValue();
+    if (v.type === 'settings') return renderSettings();
+    if (v.type === 'locks') {
+      const p = S.provider;
+      const entries = [...(p.locks?.keys() || [])].map((id) => p.entryById.get(id)).filter(Boolean);
+      if (!entries.length) return bodyEl.append(h('div', { class: 'empty' }, 'Nothing is locked.')), setDesc('');
+      renderList([{ kind: 'action', label: 'Unlock all', icon: 'lock', hint: 'Stop re-applying every locked value.', run: () => (p.unlockAll(), back()) }, ...entries], null);
+      return;
+    }
   }
 
   // ---------- virtual list
@@ -433,6 +487,25 @@ export function mountTrainer(win, opts) {
     if (conf) descEl.append(h('span', { class: `badge ${conf.toLowerCase()}`, title: 'Interpretation confidence' }, conf));
   }
 
+  function labelOf(e) {
+    const base = S.provider.displayLabel(e);
+    if (!S.englishLabels) return { text: base, original: null };
+    if (e.en === undefined) e.en = englishLabel(base);
+    return e.en ? { text: e.en.text, original: base, kind: e.en.kind } : { text: base, original: null };
+  }
+
+  function compatibility() {
+    const eng = opts.engineInfo || [];
+    const p = S.provider;
+    const adapters = eng.filter((x) => x.id !== 'generic' && x.id !== 'found');
+    if (adapters.length) return { level: 'full', label: `Full live editing · ${adapters.map((x) => x.name).join(', ')}` };
+    if (p && p.kind === 'live' && p.entries.length) return { level: 'partial', label: 'Partial: generic page state (edits verified one by one)' };
+    if (p && p.kind === 'storage' && p.entries.length) return { level: 'saves', label: 'Saves only: edit with Apply & Reload' };
+    if (opts.limitations?.length) return { level: 'none', label: `Not live-editable: ${opts.limitations[0].name}` };
+    if (p && p.kind === 'file') return { level: 'saves', label: 'Save file editing (export)' };
+    return { level: 'unknown', label: 'Unknown engine: try Find a value or Saves in storage' };
+  }
+
   function rowSig(it, i) {
     const p = S.provider;
     if (it.kind === 'nav' || it.kind === 'action') return `${i === S.selected}|${it.count}`;
@@ -442,7 +515,7 @@ export function mountTrainer(win, opts) {
     } catch {
       v = undefined;
     }
-    return `${i === S.selected}|${String(v)}|${p.isEdited(it.nodeId)}|${S.favorites.has(it.nodeId)}`;
+    return `${i === S.selected}|${String(v)}|${p.isEdited(it.nodeId)}|${S.favorites.has(it.nodeId)}|${statusOf(it.nodeId)?.state || ''}|${S.englishLabels}`;
   }
 
   function rowEl(it, i) {
@@ -468,9 +541,15 @@ export function mountTrainer(win, opts) {
     const node = p.node(e.nodeId);
     const value = p.value(e.nodeId);
     if (p.isEdited(e.nodeId)) row.classList.add('edited');
-    const label = p.displayLabel(e);
+    const { text: label, original } = labelOf(e);
+    const st = statusOf(e.nodeId);
     row.append(
-      h('div', { class: 'lbl', onclick: () => (S.selected === i ? openEdit(e.nodeId) : choose()) }, h('span', { class: 'name' }, S.favorites.has(e.nodeId) ? h('span', { class: 'star' }, '★') : null, label), h('span', { class: 'sub2' }, e.path)),
+      h(
+        'div',
+        { class: 'lbl', onclick: () => (S.selected === i ? openEdit(e.nodeId) : choose()) },
+        h('span', { class: 'name' }, st && STATUS_MARK[st.state] ? h('span', { class: `st st-${st.state}`, title: STATUS[st.state] }, STATUS_MARK[st.state]) : null, S.favorites.has(e.nodeId) ? h('span', { class: 'star' }, '★') : null, label),
+        h('span', { class: 'sub2' }, original ? `${original} · ${e.path}` : st && (st.state === 'reverted' || st.state === 'adjusted' || st.state === 'failed') ? `${STATUS[st.state]}: now ${short(p.value(e.nodeId))}` : e.path),
+      ),
       valueWidget(node, value, e, choose),
       h('button', { class: 'info', 'aria-label': `About ${label}`, onclick: () => (choose(), push({ type: 'info', id: e.nodeId })) }, 'ⓘ'),
     );
@@ -509,8 +588,17 @@ export function mountTrainer(win, opts) {
     try {
       const res = S.provider.set({ id, value: typeof value === 'number' ? String(value) : value }, label);
       if (res.changed) {
-        if (S.provider.channel === 'reload') toast('Pending — tap Apply & Reload to write it');
-        else if (S.provider.channel === 'file') toast('Saved into the edit — Export to download');
+        if (S.provider.channel === 'reload') toast('⟳ Requires reload: tap Apply & Reload to write it');
+        else if (S.provider.channel === 'file') toast('Saved into the edit: Export to download');
+        else if (res.verified) {
+          const name = S.provider.entryById.get(id)?.label || 'Value';
+          res.verified.then((list) => {
+            const st = list[0];
+            if (!st) return;
+            const msg = { verified: `✓ ${name}: applied and verified in the game`, adjusted: `≈ ${name}: the game adjusted it to ${st.observed}`, reverted: `↺ ${name}: the game changed it back to ${st.observed}. Try Lock`, failed: `✕ ${name}: ${st.detail}` }[st.state];
+            if (msg) toast(msg, st.state === 'reverted' || st.state === 'failed');
+          });
+        }
       }
       return true;
     } catch (err) {
@@ -575,6 +663,8 @@ export function mountTrainer(win, opts) {
       h('h2', null, x.title),
       h('div', { class: 'path' }, x.path || id),
       h('div', { class: 'chips' }, h('span', { class: `badge ${x.channel}` }, x.timing.label), h('span', { class: `badge ${x.confidence.level.toLowerCase()}` }, `${x.confidence.level} confidence`), h('span', { class: 'badge' }, x.type)),
+      statusSection(id),
+      englishSection(id, x.title),
       h('h3', null, 'What it controls'),
       h('p', null, x.controls),
       h('h3', null, 'What changing it might do'),
@@ -597,7 +687,6 @@ export function mountTrainer(win, opts) {
         { class: 'btns' },
         node.editable ? h('button', { class: 'btn go', onclick: () => openEdit(id) }, node.type === 'bool' ? 'Toggle' : 'Edit') : null,
         h('button', { class: 'btn', onclick: () => toggleFav(id) }, ic('star'), fav ? 'Unfavorite' : 'Favorite'),
-        p.isEdited(id) ? h('button', { class: 'btn', onclick: () => (revert(id), renderAll()) }, 'Revert') : null,
         h('button', { class: 'btn', onclick: back }, 'Back'),
       ),
     );
@@ -633,8 +722,8 @@ export function mountTrainer(win, opts) {
       input.classList.remove('bad');
     };
     const commit = () => {
-      if (apply(id, input.value.trim())) back();
-      else input.classList.add('bad');
+      if (!apply(id, input.value.trim())) return input.classList.add('bad');
+      if (p.kind !== 'live') back();
     };
     input.addEventListener('keydown', (ev) => ev.key === 'Enter' && !ev.shiftKey && (ev.preventDefault(), commit()));
     const quick = isNum
@@ -667,13 +756,150 @@ export function mountTrainer(win, opts) {
         h('div', { class: 'chips' }, h('span', { class: `badge ${p.channel}` }, CHANNEL_LABEL[p.channel]), h('span', { class: 'badge' }, node.type)),
         h('div', { style: 'height:8px' }),
         input,
-        h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn go', onclick: commit }, 'Apply'), h('button', { class: 'btn', onclick: back }, 'Cancel'), h('button', { class: 'btn', onclick: () => push({ type: 'info', id }) }, 'ⓘ Info')),
+        h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn go', onclick: commit }, 'Apply'), h('button', { class: 'btn', onclick: back }, p.kind === 'live' ? 'Done' : 'Cancel'), h('button', { class: 'btn', onclick: () => push({ type: 'info', id }) }, 'ⓘ Info')),
+        statusSection(id),
         quick,
         h('p', { class: 'note' }, `${timing} ${p.kind === 'live' ? 'Before trainer' : 'Original'}: ${show(p.original(id))}.`),
       ),
     );
     describe(id);
     win.setTimeout(() => input.focus(), 60);
+  }
+
+  // ---------- status / lock / restore block (info + edit sheets)
+  function statusSection(id) {
+    const p = S.provider;
+    const box = h('div', { class: 'statusbox' });
+    statusBoxes.set(id, box);
+    fillStatus(box, id);
+    const btns = h('div', { class: 'btns' });
+    if (p.kind === 'live' && p.canLock?.(id)) {
+      const locked = p.locks.has(id);
+      btns.append(h('button', { class: `btn${locked ? ' warn' : ''}`, onclick: () => { try { locked ? p.unlock(id) : p.lock(id); toast(locked ? 'Unlocked' : `Locked at ${short(p.value(id))}: SaveForge re-applies it if the game changes it`); renderAll(); } catch (e) { toast(e.message, true); } } }, ic('lock'), locked ? 'Unlock' : 'Lock value'));
+    }
+    if (p.isEdited(id) && p.restoreOriginal) {
+      btns.append(h('button', { class: 'btn', onclick: () => { p.restoreOriginal(id); toast(`Restoring original value ${short(p.original(id))}`); renderAll(); } }, '↺ Restore original'));
+    }
+    return h('div', null, h('h3', null, 'Status in the game'), box, btns.childNodes.length ? btns : null);
+  }
+
+  function englishSection(id, title) {
+    const p = S.provider;
+    const node = p.node(id);
+    const keyText = String(node.key);
+    const k = toEnglish(title && title !== keyText ? title : keyText);
+    const v = node.type === 'string' && typeof p.value(id) === 'string' ? toEnglish(p.value(id)) : null;
+    const rows = [];
+    const badge = (r) => h('span', { class: `badge ${r.kind === 'translation' ? 'high' : r.kind === 'partial' || r.kind === 'guess' ? 'medium' : 'low'}` }, r.kind === 'translation' ? `Translation · ${r.languageName}` : r.kind === 'partial' ? `Partial translation · ${r.languageName || '?'}` : r.kind === 'guess' ? 'Guessed meaning' : `Not translated${r.languageName ? ` · ${r.languageName}` : ''}`);
+    const block = (what, r) => {
+      if (r.kind === 'english') return null;
+      return h(
+        'div',
+        { class: 'tr' },
+        h('div', null, h('b', null, what), ' ', badge(r)),
+        h('dl', { class: 'kv' }, h('dt', null, 'Original'), h('dd', null, r.original), h('dt', null, 'English'), h('dd', null, r.kind === 'none' ? '—' : r.english)),
+        r.parts.some((x) => x.how === 'dictionary' || x.how === 'abbreviation' || x.how === 'unknown') ? h('ul', null, r.parts.filter((x) => x.how !== 'english' && x.how !== 'number').map((x) => h('li', null, `${x.src} → ${x.en ?? 'not in the offline dictionary'}${x.how === 'abbreviation' ? ' (abbreviation, guessed)' : x.how === 'dictionary' ? '' : ''}`))) : null,
+        h('p', { class: 'note' }, r.note),
+        r.kind !== 'translation' && r.kind !== 'guess' ? h('button', { class: 'btn', onclick: () => translateOnline(r.original) }, 'Translate online (asks first)') : null,
+      );
+    };
+    const parts = [block('Name', k), v ? block('Text value', v) : null].filter(Boolean);
+    if (!parts.length) return null;
+    return h('div', null, h('h3', null, 'In English'), parts);
+  }
+
+  function translateOnline(text) {
+    const ok = win.confirm(`Send only this text to Google Translate?\n\n“${String(text).slice(0, 200)}”\n\nNothing else from the game or your saves is sent. It opens in a new tab.`);
+    if (ok) win.open(onlineTranslateUrl(text), '_blank', 'noopener');
+  }
+
+  // ---------- find a value (value scanner)
+  function renderFindValue() {
+    const sc = S.scan;
+    const input = h('input', { class: 'field', inputmode: 'decimal', enterkeyhint: 'search', placeholder: 'e.g. 120', value: sc.target });
+    const result = h('div');
+    const run = () => {
+      const n = Number(String(input.value).trim());
+      if (!String(input.value).trim() || !Number.isFinite(n)) return toast('Type the number you see in the game', true);
+      sc.target = String(n);
+      if (!sc.paths) {
+        const r = firstScan(win, n);
+        sc.paths = r.paths;
+        sc.info = `First scan: ${r.paths.length} match(es) among ${r.visited.toLocaleString()} values in ${r.ms} ms${r.truncated ? ' (stopped early: very large page)' : ''}.`;
+      } else {
+        const before = sc.paths.length;
+        sc.paths = nextScan(win, sc.paths, n);
+        sc.info = `Next scan: ${before} → ${sc.paths.length} match(es).`;
+      }
+      sc.history.push(n);
+      renderAll();
+    };
+    input.addEventListener('keydown', (e) => e.key === 'Enter' && run());
+    const add = () => {
+      sc.kept = sc.paths.slice(0, 50);
+      const src = opts.sources.find((x) => x.id === 'found');
+      if (!src) opts.sources.push({ id: 'found', label: 'Found values', channel: 'live-generic', create: () => new LiveProvider(win, foundValuesEngine(win, () => sc.kept), store) });
+      S.providers.delete('found');
+      selectSource('found').then(() => S.provider && push({ type: 'list', title: 'Found values', entries: S.provider.entries }));
+      toast(`${sc.kept.length} value(s) added to Found values`);
+    };
+    bodyEl.append(
+      h(
+        'div',
+        { class: 'sheet' },
+        h('h2', null, 'Find a value'),
+        h('p', null, sc.paths ? 'Now change this number in the game (spend, earn, take damage…), then type the new number and scan again.' : 'Type a number you can see in the game right now, for example your gold or score.'),
+        input,
+        h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: run }, sc.paths ? 'Next scan' : 'First scan'), sc.paths ? h('button', { class: 'btn', onclick: () => { S.scan = { target: '', paths: null, kept: [], history: [], info: '' }; renderAll(); } }, 'Start over') : null),
+        sc.info ? h('p', { class: 'note' }, sc.info) : null,
+        sc.paths && sc.paths.length && sc.paths.length <= 50 ? h('div', null, h('ul', null, sc.paths.slice(0, 12).map((p) => h('li', { class: 'path' }, p.join('.')))), h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: add }, `Edit these ${sc.paths.length}`))) : null,
+        sc.paths && sc.paths.length > 50 ? h('p', { class: 'note' }, 'Too many matches: change the value in the game and scan again to narrow it down.') : null,
+        sc.paths && !sc.paths.length ? h('div', { class: 'warnbox' }, 'No matches. The game probably keeps this number where page scripts cannot see it (inside a closure, a module, WebAssembly or a server), or shows a value calculated from something else. Saves in storage may still work.') : null,
+        h('p', { class: 'note' }, 'Searches every value reachable from the page’s globals (never runs game code). Values hidden in closures, modules, WebAssembly or on a server cannot be found.'),
+        result,
+      ),
+    );
+    setDesc('Classic trainer search: narrow a visible number down to the variable that holds it.');
+    win.setTimeout(() => input.focus(), 50);
+  }
+
+  // ---------- settings
+  async function renderSettings() {
+    const sheet = h('div', { class: 'sheet' }, h('h2', null, 'Settings'));
+    bodyEl.append(sheet);
+    const toggleRow = (label, on, fn, note) => h('div', { class: 'setrow' }, h('div', null, h('b', null, label), note ? h('div', { class: 'note' }, note) : null), h('button', { class: `toggle${on ? ' on' : ''}`, onclick: fn }, on ? 'ON' : 'OFF'));
+    sheet.append(
+      toggleRow('Show English labels', S.englishLabels, async () => {
+        S.englishLabels = !S.englishLabels;
+        await store?.set('englishLabels', S.englishLabels);
+        renderAll();
+      }, 'Translates or explains variable names offline. The original name stays underneath, and editing always uses the original variable.'),
+    );
+    if (opts.siteMode) {
+      const mode = await opts.siteMode.get();
+      sheet.append(
+        h('h3', null, 'SaveForge launcher on this site'),
+        h('div', { class: 'btns' }, ['auto', 'always', 'never'].map((m) => h('button', { class: `btn${mode === m ? ' go' : ''}`, onclick: async () => { await opts.siteMode.set(m); toast(`Launcher: ${m}`); renderAll(); } }, { auto: 'Automatic', always: 'Always show', never: 'Hide' }[m]))),
+        h('p', { class: 'note' }, 'Automatic shows the ⬢ only when a game is detected. Always show keeps it on this site even if detection fails. You can also add #saveforge to any address to open SaveForge.'),
+      );
+    }
+    sheet.append(h('p', { class: 'note' }, 'Translation uses a built-in dictionary (Spanish, French, German, Portuguese, Italian, Dutch, Polish, Turkish, Russian, Japanese, Chinese, Korean) and runs entirely on your device. “Translate online” is only used when you tap it, and it asks first.'));
+    setDesc('');
+  }
+
+  async function rescanGame() {
+    toast('Rescanning…');
+    if (opts.rescanSources) {
+      const fresh = opts.rescanSources();
+      for (const src of fresh) if (!opts.sources.some((x) => x.id === src.id)) opts.sources.splice(opts.sources.length - 1, 0, src);
+      if (opts.engineInfoRefresh) opts.engineInfo = opts.engineInfoRefresh();
+    }
+    const p = S.provider;
+    if (p?.kind === 'live') p.rescan();
+    else if (p?.kind === 'storage') return reread();
+    renderSources();
+    renderAll();
+    toast(`Rescanned: ${S.provider?.entries.length ?? 0} variable(s) in ${S.provider?.title || 'this source'}`);
   }
 
   // ---------- Apply & Reload (storage)
@@ -810,7 +1036,8 @@ export function mountTrainer(win, opts) {
       'div',
       null,
       h('h2', null, 'Diagnostics'),
-      h('dl', { class: 'kv' }, h('dt', null, 'This frame'), h('dd', null, d.frame || '?'), h('dt', null, 'Address'), h('dd', null, d.href || '?')),
+      h('dl', { class: 'kv' }, h('dt', null, 'This frame'), h('dd', null, d.frame || '?'), h('dt', null, 'Address'), h('dd', null, d.href || '?'), h('dt', null, 'Script context'), h('dd', null, d.context ? `${d.context.world}: ${d.context.detail}` : '?')),
+      d.context && d.context.world === 'isolated' ? h('div', { class: 'badbox' }, 'SaveForge is running in an isolated extension context, so it cannot see or change the game’s JavaScript. Edits would only change SaveForge’s own copy. In the Userscripts app make sure the script has “@inject-into page”, or use the trainer bookmarklet.') : null,
       !d.engines.some((e) => e.id !== 'generic') && !included.length && gameFrame
         ? h('div', { class: 'warnbox' }, `No game state was found on this page, but a large frame (${gameFrame.size}, ${gameFrame.share}% of the screen, from ${gameFrame.origin}) is probably the game. Its variables live in that frame — open the trainer there.`)
         : null,
@@ -879,13 +1106,21 @@ export function mountTrainer(win, opts) {
       tool('undo', 'Undo', () => p.undo(), !p || !p.canUndo()),
       tool('redo', 'Redo', () => p.redo(), !p || !p.canRedo()),
       tool('search', 'Search', () => (top().type === 'search' ? null : push({ type: 'search' })), !p),
-      tool('star', 'Favorites', () => push({ type: 'list', title: 'Favorites', dynamic: 'fav' }), !p),
+      tool('refresh', 'Refresh values', () => refreshValues(), !p),
     );
     if (p && p.kind === 'storage' && p.pendingCount()) {
       toolsEl.append(h('button', { class: 'tool primary', onclick: () => push({ type: 'apply' }) }, 'Apply & Reload ', h('span', { class: 'n' }, p.pendingCount())));
     } else if (p && p.kind === 'file' && opts.onExport) {
       toolsEl.append(h('button', { class: 'tool', style: 'flex:2', onclick: opts.onExport }, `Export${p.pendingCount() ? ` (${p.pendingCount()})` : ''}`));
     }
+  }
+
+  function refreshValues() {
+    const p = S.provider;
+    if (p?.kind === 'storage') return reread();
+    if (listRefresh) listRefresh();
+    renderAll();
+    toast('Values re-read from the game');
   }
 
   // ---------- live value polling (values can change while the game runs)
@@ -919,6 +1154,7 @@ export function mountTrainer(win, opts) {
     },
     destroy() {
       win.clearInterval(poll);
+      for (const pr of S.providers.values()) pr.dispose?.();
       host.remove();
       opts.onClose?.();
     },

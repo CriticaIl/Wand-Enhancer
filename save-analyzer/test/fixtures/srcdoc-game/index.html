@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Game in a srcdoc frame</title></head>
+<body style="margin:0;font:15px system-ui">
+<!-- Regression fixture: the game runs in a same-site srcdoc iframe, where
+     userscript managers do not inject scripts. -->
+<h3 style="margin:8px">Mini portal</h3>
+<iframe id="g" style="width:100%;height:520px;border:0" srcdoc="<!doctype html><body style='margin:0;background:#000;color:#fff'><canvas width=360 height=300 style='width:100%;height:300px'></canvas><p>Gems: <b id=gems></b></p><script>window.save = { gems: 7, energy: 50, level: 4 }; setInterval(function () { document.getElementById('gems').textContent = save.gems; }, 100);</script></body>"></iframe>
+</body>
+</html>

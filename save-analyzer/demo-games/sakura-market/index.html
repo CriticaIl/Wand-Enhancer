@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sakura Market — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+</head>
+<body>
+<header>SaveForge demo game · variable names in Japanese and Spanish, a value the game keeps overwriting, and a state object it replaces several times a second (common real-world cases).</header>
+<main>
+  <h1>Sakura Market 桜市場</h1>
+  <canvas id="c" width="520" height="160"></canvas>
+  <div class="hud">
+    <div><span>所持金 (money)</span><b id="money"></b></div>
+    <div><span>体力 (health)</span><b id="hp"></b></div>
+    <div><span>レベル (level)</span><b id="level"></b></div>
+    <div><span>好感度・桜 (affection)</span><b id="aff"></b></div>
+    <div><span>monedas</span><b id="monedas"></b></div>
+    <div><span>vidas</span><b id="vidas"></b></div>
+    <div><span>Distance (replaced state)</span><b id="dist"></b></div>
+    <div><span>Bank (overwritten each frame)</span><b id="bank"></b></div>
+  </div>
+  <button id="buy">Buy tea (−30)</button>
+</main>
+<script>
+  // Japanese-named game state, read every frame
+  var データ = { 所持金: 500, 体力: 80, 最大体力: 100, レベル: 3, 好感度: { 桜: 10 } };
+  // Spanish-named game state
+  var estado = { monedas: 20, vidas: 3 };
+  // "Immutable" state: the game builds a new object from the previous one 5 times a second
+  var run = { distance: 0, speed: 2 };
+  setInterval(function () { run = Object.assign({}, run, { distance: run.distance + run.speed }); }, 200);
+  // A display copy the game overwrites every frame from a variable hidden in a closure
+  var hud = { bank: 0 };
+  var game = (function () {
+    var realBank = 1000; // private: page scripts (and SaveForge) cannot reach this
+    return { tick: function () { hud.bank = realBank; }, spend: function (n) { realBank -= n; } };
+  })();
+
+  var c = document.getElementById('c');
+  var ctx = c.getContext('2d');
+  function frame() {
+    game.tick();
+    ctx.fillStyle = '#1b1020'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = '#f9a8d4';
+    for (var i = 0; i < 12; i++) ctx.fillRect((i * 47 + run.distance) % 520, 20 + (i * 31) % 120, 6, 6);
+    document.getElementById('money').textContent = データ.所持金;
+    document.getElementById('hp').textContent = データ.体力 + ' / ' + データ.最大体力;
+    document.getElementById('level').textContent = データ.レベル;
+    document.getElementById('aff').textContent = データ.好感度.桜;
+    document.getElementById('monedas').textContent = estado.monedas;
+    document.getElementById('vidas').textContent = estado.vidas;
+    document.getElementById('dist').textContent = run.distance;
+    document.getElementById('bank').textContent = hud.bank;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  document.getElementById('buy').onclick = function () { データ.所持金 -= 30; game.spend(30); };
+</script>
+</body>
+</html>

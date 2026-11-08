@@ -28,11 +28,18 @@
   function Game_Actor(id, name, hp, mhp, level) { this._actorId = id; this._name = name; this._hp = hp; this._mhpBase = mhp; this._mp = 20; this._level = level; this._exp = { 1: level * 100 }; this._paramPlus = [0, 0, 0, 0, 0, 0, 0, 0]; }
   Game_Actor.prototype.mhp = function () { return this._mhpBase + this._paramPlus[0]; };
   Game_Actor.prototype.refresh = function () { this._hp = Math.max(0, Math.min(this._hp, this.mhp())); };
+  Game_Actor.prototype.setHp = function (hp) { this._hp = hp; this.refresh(); };
+  Game_Actor.prototype.changeLevel = function (level) { this._level = Math.max(1, Math.min(level, 99)); this._exp[1] = this._level * 100; };
   function Game_Party() { this._gold = 120; this._steps = 0; this._items = { 1: 3, 2: 1 }; this._weapons = {}; this._armors = {}; this._actors = [1]; }
   Game_Party.prototype.gainGold = function (n) { this._gold = Math.max(0, Math.min(this._gold + n, 9999999)); };
+  Game_Party.prototype.gainItem = function (item, n) { var id = $dataItems.indexOf(item); this._items[id] = Math.max(0, Math.min((this._items[id] || 0) + n, 99)); };
+  window.setterCalls = { gainGold: 0, gainItem: 0, setValue: 0 };
+  (function (g, i) { Game_Party.prototype.gainGold = function (n) { setterCalls.gainGold++; return g.call(this, n); }; Game_Party.prototype.gainItem = function (a, b) { setterCalls.gainItem++; return i.call(this, a, b); }; })(Game_Party.prototype.gainGold, Game_Party.prototype.gainItem);
   function Game_Switches() { this._data = [null, false, false, false, false]; }
   Game_Switches.prototype.value = function (id) { return !!this._data[id]; };
+  Game_Switches.prototype.setValue = function (id, v) { setterCalls.setValue++; this._data[id] = v; $gameMap.requestRefresh(); };
   function Game_Variables() { this._data = [null, 1, 0, 0]; }
+  Game_Variables.prototype.setValue = function (id, v) { setterCalls.setValue++; this._data[id] = v; $gameMap.requestRefresh(); };
   function Game_System() { this._saveCount = 0; this._battleCount = 0; this._winCount = 0; this._escapeCount = 0; }
   function Game_SelfSwitches() { this._data = {}; }
 

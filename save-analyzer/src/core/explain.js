@@ -8,7 +8,7 @@
 // Confidence is reported honestly; with no pattern match the text says so.
 
 import { isRenpyLogTuple, isRenpyPersistent, isRpgMakerSave, isSugarCubeSave, isStorageDump } from '../adapters/profiles.js';
-import { humanize, words } from './modmenu.js';
+import { humanize, meaningWords, words } from './modmenu.js';
 
 const has = (re, text) => re.test(text);
 const PLAYTIME = /(^| )(playtime|frames|elapsed|runtime|frames on save)( |$)/;
@@ -282,18 +282,18 @@ function buildContext(node, parents, opts) {
   const parent = parents[parents.length - 1];
   const siblings = (parent?.children || []).filter((s) => s !== node);
   const key = String(node.key).replace(/^store\./, '');
-  const own = words(key);
+  const own = meaningWords(key);
   const near = parents
     .slice(-3)
-    .map((p) => words(String(p.key).replace(/^store\./, '')))
+    .map((p) => meaningWords(String(p.key).replace(/^store\./, '')))
     .join(' ');
   const numeric = node.type === 'int' || node.type === 'float';
   const ownerNode = [...parents].reverse().slice(0, 3).find((p) => (p.children || []).some((x) => /^_?(name|title|displayName)$/i.test(x.key) && x.type === 'string'));
   const owner = ownerNode ? ownerNode.children.find((x) => /^_?(name|title|displayName)$/i.test(x.key)).value : null;
-  const sibling = (re) => siblings.find((s) => re.test(words(s.key)));
+  const sibling = (re) => siblings.find((s) => re.test(meaningWords(s.key)));
   const baseWord = own.replace(/(^| )(max|maximum|cap|capacity|limit)( |$)/, ' ').trim();
-  const pairMax = numeric ? siblings.find((s) => (s.type === 'int' || s.type === 'float') && new RegExp(`(^| )(max|maximum|m)( )?${escapeRe(baseWord)}( |$)|^m${escapeRe(baseWord)}$`).test(words(s.key))) : null;
-  const pairCurrent = numeric && /(^| )(max|maximum)( |$)/.test(own) ? siblings.find((s) => words(s.key) === baseWord) : null;
+  const pairMax = numeric ? siblings.find((s) => (s.type === 'int' || s.type === 'float') && new RegExp(`(^| )(max|maximum|m)( )?${escapeRe(baseWord)}( |$)|^m${escapeRe(baseWord)}$`).test(meaningWords(s.key))) : null;
+  const pairCurrent = numeric && /(^| )(max|maximum)( |$)/.test(own) ? siblings.find((s) => meaningWords(s.key) === baseWord) : null;
   const subjectRaw = /^\d+$/.test(key) ? null : key;
   const flagish = /(^| )(seen|met|done|flag|switch|visited|unlocked|completed|has|is)( |$)/.test(own);
   return {

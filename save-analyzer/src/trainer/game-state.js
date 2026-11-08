@@ -14,7 +14,22 @@
 //   - website-like key names (title, url, slug, rating, plays, thumbnail, locale…)
 //   - URL strings, text-heavy objects
 
+import { toEnglish } from '../core/translate.js';
+
 export const INCLUDE_THRESHOLD = 0.35;
+
+const enKeyCache = new Map();
+/** Key words for scoring; non-English names (所持金, monedas…) use their offline translation. */
+function keyWords(k) {
+  const base = splitName(k);
+  if (/^[\x00-\x7f]*$/.test(k) && !/[a-z]{4,}/i.test(k)) return base;
+  if (enKeyCache.has(k)) return enKeyCache.get(k);
+  const r = toEnglish(k);
+  const out = r.kind === 'translation' || r.kind === 'partial' ? `${base} ${r.english.toLowerCase()}` : base;
+  if (enKeyCache.size > 20000) enKeyCache.clear();
+  enKeyCache.set(k, out);
+  return out;
+}
 
 const KNOWN_WEBSITE = [
   ['analytics or tracking', /^(dataLayer|google_tag_manager|google_tag_data|gtag|ga|gaplugins|gaGlobal|GoogleAnalyticsObject|_gaq|_gat|_paq|Matomo|Piwik|hj|hjSiteSettings|_hjSettings|fbq|_fbq|twq|ttq|snaptr|pintrk|uetq|ym|yaCounter\d+|clarity|amplitude|mixpanel|analytics|heap|_satellite|s_gi|newrelic|NREUM|DD_RUM|LogRocket|Sentry|Raven|__SENTRY__|_linkedin_partner_id|lintrk|_hsq|optimizely|plausible|umami)$/],
@@ -24,7 +39,7 @@ const KNOWN_WEBSITE = [
   ['web framework or library', /^(jQuery|\$|_|Vue|React|ReactDOM|preact|Alpine|htmx|Livewire|Turbo|Stimulus|Swiper|lazySizes|lazySizesConfig|Swal|moment|dayjs|axios|Modernizr|Popper|bootstrap|Prism|hljs|marked|DOMPurify|Hammer|Zone|ng|AMP|regeneratorRuntime|webpackChunk.*|webpackJsonp.*|__webpack.*|__NEXT_DATA__|__NEXT_.*|next|__NUXT__|\$nuxt|__INITIAL_STATE__|__APOLLO_STATE__|__REDUX_DEVTOOLS.*|__VUE.*|__REACT.*|__core-js.*|wp|wpApiSettings|ajaxurl|_wpemojiSettings|grecaptcha|recaptcha.*|YT|onYouTubeIframeAPIReady|Intercom|intercomSettings|OneSignal|Crisp|\$crisp|Tawk_API|zE|zESettings|LiveChatWidget|i18n|i18next|Shopify|__st|ShopifyAnalytics|addthis.*|__sharethis.*|FB|twttr|Disqus|DISQUS|disqus_config)$/],
 ];
 
-const GAME_WORDS = /(^|[^a-z])(hp|health|life|lives|score|scores|highscore|best|level|lvl|xp|exp|experience|gold|coins?|money|cash|credits?|gems?|diamonds?|ammo|stamina|energy|mana|mp|inventory|items?|player|players|enemy|enemies|boss|wave|stage|round|combo|stars?|upgrades?|unlocked|achievements?|quest|chapter|day|days|turn|turns|speed|power|damage|attack|defen[cs]e|armou?r|shield|weapons?|skills?|perks?|potions?|keys?|resources?|wood|stone|food|ore|crystals?|tokens?|souls?|kills?|deaths?|lap|laps|fuel|hunger|thirst|affection|love|trust|story|flags?|switch(es)?|variables?|savegame|saveData|progress|world|map|room|zone|checkpoint)([^a-z]|$)/i;
+const GAME_WORDS = /(^|[^a-z])(hp|health|life|lives|score|scores|highscore|best|level|lvl|xp|exp|experience|gold|coins?|money|cash|credits?|gems?|diamonds?|ammo|stamina|energy|mana|mp|inventory|items?|player|players|enemy|enemies|boss|wave|stage|round|combo|stars?|upgrades?|unlocked|achievements?|quest|chapter|day|days|turn|turns|speed|power|damage|attack|defen[cs]e|armou?r|shield|weapons?|skills?|perks?|potions?|keys?|resources?|wood|stone|food|ore|crystals?|tokens?|souls?|kills?|deaths?|lap|laps|fuel|hunger|thirst|affection|love|trust|story|flags?|switch(es)?|variables?|savegame|saveData|progress|world|map|room|zone|checkpoint|bank|distance|held|stamina|vitality|affection)([^a-z]|$)/i;
 const WEBSITE_WORDS = /(^|[^a-z])(title|description|desc|slug|url|uri|href|link|links|thumb|thumbnail|image|img|images|icon|banner|category|categories|tags?|rating|ratings|votes?|plays|views|likes|dislikes|author|developer|publisher|created|updated|published|date|lang|language|locale|embed|iframe|share|social|seo|canonical|ads?|adslot|analytics|consent|cookies?|tracking|useragent|is_?mobile|device|browser|os|platform|env|environment|api|endpoint|token|csrf|nonce|session|cdn|domain|host|hostname|path|route|router|menu|nav|footer|header|breadcrumbs?|related|recommended|comments?|cart|product|price|currency_code|email|login|logout|signup|account|profile_url|avatar)([^a-z]|$)/i;
 const WEBSITE_NAME = /(config|settings|options|env|site|page|seo|i18n|locale|translations|session|csrf|token|nonce|api|endpoint|cdn|theme|consent|cookie|tracking|analytics|banner|meta|schema|menu|nav|layout|route|router|portal|embed|share|social|related)/i;
 const GAME_CLASS = /(Game|Player|State|Save|World|Level|Scene|Inventory|Stats|Hero|Character|Store(?!front)|Engine)/;
@@ -52,8 +67,13 @@ export function classifyGlobal(name, value) {
     reasons.push(`${st.numbers} numeric value(s)`);
   }
   if (st.gameKeys) {
-    score += (Math.min(st.gameKeys, 6) / 6) * 0.45;
+    // absolute count, but small objects whose keys are mostly game-like count too
+    score += Math.min(1, st.gameKeys / 6 + (st.gameKeys / Math.max(1, st.keys)) * 0.5) * 0.45;
     reasons.push(`game-like keys: ${st.gameKeyNames.slice(0, 5).join(', ')}`);
+    if (st.numbers && !st.webKeys && !st.urls && st.gameKeys / Math.max(1, st.keys) >= 0.5) {
+      score += 0.1;
+      reasons.push('mostly game numbers');
+    }
   }
   if (GAME_WORDS.test(splitName(name))) {
     score += 0.1;
@@ -131,7 +151,7 @@ export function countChanges(a, b) {
 }
 
 function stats(value) {
-  const st = { numbers: 0, bools: 0, strings: 0, urls: 0, gameKeys: 0, webKeys: 0, gameKeyNames: [], webKeyNames: [], className: null };
+  const st = { numbers: 0, bools: 0, strings: 0, urls: 0, gameKeys: 0, webKeys: 0, keys: 0, gameKeyNames: [], webKeyNames: [], className: null };
   try {
     const proto = Object.getPrototypeOf(value);
     if (proto && proto !== Object.prototype && proto !== Array.prototype && proto.constructor) st.className = proto.constructor.name;
@@ -159,9 +179,10 @@ function stats(value) {
       }
       if (!d || !('value' in d)) continue;
       const x = d.value;
-      const words = splitName(k);
+      const words = keyWords(k);
       const isArrayIndex = Array.isArray(v) && /^\d+$/.test(k);
       if (!isArrayIndex) {
+        st.keys++;
         if (GAME_WORDS.test(words)) {
           st.gameKeys++;
           if (st.gameKeyNames.length < 8 && !st.gameKeyNames.includes(k)) st.gameKeyNames.push(k);

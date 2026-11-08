@@ -75,4 +75,23 @@ const usMeta = `// ==UserScript==
 const userscript = `${usMeta}\n${ascii(usBundle.outputFiles[0].text)}`;
 writeFileSync(new URL('standalone/saveforge-trainer.user.js', root), userscript);
 writeFileSync(new URL('standalone/saveforge-trainer.meta.js', root), usMeta);
+
+// "Always visible" variant: same code, launcher shown on every permitted site by default
+const usAlways = await build({
+  entryPoints: [new URL('src/userscript/main.js', root).pathname],
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  target: ['safari15', 'es2020'],
+  write: false,
+  legalComments: 'none',
+  define: { __SAVEFORGE_VERSION__: JSON.stringify(pkg.version), __SAVEFORGE_DEFAULT_MODE__: JSON.stringify('always') },
+});
+const alwaysMeta = usMeta
+  .replace('// @name         SaveForge Trainer', '// @name         SaveForge Trainer (always visible)')
+  .replace(/Shows a small launcher only on pages that look like games;/, 'Shows the launcher on every site you allow (hide it per site with a long-press);')
+  .replace('saveforge-trainer.meta.js', 'saveforge-trainer-always.meta.js')
+  .replace('saveforge-trainer.user.js', 'saveforge-trainer-always.user.js');
+writeFileSync(new URL('standalone/saveforge-trainer-always.user.js', root), `${alwaysMeta}\n${ascii(usAlways.outputFiles[0].text)}`);
+writeFileSync(new URL('standalone/saveforge-trainer-always.meta.js', root), alwaysMeta);
 console.log(`standalone/saveforge-trainer.user.js ${(userscript.length / 1024).toFixed(1)} KB`);

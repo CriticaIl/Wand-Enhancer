@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Late loading game</title></head>
+<body style="margin:0;font:15px system-ui;background:#111;color:#eee">
+<!-- Regression fixture: a game that only appears several seconds after the page
+     loaded (loader screen / "Play" button / pre-roll ad), after the old
+     detection schedule had already given up. -->
+<p id="status">Loading game…</p>
+<script>
+  setTimeout(function () {
+    document.getElementById('status').textContent = 'Game loaded';
+    var c = document.createElement('canvas');
+    c.width = 360; c.height = 480; c.style.width = '100%'; c.style.height = '480px';
+    document.body.appendChild(c);
+    window.player = { coins: 12, hp: 30, level: 2 };
+  }, Number(new URLSearchParams(location.search).get('delay') || 7000));
+</script>
+</body>
+</html>
