@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tap Miner — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+</head>
+<body>
+<header>SaveForge demo game · exposes global variables through the same API shape as Construct 2 (cr_getC2Runtime().all_global_vars). It is not Construct.</header>
+<main>
+  <h1>Tap Miner</h1>
+  <div class="hud">
+    <div><span>Ore</span><b id="ore"></b></div>
+    <div><span>Pick level</span><b id="pick"></b></div>
+    <div><span>Auto-drill</span><b id="drill"></b></div>
+    <div><span>Depth</span><b id="depth"></b></div>
+  </div>
+  <button id="tap">Mine</button>
+  <button id="save" class="alt">Save</button>
+</main>
+<script>
+  (function () {
+    function GV(name, data) { this.name = name; this.data = data; }
+    var runtime = { all_global_vars: [new GV('Ore', 0), new GV('PickLevel', 1), new GV('AutoDrill', 0), new GV('Depth', 1), new GV('PlayerName', 'Digger')] };
+    var saved = localStorage.getItem('tapminer');
+    if (saved) JSON.parse(saved).forEach(function (v, i) { runtime.all_global_vars[i].data = v; });
+    function g(n) { for (var i = 0; i < runtime.all_global_vars.length; i++) if (runtime.all_global_vars[i].name === n) return runtime.all_global_vars[i]; }
+    window.cr_getC2Runtime = function () { return runtime; };
+    // game tick: reads globals every 200 ms, like an event sheet would
+    setInterval(function () {
+      if (g('AutoDrill').data) g('Ore').data += g('PickLevel').data;
+      document.getElementById('ore').textContent = g('Ore').data;
+      document.getElementById('pick').textContent = g('PickLevel').data;
+      document.getElementById('drill').textContent = g('AutoDrill').data ? 'ON' : 'off';
+      document.getElementById('depth').textContent = g('Depth').data;
+    }, 200);
+    document.getElementById('tap').onclick = function () { g('Ore').data += g('PickLevel').data; };
+    document.getElementById('save').onclick = function () { localStorage.setItem('tapminer', JSON.stringify(runtime.all_global_vars.map(function (v) { return v.data; }))); };
+  })();
+</script>
+</body>
+</html>

@@ -8,53 +8,67 @@
 import { walk } from '../core/model.js';
 
 export const kindOf = (n) => (n.type === 'embedded' ? n.meta.innerType : n.type);
-const childKeys = (n) => new Set((n.children || []).map((c) => c.key));
+// Detectors run for every ancestor of every variable, so results are memoized per node
+// (otherwise large saves are O(n²)).
+const memo = (fn) => {
+  const cache = new WeakMap();
+  return (n) => {
+    if (!n || typeof n !== 'object') return false;
+    let v = cache.get(n);
+    if (v === undefined) {
+      v = fn(n);
+      cache.set(n, v);
+    }
+    return v;
+  };
+};
+const childKeys = memo((n) => new Set((n.children || []).map((c) => c.key)));
 const child = (n, key) => (n.children || []).find((c) => c.key === key);
 
 // ---------------------------------------------------------------- region detectors
 // A region is a subtree with engine-specific meaning. Regions work at any depth,
 // so a Ren'Py save inside a browser-storage dump is still recognised.
 
-export function isRenpyRoots(n) {
+export const isRenpyRoots = memo((n) => {
   if (kindOf(n) !== 'dict' || !n.children || n.children.length < 1) return false;
   let store = 0;
   for (const c of n.children) if (c.key.startsWith('store.') || c.key === 'store') store++;
   return store / n.children.length > 0.6;
-}
+});
 
-export function isRenpyLogTuple(n) {
+export const isRenpyLogTuple = memo((n) => {
   return kindOf(n) === 'tuple' && n.children && n.children.length === 2 && isRenpyRoots(n.children[0]);
-}
+});
 
-export function isRenpyPersistent(n) {
+export const isRenpyPersistent = memo((n) => {
   return kindOf(n) === 'instance' && /(^|\.)Persistent$/.test(n.meta.className || '');
-}
+});
 
-export function isRpgMakerSave(n) {
+export const isRpgMakerSave = memo((n) => {
   if (kindOf(n) !== 'object' || !n.children) return false;
   const k = childKeys(n);
   return k.has('system') && k.has('party') && k.has('actors') && (k.has('switches') || k.has('variables'));
-}
+});
 
-export function isSugarCubeSave(n) {
+export const isSugarCubeSave = memo((n) => {
   if (kindOf(n) !== 'object') return false;
   const state = child(n, 'state');
   if (!state || !state.children) return false;
   const k = childKeys(state);
   return (k.has('history') || k.has('delta')) && (k.has('index') || k.has('delta'));
-}
+});
 
-export function isConstructSave(n) {
+export const isConstructSave = memo((n) => {
   if (kindOf(n) !== 'object') return false;
   const k = childKeys(n);
   return k.has('c2save') || k.has('c3save') || (k.has('rt') && k.has('types') && k.has('layouts'));
-}
+});
 
-export function isStorageDump(n) {
+export const isStorageDump = memo((n) => {
   if (kindOf(n) !== 'object') return false;
   const f = child(n, 'format');
   return !!f && f.value === 'saveforge-storage-dump';
-}
+});
 
 // ---------------------------------------------------------------- engine identification
 

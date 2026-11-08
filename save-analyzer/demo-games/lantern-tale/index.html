@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lantern Tale — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+</head>
+<body>
+<header>SaveForge demo game · a tiny story engine exposing the same public API shape as SugarCube 2 (window.SugarCube.State / Engine.show). It is not SugarCube.</header>
+<main>
+  <h1>Lantern Tale</h1>
+  <div class="passage" id="passages"></div>
+  <p class="log" id="log"></p>
+</main>
+<script>
+  (function () {
+    var story = {
+      Market: function (v) {
+        return '<p>The night market glows. You carry <b id="gold">' + v.gold + '</b> silver and feel <b id="health">' + v.health + '</b>/' + v.maxHealth + ' healthy.</p>' +
+          '<p>Wren trusts you: <b id="trust">' + v.wrenTrust + '</b>.' + (v.metOracle ? ' The Oracle remembers you.' : '') + '</p>' +
+          (v.wrenTrust >= 10 ? '<p id="secret">Wren whispers about the hidden bridge.</p>' : '') +
+          '<p><a href="#" data-go="Stall">Visit the lantern stall</a> · <a href="#" data-go="Oracle">See the Oracle</a></p>';
+      },
+      Stall: function (v) {
+        return '<p>A lantern costs 30 silver.</p><p><a href="#" data-buy="1">Buy one</a> · <a href="#" data-go="Market">Back</a></p><p>Lanterns: <b id="lanterns">' + v.inventory.lantern + '</b></p>';
+      },
+      Oracle: function (v) {
+        v.metOracle = true;
+        return '<p>The Oracle smiles. Day <b>' + v.day + '</b> of your journey.</p><p><a href="#" data-go="Market">Back</a></p>';
+      },
+    };
+    var active = { title: 'Market', variables: { gold: 85, health: 70, maxHealth: 100, wrenTrust: 3, metOracle: false, day: 1, inventory: { lantern: 0, rope: 1 }, flags: { bridgeRepaired: false } } };
+    var saved = localStorage.getItem('lanterntale.save');
+    if (saved) active = JSON.parse(saved);
+    var State = {
+      get variables() { return active.variables; },
+      get passage() { return active.title; },
+    };
+    var Engine = {
+      show: function () { render(); },
+      play: function (title) { active.title = title; render(); localStorage.setItem('lanterntale.save', JSON.stringify(active)); },
+    };
+    function render() {
+      document.getElementById('passages').innerHTML = story[active.title](active.variables);
+    }
+    document.addEventListener('click', function (e) {
+      var go = e.target.getAttribute && e.target.getAttribute('data-go');
+      if (go) { e.preventDefault(); Engine.play(go); }
+      if (e.target.getAttribute && e.target.getAttribute('data-buy')) {
+        e.preventDefault();
+        var v = active.variables;
+        if (v.gold >= 30) { v.gold -= 30; v.inventory.lantern += 1; document.getElementById('log').textContent = 'Bought a lantern.'; }
+        else document.getElementById('log').textContent = 'Not enough silver.';
+        render();
+      }
+    });
+    window.SugarCube = { State: State, Engine: Engine, version: { title: 'demo-api-shape' } };
+    render();
+  })();
+</script>
+</body>
+</html>

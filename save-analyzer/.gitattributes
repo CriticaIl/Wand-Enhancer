@@ -1,3 +1,4 @@
 samples/** binary
 standalone/SaveForge.html -diff linguist-generated
 src/ui/sample-data.js -diff linguist-generated
+standalone/trainer.js -diff linguist-generated

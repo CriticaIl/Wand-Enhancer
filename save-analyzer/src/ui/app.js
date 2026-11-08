@@ -8,6 +8,10 @@ import { bookmarkletUrl, storageBridge } from '../bridge/storage-bridge.js';
 import { backupOriginal, deleteBackup, listBackups } from './backups.js';
 import { add, clear, displayValue, draggable, fmtBytes, h, icon } from './dom.js';
 import { SAMPLES } from './sample-data.js';
+import { openTrainer } from '../trainer/inject.js';
+import { FileProvider } from '../trainer/providers.js';
+import { createStore } from '../trainer/store.js';
+import { mountTrainer } from '../trainer/ui.js';
 
 // ---------------------------------------------------------------- state & prefs
 
@@ -53,7 +57,7 @@ let mainEl;
 let toolbarEl;
 let tabbarEl;
 let fabEl;
-let panelEl;
+let trainerCtl = null;
 
 const TABS = [
   ['analyze', 'Analyze', 'upload'],
@@ -122,7 +126,6 @@ function show(tab) {
   state.tab = tab;
   renderTabs();
   registry.clear();
-  if (panelEl) refreshPanel();
   clear(mainEl);
   views[tab](mainEl);
   window.scrollTo({ top: 0 });
@@ -192,6 +195,7 @@ async function load(name, input) {
   state.compare = null;
   state.session.on(onSessionChange);
   renderToolbar();
+  closeTrainer();
   ensureFloating();
   show(res.doc.menu.stats.editable ? 'menu' : 'analyze');
   toast(`Decoded ${res.doc.index.byId.size} fields`);
@@ -209,7 +213,7 @@ async function onSessionChange(reason, ids) {
   const all = reason === 'reset' || ids.length > 30;
   for (const [id, fns] of registry) if (all || ids.includes(id)) for (const fn of fns) fn();
   if (state.tab === 'changes') rerender();
-  if (panelEl) updateFabCount();
+  if (fabEl) updateFabCount();
 }
 
 function register(id, fn) {
@@ -1009,7 +1013,8 @@ views.game = (el) => {
           h(
             'div',
             { class: 'row', style: { marginTop: '8px' } },
-            h('button', { class: 'btn primary small', onclick: readFromFrame }, 'Read game storage'),
+            h('button', { class: 'btn primary small', onclick: () => openTrainerInFrame(frame) }, 'Open trainer over game'),
+            h('button', { class: 'btn small', onclick: readFromFrame }, 'Read game storage'),
             state.doc && state.doc.engine.id === 'storage-dump' ? h('button', { class: 'btn small', onclick: exportFlow }, 'Validate & write back…') : null,
           ),
         );
@@ -1025,7 +1030,7 @@ views.game = (el) => {
     });
     el.append(h('div', { class: 'game-wrap' }, frame), status);
   }
-  el.append(bridgeCard());
+  el.append(trainerCard(), bridgeCard(), compatCard());
 };
 
 function shortUrl(u) {
@@ -1067,6 +1072,86 @@ function bridgeCard() {
       h('li', null, 'Back on the game page, run the bridge again, tap Import edited, pick the exported file, and reload.'),
     ),
     h('p', { class: 'dim', style: { fontSize: '12px' } }, 'Games that keep progress only in memory, on a server, or in encrypted/custom formats cannot be edited this way.'),
+  );
+}
+
+function openTrainerInFrame(frame) {
+  openTrainer(frame.contentWindow);
+  const top = frame.getBoundingClientRect().top + window.scrollY - (document.querySelector('.topbar')?.offsetHeight || 0) - 8;
+  window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+}
+
+function trainerUrl() {
+  const standalone = document.documentElement.dataset.standalone === '1';
+  return new URL(standalone ? 'trainer.js' : 'standalone/trainer.js', location.href).href;
+}
+
+function trainerLoaderBookmarklet() {
+  const src = trainerUrl();
+  return `javascript:(function(){if(window.__saveforgeTrainer){window.__saveforgeTrainer.show();return}var s=document.createElement('script');s.src=${JSON.stringify(src)}+'?v='+Date.now();s.onerror=function(){alert('SaveForge trainer could not be loaded (offline, or blocked by this page). Use the offline trainer bookmarklet instead.')};document.documentElement.appendChild(s)})()`;
+}
+
+async function copyFullTrainer() {
+  try {
+    if (!/^https?:/.test(location.protocol)) throw new Error('Open SaveForge from its web address to copy the offline trainer.');
+    const code = await (await fetch(trainerUrl(), { cache: 'no-cache' })).text();
+    await copy(`javascript:${encodeURIComponent(code)}`);
+    toast(`Copied offline trainer (${Math.round(code.length / 1024)} KB)`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function trainerCard() {
+  return h(
+    'div',
+    { class: 'card' },
+    h('h2', null, 'Trainer overlay for browser games'),
+    h(
+      'p',
+      { class: 'muted', style: { marginTop: 0 } },
+      'A GTA-style floating trainer that runs on the game page itself. It finds the game’s variables, explains each one (ⓘ), and edits them live where the engine allows it, or as saved edits with Apply & Reload.',
+    ),
+    h(
+      'div',
+      { class: 'row' },
+      h('a', { class: 'bm', href: trainerLoaderBookmarklet(), onclick: (e) => (e.preventDefault(), toast('Add this as a bookmark: use “Copy trainer bookmarklet” on iPhone')) }, 'SaveForge Trainer'),
+      h('button', { class: 'btn small', onclick: () => copy(trainerLoaderBookmarklet()) }, 'Copy trainer bookmarklet'),
+      h('button', { class: 'btn small', onclick: copyFullTrainer }, 'Copy offline version'),
+    ),
+    h(
+      'ol',
+      { class: 'steps' },
+      h('li', null, 'Tap “Copy trainer bookmarklet”, bookmark any page, then edit that bookmark and paste the code as its address (same steps as the Storage Bridge below).'),
+      h('li', null, 'Open your game in Safari, open Bookmarks and tap “SaveForge Trainer”. The trainer appears over the game; minimise it to the floating icon to keep playing.'),
+    ),
+    h(
+      'p',
+      { class: 'dim', style: { fontSize: '12px' } },
+      'The normal bookmarklet loads the trainer from this site, so it needs a connection and a page that allows it. The offline version contains the whole trainer (about 150 KB). Very long bookmarks may not sync or save on every iOS version; if it does not stick, use the normal one.',
+    ),
+  );
+}
+
+function compatCard() {
+  const rows = [
+    ['RPG Maker MV / MZ', 'Live', 'Gold, items (with names), actors, switches and variables through $gameParty, $gameActors, $gameSwitches, $gameVariables.'],
+    ['SugarCube 2 (Twine)', 'Live', 'Story variables via SugarCube.State.variables; “Refresh passage” re-renders the text.'],
+    ['Construct 2', 'Live', 'Global variables via cr_getC2Runtime().'],
+    ['Plain HTML5 games', 'Live*', 'Global JavaScript objects are found automatically. It works only if the game keeps its state in globals; the game may overwrite edits.'],
+    ['Ren’Py web', 'Apply & Reload', 'Python runs inside WebAssembly with no JavaScript→Python access, so edit the save files in IndexedDB.'],
+    ['Construct 3', 'Apply & Reload', 'Usually runs in a Web Worker that page scripts cannot reach.'],
+    ['Harlowe (Twine)', 'Apply & Reload', 'Story state is private to the engine.'],
+    ['GameMaker HTML5', 'Apply & Reload', 'Runtime variables are obfuscated; INI/JSON saves in storage can be edited.'],
+    ['Any game, cross-site in the Game tab', 'Bookmarklet only', 'Safari blocks access across sites; run the trainer bookmarklet on the game page instead.'],
+    ['Server-side, encrypted or WebAssembly-only state', 'Not supported', 'There is nothing the browser lets a page read or change safely.'],
+  ];
+  return h(
+    'div',
+    { class: 'card' },
+    h('h2', null, 'What can be edited live?'),
+    h('table', { class: 'fmt' }, h('tr', null, h('th', null, 'Engine'), h('th', null, 'Mode'), h('th', null, 'How')), rows.map((r) => h('tr', null, r.map((c) => h('td', null, c))))),
+    h('p', { class: 'dim', style: { fontSize: '12px' } }, 'Live = applied to the running game immediately (save in-game to keep it). Live* = written to page globals; the effect depends on the game. Apply & Reload = written to browser storage, then the page reloads.'),
   );
 }
 
@@ -1132,48 +1217,31 @@ function updateFabCount() {
 }
 
 function removeFloating() {
+  closeTrainer();
   fabEl?.remove();
-  panelEl?.remove();
   fabEl = null;
-  panelEl = null;
 }
 
+// The floating button opens the GTA-style trainer on the imported save (saved edits → Export).
 function togglePanel() {
-  if (panelEl) {
-    panelEl.remove();
-    panelEl = null;
-    return;
-  }
-  const narrow = window.innerWidth <= 600;
-  panelEl = h('div', { class: `float-panel${narrow ? ' sheet' : ''}`, role: 'dialog', 'aria-label': 'Mod menu', style: narrow ? {} : { right: '20px', top: '90px' } });
-  refreshPanel();
-  document.body.append(panelEl);
+  if (trainerCtl) return closeTrainer();
+  const provider = new FileProvider(state.doc, state.session);
+  trainerCtl = mountTrainer(window, {
+    sources: [{ id: 'file', label: state.doc.name, channel: 'file', create: () => provider }],
+    store: createStore(window, 'saveforge-app'),
+    onExport: exportFlow,
+    onClose: () => {
+      provider.dispose();
+      trainerCtl = null;
+      if (fabEl) fabEl.style.display = '';
+    },
+  });
+  if (fabEl) fabEl.style.display = 'none';
 }
 
-function refreshPanel() {
-  if (!panelEl || !state.doc) return;
-  clear(panelEl);
-  const head = h(
-    'div',
-    { class: 'ph', style: { position: 'relative' } },
-    h('span', { class: 'grip' }),
-    h('b', { class: 'grow' }, 'Mod menu'),
-    h('button', { class: 'btn icon small', 'aria-label': 'Undo', onclick: () => state.session.undo() }, icon('undo')),
-    h('button', { class: 'btn icon small', 'aria-label': 'Redo', onclick: () => state.session.redo() }, icon('redo')),
-    h('button', { class: 'btn small primary', onclick: exportFlow }, 'Export'),
-    h('button', { class: 'btn icon small ghost', 'aria-label': 'Close', onclick: togglePanel }, icon('close')),
-  );
-  panelEl.append(head, h('div', { class: 'pb' }, modMenu(true)));
-  draggable(panelEl, head, {
-    onEnd: () => {},
-  });
-  head.addEventListener('pointerdown', () => {
-    if (panelEl.classList.contains('sheet')) {
-      const r = panelEl.getBoundingClientRect();
-      panelEl.classList.remove('sheet');
-      Object.assign(panelEl.style, { left: `${r.left + 12}px`, top: `${Math.max(8, r.top)}px` });
-    }
-  });
+function closeTrainer() {
+  trainerCtl?.destroy();
+  trainerCtl = null;
 }
 
 // ---------------------------------------------------------------- misc

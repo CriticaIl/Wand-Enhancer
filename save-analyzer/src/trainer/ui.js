@@ -1,0 +1,883 @@
+// GTA-style floating trainer. Framework-free, rendered into a Shadow DOM of
+// the *host* window (the game page), with a virtualized list so thousands of
+// variables stay smooth on iPhone Safari.
+
+import { sliderRange } from '../core/modmenu.js';
+import { SECTIONS } from './providers.js';
+import { TRAINER_CSS } from './styles.js';
+
+const ROW_H = 52;
+const OVERSCAN = 6;
+const ICONS = {
+  logo: 'M12 2l8 4.5v11L12 22l-8-4.5v-11L12 2zm0 4.2L7.6 8.7v6.6l4.4 2.5 4.4-2.5V8.7L12 6.2z',
+  close: 'M6.4 5L12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z',
+  min: 'M5 17h14v2.5H5z',
+  collapse: 'M7 14l5-5 5 5z',
+  expand: 'M7 10l5 5 5-5z',
+  back: 'M15.4 6.4L14 5l-7 7 7 7 1.4-1.4L9.8 12z',
+  undo: 'M8 7V3L2 9l6 6v-4h6a4 4 0 010 8h-2v3h2a7 7 0 000-14z',
+  redo: 'M16 7V3l6 6-6 6v-4h-6a4 4 0 000 8h2v3h-2a7 7 0 010-14z',
+  search: 'M10 3a7 7 0 015.6 11.2l5 5-1.4 1.4-5-5A7 7 0 1110 3zm0 2a5 5 0 100 10 5 5 0 000-10z',
+  star: 'M12 2.5l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6L12 17.3l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z',
+  clock: 'M12 2a10 10 0 110 20 10 10 0 010-20zm-1 5v6l5 3 1-1.7-4-2.4V7z',
+  lock: 'M7 10V8a5 5 0 0110 0v2h1v11H6V10zm2 0h6V8a3 3 0 00-6 0z',
+  heart: 'M12 21l-1.5-1.3C5 15 2 12.2 2 8.6 2 5.6 4.4 3.3 7.3 3.3c1.7 0 3.4.8 4.7 2.1 1.3-1.3 3-2.1 4.7-2.1 2.9 0 5.3 2.3 5.3 5.3 0 3.6-3 6.4-8.5 11.1z',
+  coin: 'M12 3c5 0 9 2 9 4.5v9C21 19 17 21 12 21s-9-2-9-4.5v-9C3 5 7 3 12 3zm0 2C8 5 5 6.4 5 7.5S8 10 12 10s7-1.4 7-2.5S16 5 12 5z',
+  bag: 'M8 7a4 4 0 018 0h4l-1.5 14h-13L4 7zm2 0h4a2 2 0 00-4 0z',
+  flag: 'M5 3h2v18H5zM8 4h11l-2.5 4.5L19 13H8z',
+  key: 'M14 3a7 7 0 11-6.3 10H6v2H4v2H2v-4l7.7-7.7A7 7 0 0114 3zm2 3a2 2 0 100 4 2 2 0 000-4z',
+  gear: 'M13.4 2l.5 2.6 1.9.8 2.2-1.5 1.9 1.9-1.5 2.2.8 1.9L22 10.6v2.8l-2.6.5-.8 1.9 1.5 2.2-1.9 1.9-2.2-1.5-1.9.8-.5 2.8h-2.8l-.5-2.6-1.9-.8-2.2 1.5-1.9-1.9 1.5-2.2-.8-1.9L2 13.4v-2.8l2.6-.5.8-1.9-1.5-2.2 1.9-1.9 2.2 1.5 1.9-.8L10.6 2zM12 8.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7z',
+  list: 'M4 6h16v2.5H4zM4 11h16v2.5H4zM4 16h10v2.5H4z',
+  shield: 'M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5z',
+  refresh: 'M12 4a8 8 0 107.4 11h-3.3A5 5 0 1112 7c1.4 0 2.6.6 3.5 1.5L13 11h7V4l-2.4 2.4A8 8 0 0012 4z',
+  info: 'M12 2a10 10 0 110 20 10 10 0 010-20zm-1 8v7h2v-7zm0-4v2h2V6z',
+};
+const CHANNEL_LABEL = { live: 'Live', 'live-generic': 'Live*', reload: 'Apply & Reload', file: 'Saved edit', readonly: 'Read-only' };
+
+/**
+ * Mounts the trainer.
+ * @param win   host window (the game page)
+ * @param opts  {sources: [{id, label, channel, create: () => Provider|Promise<Provider>}], limitations?: [{name, reason}],
+ *               store, onExport?: () => void, startMinimized?: boolean}
+ * @returns controller {show, hide, destroy, provider()}
+ */
+export function mountTrainer(win, opts) {
+  const doc = win.document;
+  const host = doc.createElement('saveforge-trainer');
+  host.setAttribute('style', 'all: initial');
+  const shadow = host.attachShadow({ mode: 'open' });
+  const style = doc.createElement('style');
+  style.textContent = TRAINER_CSS;
+  shadow.append(style);
+  (doc.body || doc.documentElement).append(host);
+
+  // ---------- tiny DOM helpers bound to the host document
+  const h = (tag, attrs, ...kids) => {
+    const e = doc.createElement(tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v === null || v === undefined || v === false) continue;
+        if (k === 'class') e.className = v;
+        else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+        else if (k === 'style') e.setAttribute('style', v);
+        else if (k in e && typeof v !== 'string') e[k] = v;
+        else e.setAttribute(k, v === true ? '' : v);
+      }
+    }
+    for (const k of kids.flat(Infinity)) if (k !== null && k !== undefined && k !== false) e.append(k instanceof win.Node ? k : doc.createTextNode(String(k)));
+    return e;
+  };
+  const ic = (name) => {
+    const s = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', '0 0 24 24');
+    const p = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', ICONS[name] || ICONS.info);
+    s.append(p);
+    return s;
+  };
+  const clear = (e) => {
+    while (e.firstChild) e.firstChild.remove();
+    return e;
+  };
+
+  // ---------- state
+  const S = {
+    provider: null,
+    sourceId: null,
+    providers: new Map(),
+    stack: [{ type: 'home' }],
+    selected: 0,
+    minimized: !!opts.startMinimized,
+    collapsed: false,
+    favorites: new Set(),
+    recent: [],
+    query: '',
+    status: null,
+  };
+  const store = opts.store;
+
+  // ---------- skeleton
+  const root = h('div', { class: 'root' });
+  const panel = h('section', { class: 'panel', role: 'dialog', 'aria-label': 'SaveForge trainer' });
+  const banner = h('div', { class: 'banner' }, h('div', { class: 'title' }, 'SaveForge', h('small', null, 'TRAINER')));
+  const hbtns = h(
+    'div',
+    { class: 'hbtns' },
+    h('button', { class: 'hbtn', 'aria-label': 'Collapse', onclick: () => setCollapsed(!S.collapsed) }, ic('collapse')),
+    h('button', { class: 'hbtn', 'aria-label': 'Minimize', onclick: () => setMinimized(true) }, ic('min')),
+    h('button', { class: 'hbtn', 'aria-label': 'Close trainer', onclick: () => ctl.destroy() }, ic('close')),
+  );
+  banner.append(hbtns);
+  const sourcesEl = h('div', { class: 'sources' });
+  const subEl = h('div', { class: 'sub' });
+  const bodyEl = h('div', { class: 'body' });
+  const descEl = h('div', { class: 'desc' });
+  const toolsEl = h('div', { class: 'tools' });
+  panel.append(banner, sourcesEl, subEl, bodyEl, descEl, toolsEl);
+  const orb = h('button', { class: 'orb', 'aria-label': 'Open SaveForge trainer' }, ic('logo'));
+  root.append(panel, orb);
+  shadow.append(root);
+
+  // keep game input handlers from reacting to taps/typing inside the trainer
+  for (const t of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'click', 'dblclick', 'wheel', 'keydown', 'keyup', 'keypress', 'contextmenu']) {
+    panel.addEventListener(t, (e) => e.stopPropagation());
+    orb.addEventListener(t, (e) => e.stopPropagation());
+  }
+
+  // ---------- dragging (panel by banner, orb by itself)
+  function makeDraggable(el, handle, onTap) {
+    let st = null;
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.hbtn')) return;
+      const r = el.getBoundingClientRect();
+      st = { x: e.clientX, y: e.clientY, l: r.left, t: r.top, moved: false };
+      handle.setPointerCapture?.(e.pointerId);
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!st) return;
+      const dx = e.clientX - st.x;
+      const dy = e.clientY - st.y;
+      if (!st.moved && Math.hypot(dx, dy) < 6) return;
+      st.moved = true;
+      const l = Math.min(Math.max(0, st.l + dx), win.innerWidth - Math.min(el.offsetWidth, win.innerWidth));
+      const t = Math.min(Math.max(0, st.t + dy), win.innerHeight - 50);
+      el.style.left = `${l}px`;
+      el.style.top = `${t}px`;
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    });
+    const end = () => {
+      if (!st) return;
+      const moved = st.moved;
+      st = null;
+      if (!moved && onTap) onTap();
+      if (moved) savePos();
+    };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', () => (st = null));
+  }
+  makeDraggable(panel, banner, null);
+  makeDraggable(orb, orb, () => setMinimized(false));
+  function savePos() {
+    store?.set('pos', { panel: [panel.style.left, panel.style.top], orb: [orb.style.left, orb.style.top] });
+  }
+
+  function setMinimized(v) {
+    S.minimized = v;
+    panel.style.display = v ? 'none' : '';
+    orb.style.display = v ? '' : 'none';
+    if (!v) renderAll();
+    updateOrb();
+  }
+  function setCollapsed(v) {
+    S.collapsed = v;
+    panel.classList.toggle('collapsed', v);
+    clear(hbtns.firstChild).append(ic(v ? 'expand' : 'collapse'));
+  }
+  function updateOrb() {
+    orb.querySelector('.n')?.remove();
+    const n = S.provider ? S.provider.pendingCount() || [...S.provider.entries].filter((e) => S.provider.isEdited(e.nodeId)).length : 0;
+    if (n) orb.append(h('span', { class: 'n' }, n));
+  }
+
+  let toastTimer;
+  function toast(msg, bad) {
+    shadow.querySelector('.toast')?.remove();
+    const t = h('div', { class: `toast${bad ? ' bad' : ''}` }, msg);
+    root.append(t);
+    win.clearTimeout(toastTimer);
+    toastTimer = win.setTimeout(() => t.remove(), bad ? 4000 : 2000);
+  }
+
+  // ---------- sources
+  async function selectSource(id) {
+    const src = opts.sources.find((s) => s.id === id);
+    if (!src) return;
+    S.sourceId = id;
+    S.stack = [{ type: 'home' }];
+    S.selected = 0;
+    renderSources();
+    if (!S.providers.has(id)) {
+      S.provider = null;
+      S.status = { loading: `Reading ${src.label}…` };
+      renderAll();
+      try {
+        const p = await src.create();
+        S.providers.set(id, p);
+        p.on((reason, ids) => onProviderChange(reason, ids));
+      } catch (e) {
+        S.status = { error: e.message || String(e) };
+        renderAll();
+        return;
+      }
+    }
+    S.provider = S.providers.get(id);
+    S.status = null;
+    await loadPrefs();
+    renderAll();
+  }
+
+  async function loadPrefs() {
+    if (!store) return;
+    const scope = S.sourceId;
+    S.favorites = new Set(await store.get(`fav:${scope}`, []));
+    S.recent = await store.get(`recent:${scope}`, []);
+  }
+  function saveFavs() {
+    store?.set(`fav:${S.sourceId}`, [...S.favorites]);
+  }
+  function pushRecent(ids) {
+    for (const id of ids) {
+      S.recent = [id, ...S.recent.filter((x) => x !== id)].slice(0, 40);
+    }
+    store?.set(`recent:${S.sourceId}`, S.recent);
+  }
+
+  function onProviderChange(reason, ids) {
+    if (reason === 'edit' || reason === 'undo' || reason === 'redo') pushRecent(ids);
+    if (reason === 'rescan') {
+      S.stack = [{ type: 'home' }];
+    }
+    renderAll();
+  }
+
+  function renderSources() {
+    clear(sourcesEl);
+    for (const s of opts.sources) {
+      sourcesEl.append(h('button', { class: 'chip', 'aria-pressed': String(s.id === S.sourceId), onclick: () => selectSource(s.id) }, h('span', { class: `dot ${s.channel}` }), s.label));
+    }
+    if (opts.limitations?.length) sourcesEl.append(h('button', { class: 'chip', onclick: () => push({ type: 'about' }) }, '⚠ ', 'Limits'));
+  }
+
+  // ---------- navigation
+  const top = () => S.stack[S.stack.length - 1];
+  function push(view) {
+    S.stack.push(view);
+    S.selected = 0;
+    renderAll();
+  }
+  function back() {
+    if (S.stack.length > 1) S.stack.pop();
+    S.selected = top().selected || 0;
+    renderAll();
+  }
+
+  // ---------- list models
+  function homeItems() {
+    const p = S.provider;
+    const items = [];
+    for (const sec of SECTIONS) {
+      const entries = p.entries.filter((e) => e.section === sec.id && (sec.id !== 'advanced' || e.category !== 'internal'));
+      if (entries.length) items.push({ kind: 'nav', label: sec.name, icon: sec.icon, count: entries.length, view: { type: 'list', title: sec.name, entries } });
+    }
+    items.push({ kind: 'nav', label: 'Favorites', icon: 'star', count: S.favorites.size, view: { type: 'list', title: 'Favorites', dynamic: 'fav' } });
+    items.push({ kind: 'nav', label: 'Recently modified', icon: 'clock', count: S.recent.length, view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
+    items.push({ kind: 'nav', label: 'All variables', icon: 'list', count: p.entries.length, view: { type: 'list', title: 'All variables', entries: p.entries } });
+    items.push({ kind: 'nav', label: 'Backups & restore', icon: 'shield', count: '', view: { type: 'backups' } });
+    for (const a of p.actions || []) items.push({ kind: 'action', label: a.label, icon: 'refresh', hint: a.hint, run: a.run });
+    if (p.kind === 'live') items.push({ kind: 'action', label: 'Rescan variables', icon: 'refresh', hint: 'Re-read the game’s variables (for values created after the trainer opened).', run: () => p.rescan() });
+    return items;
+  }
+
+  function viewEntries(v) {
+    const p = S.provider;
+    if (v.dynamic === 'fav') return [...S.favorites].map((id) => p.entryById.get(id)).filter(Boolean);
+    if (v.dynamic === 'recent') return S.recent.map((id) => p.entryById.get(id)).filter(Boolean);
+    if (v.type === 'search') {
+      const q = S.query.trim().toLowerCase();
+      if (!q) return [];
+      const out = [];
+      for (const e of p.entries) {
+        if (e.search.includes(q) || (p.liveName(e.nodeId) || '').toLowerCase().includes(q)) out.push(e);
+        if (out.length >= 2000) break;
+      }
+      return out;
+    }
+    return v.entries;
+  }
+
+  // ---------- rendering
+  function renderAll() {
+    if (S.minimized) return updateOrb();
+    renderSub();
+    renderBody();
+    renderTools();
+    updateOrb();
+  }
+
+  function renderSub() {
+    clear(subEl);
+    const v = top();
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : 'About';
+    const ch = S.provider?.channel;
+    subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
+  }
+
+  function setCount(i, n) {
+    const c = subEl.querySelector('.count');
+    if (c) c.textContent = n ? `${Math.min(i + 1, n)} / ${n}` : '';
+  }
+
+  function renderBody() {
+    clear(bodyEl);
+    if (S.status?.loading) return bodyEl.append(h('div', { class: 'empty' }, S.status.loading)), setDesc('');
+    if (S.status?.error) {
+      bodyEl.append(h('div', { class: 'sheet' }, h('div', { class: 'badbox' }, S.status.error), limitationsBlock()));
+      return setDesc('');
+    }
+    if (!S.provider) return bodyEl.append(h('div', { class: 'empty' }, 'Choose a source above.'));
+    const v = top();
+    if (v.type === 'home') return renderList(homeItems(), (it) => it);
+    if (v.type === 'list') {
+      const entries = viewEntries(v);
+      if (!entries.length) {
+        bodyEl.append(h('div', { class: 'empty' }, v.dynamic === 'fav' ? 'No favourites yet. Open ⓘ on any value and tap ★.' : v.dynamic === 'recent' ? 'Nothing modified yet.' : 'Nothing here.'));
+        return setDesc('');
+      }
+      return renderList(entries, null);
+    }
+    if (v.type === 'search') return renderSearch();
+    if (v.type === 'info') return renderInfo(v.id);
+    if (v.type === 'edit') return renderEdit(v.id);
+    if (v.type === 'backups') return renderBackups();
+    if (v.type === 'apply') return renderApply();
+    if (v.type === 'about') return renderAbout();
+  }
+
+  // ---------- virtual list
+  let listRefresh = null;
+  function renderList(items, _mapper, container = bodyEl) {
+    const list = h('div', { class: 'list', role: 'listbox' });
+    const spacer = h('div', { class: 'spacer', style: `height:${items.length * ROW_H}px` });
+    list.append(spacer);
+    list._items = items;
+    container.append(list);
+    const rows = new Map();
+    const v = top();
+    let raf = 0;
+    const paint = () => {
+      raf = 0;
+      const vh = list.clientHeight || 468;
+      const first = Math.max(0, Math.floor(list.scrollTop / ROW_H) - OVERSCAN);
+      const last = Math.min(items.length, Math.ceil((list.scrollTop + vh) / ROW_H) + OVERSCAN);
+      for (const [i, el] of rows) {
+        if (i < first || i >= last) {
+          el.remove();
+          rows.delete(i);
+        }
+      }
+      for (let i = first; i < last; i++) {
+        if (!rows.has(i)) {
+          const el = rowEl(items[i], i);
+          el.style.top = `${i * ROW_H}px`;
+          spacer.append(el);
+          rows.set(i, el);
+        }
+      }
+    };
+    list.addEventListener('scroll', () => {
+      if (!raf) raf = win.requestAnimationFrame(paint);
+      v.scroll = list.scrollTop;
+    }, { passive: true });
+    let touching = false;
+    list.addEventListener('pointerdown', () => (touching = true));
+    for (const ev of ['pointerup', 'pointercancel']) list.addEventListener(ev, () => win.setTimeout(() => (touching = false), 400));
+    listRefresh = () => {
+      if (touching) return; // never swap a row under the user's finger
+      for (const [i, el] of rows) {
+        if (el._sig === rowSig(items[i], i)) continue;
+        const fresh = rowEl(items[i], i);
+        fresh.style.top = el.style.top;
+        el.replaceWith(fresh);
+        rows.set(i, fresh);
+      }
+    };
+    win.requestAnimationFrame(() => {
+      if (v.scroll) list.scrollTop = v.scroll;
+      paint();
+    });
+    paint();
+    selectRow(Math.min(S.selected, items.length - 1), items, false);
+  }
+
+  function selectRow(i, items, rerender = true) {
+    S.selected = Math.max(0, i);
+    top().selected = S.selected;
+    setCount(S.selected, items.length);
+    const it = items[S.selected];
+    if (!it) return setDesc('');
+    if (it.kind === 'nav' || it.kind === 'action') setDesc(it.hint || (it.kind === 'nav' ? `${it.count === '' ? '' : `${it.count} item(s). `}Tap to open.` : ''));
+    else describe(it.nodeId);
+    if (rerender) for (const r of bodyEl.querySelectorAll('.row')) r.classList.toggle('sel', Number(r.dataset.i) === S.selected);
+  }
+
+  function describe(id) {
+    const p = S.provider;
+    try {
+      const x = p.explain(id);
+      setDesc(`${x.summary}.`, x.channel, x.confidence.level);
+    } catch {
+      setDesc('');
+    }
+  }
+
+  function setDesc(text, channel, conf) {
+    clear(descEl);
+    if (!text) return descEl.append(h('span', { class: 't' }, S.provider ? S.provider.note || '' : 'SaveForge trainer'));
+    descEl.append(h('span', { class: 't' }, text));
+    if (conf) descEl.append(h('span', { class: `badge ${conf.toLowerCase()}`, title: 'Interpretation confidence' }, conf));
+  }
+
+  function rowSig(it, i) {
+    const p = S.provider;
+    if (it.kind === 'nav' || it.kind === 'action') return `${i === S.selected}|${it.count}`;
+    let v;
+    try {
+      v = p.value(it.nodeId);
+    } catch {
+      v = undefined;
+    }
+    return `${i === S.selected}|${String(v)}|${p.isEdited(it.nodeId)}|${S.favorites.has(it.nodeId)}`;
+  }
+
+  function rowEl(it, i) {
+    const el = buildRow(it, i);
+    el._sig = rowSig(it, i);
+    return el;
+  }
+
+  function buildRow(it, i) {
+    const p = S.provider;
+    const sel = i === S.selected;
+    const row = h('div', { class: `row${sel ? ' sel' : ''}`, role: 'option', 'data-i': String(i) });
+    const choose = () => selectRow(i, bodyEl.querySelector('.list')?._items || [it]);
+    if (it.kind === 'nav' || it.kind === 'action') {
+      row.append(
+        h('span', { class: 'ico' }, ic(it.icon)),
+        h('div', { class: 'lbl', onclick: () => (choose(), it.kind === 'nav' ? push(it.view) : runAction(it)) }, h('span', { class: 'name' }, it.label)),
+        h('span', { class: 'nav', onclick: () => (it.kind === 'nav' ? push(it.view) : runAction(it)) }, it.kind === 'nav' ? [String(it.count), ' ›'] : '▶'),
+      );
+      return row;
+    }
+    const e = it;
+    const node = p.node(e.nodeId);
+    const value = p.value(e.nodeId);
+    if (p.isEdited(e.nodeId)) row.classList.add('edited');
+    const label = p.displayLabel(e);
+    row.append(
+      h('div', { class: 'lbl', onclick: () => (S.selected === i ? openEdit(e.nodeId) : choose()) }, h('span', { class: 'name' }, S.favorites.has(e.nodeId) ? h('span', { class: 'star' }, '★') : null, label), h('span', { class: 'sub2' }, e.path)),
+      valueWidget(node, value, e, choose),
+      h('button', { class: 'info', 'aria-label': `About ${label}`, onclick: () => (choose(), push({ type: 'info', id: e.nodeId })) }, 'ⓘ'),
+    );
+    return row;
+  }
+
+  function valueWidget(node, value, e, choose) {
+    const p = S.provider;
+    if (!node.editable) return h('span', { class: 'lock' }, ic('lock'), short(value));
+    if (node.type === 'bool') {
+      return h('button', { class: `toggle${value ? ' on' : ''}`, onclick: () => (choose(), apply(e.nodeId, !value)) }, value ? 'ON' : 'OFF');
+    }
+    if (node.type === 'int' || node.type === 'float') {
+      const step = stepFor(node, e, value);
+      return h(
+        'span',
+        { class: 'val' },
+        h('button', { class: 'arrow', 'aria-label': 'Decrease', onclick: () => (choose(), apply(e.nodeId, round(Number(value) - step, node))) }, '‹'),
+        h('button', { class: 'num', onclick: () => (choose(), openEdit(e.nodeId)) }, fmtNum(value)),
+        h('button', { class: 'arrow', 'aria-label': 'Increase', onclick: () => (choose(), apply(e.nodeId, round(Number(value) + step, node))) }, '›'),
+      );
+    }
+    return h('button', { class: 'text', onclick: () => (choose(), openEdit(e.nodeId)) }, short(value));
+  }
+
+  function stepFor(node, e, value) {
+    if (node.type === 'float' && Math.abs(value) < 10) return 0.1;
+    const r = sliderRange({ ...node, value: Number(value) }, e.category);
+    return r ? Math.max(1, Math.round(r.max / 100)) : 1;
+  }
+  function round(v, node) {
+    return node.type === 'float' || !Number.isInteger(v) ? Math.round(v * 1e6) / 1e6 : v;
+  }
+
+  function apply(id, value, label) {
+    try {
+      const res = S.provider.set({ id, value: typeof value === 'number' ? String(value) : value }, label);
+      if (res.changed) {
+        if (S.provider.channel === 'reload') toast('Pending — tap Apply & Reload to write it');
+        else if (S.provider.channel === 'file') toast('Saved into the edit — Export to download');
+      }
+      return true;
+    } catch (err) {
+      toast(err.message, true);
+      return false;
+    }
+  }
+
+  function runAction(it) {
+    try {
+      const r = it.run();
+      toast(`${it.label}: done`);
+      return r;
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function openEdit(id) {
+    const node = S.provider.node(id);
+    if (!node.editable) return push({ type: 'info', id });
+    if (node.type === 'bool') return apply(id, !S.provider.value(id));
+    push({ type: 'edit', id });
+  }
+
+  // ---------- search
+  function renderSearch() {
+    const input = h('input', { type: 'search', placeholder: `Search ${S.provider.entries.length} variables`, value: S.query, autocapitalize: 'off', autocorrect: 'off', spellcheck: false });
+    const wrap = h('div', { class: 'search' }, input);
+    const results = h('div');
+    bodyEl.append(wrap, results);
+    let t = 0;
+    const run = () => {
+      clear(results);
+      const items = viewEntries(top());
+      if (!items.length) {
+        results.append(h('div', { class: 'empty', style: 'height:min(44vh,400px)' }, S.query ? 'No matches.' : 'Type a name, e.g. gold, hp, love, day…'));
+        setDesc('');
+        return;
+      }
+      renderList(items, null, results);
+      results.querySelector('.list').style.height = 'min(44vh, 412px)';
+    };
+    input.addEventListener('input', () => {
+      S.query = input.value;
+      win.clearTimeout(t);
+      t = win.setTimeout(run, 120);
+    });
+    run();
+    win.setTimeout(() => input.focus(), 50);
+  }
+
+  // ---------- info (explanation) sheet
+  function renderInfo(id) {
+    const p = S.provider;
+    const x = p.explain(id);
+    const node = p.node(id);
+    const fav = S.favorites.has(id);
+    const sheet = h(
+      'div',
+      { class: 'sheet' },
+      h('h2', null, x.title),
+      h('div', { class: 'path' }, x.path || id),
+      h('div', { class: 'chips' }, h('span', { class: `badge ${x.channel}` }, x.timing.label), h('span', { class: `badge ${x.confidence.level.toLowerCase()}` }, `${x.confidence.level} confidence`), h('span', { class: 'badge' }, x.type)),
+      h('h3', null, 'What it controls'),
+      h('p', null, x.controls),
+      h('h3', null, 'What changing it might do'),
+      h('p', null, x.effect),
+      h('h3', null, 'Current value'),
+      h('dl', { class: 'kv' }, h('dt', null, 'Now'), h('dd', null, show(x.value)), h('dt', null, p.kind === 'live' ? 'Before trainer' : 'Original'), h('dd', null, show(x.original)), h('dt', null, 'Type'), h('dd', null, x.type)),
+      h('h3', null, 'When it applies'),
+      h('p', null, x.timing.text),
+      h('h3', null, 'Side effects & progression'),
+      h('p', null, x.progression),
+      x.sideEffects.length ? h('ul', null, x.sideEffects.map((s) => h('li', null, s))) : null,
+      h('h3', null, `How sure is SaveForge? ${x.confidence.level} (${Math.round(x.confidence.score * 100)}%)`),
+      h('div', { class: 'meter' }, h('i', { style: `width:${Math.round(x.confidence.score * 100)}%` })),
+      h('ul', null, x.confidence.reasons.map((r) => h('li', null, r))),
+      h('p', { class: 'note' }, 'Explanations are generated from the variable name, type, surrounding data and engine knowledge. They are informed guesses unless marked as a documented engine field.'),
+      h(
+        'div',
+        { class: 'btns' },
+        node.editable ? h('button', { class: 'btn go', onclick: () => openEdit(id) }, node.type === 'bool' ? 'Toggle' : 'Edit') : null,
+        h('button', { class: 'btn', onclick: () => toggleFav(id) }, ic('star'), fav ? 'Unfavorite' : 'Favorite'),
+        p.isEdited(id) ? h('button', { class: 'btn', onclick: () => (revert(id), renderAll()) }, 'Revert') : null,
+        h('button', { class: 'btn', onclick: back }, 'Back'),
+      ),
+    );
+    bodyEl.append(sheet);
+    setDesc(x.summary, x.channel, x.confidence.level);
+  }
+
+  function toggleFav(id) {
+    if (S.favorites.has(id)) S.favorites.delete(id);
+    else S.favorites.add(id);
+    saveFavs();
+    renderAll();
+  }
+
+  function revert(id) {
+    const p = S.provider;
+    const orig = p.original(id);
+    apply(id, typeof orig === 'number' ? String(orig) : orig, 'Revert');
+  }
+
+  // ---------- edit sheet
+  function renderEdit(id) {
+    const p = S.provider;
+    const node = p.node(id);
+    const e = p.entryById.get(id);
+    const cur = p.value(id);
+    const isNum = node.type === 'int' || node.type === 'float';
+    const input = node.type === 'string' && String(cur).length > 40 ? h('textarea', { class: 'field' }) : h('input', { class: 'field', inputmode: isNum ? 'decimal' : 'text', enterkeyhint: 'done', autocapitalize: 'off', autocomplete: 'off' });
+    input.value = isNum ? String(cur) : cur;
+    const range = isNum ? sliderRange({ ...node, value: Math.max(Math.abs(Number(cur)), Math.abs(Number(node.value))) }, e?.category) : null;
+    const set = (v) => {
+      input.value = String(round(v, node));
+      input.classList.remove('bad');
+    };
+    const commit = () => {
+      if (apply(id, input.value.trim())) back();
+      else input.classList.add('bad');
+    };
+    input.addEventListener('keydown', (ev) => ev.key === 'Enter' && !ev.shiftKey && (ev.preventDefault(), commit()));
+    const quick = isNum
+      ? h(
+          'div',
+          { class: 'quick' },
+          [
+            ['0', () => set(0)],
+            ['−10%', () => set(Number(input.value) * 0.9)],
+            ['+10%', () => set(Number(input.value) * 1.1)],
+            ['×2', () => set(Number(input.value) * 2)],
+            ['×10', () => set(Number(input.value) * 10)],
+            ['½', () => set(Number(input.value) / 2)],
+            range ? [`${fmtNum(range.max)}`, () => set(range.max)] : null,
+            ['Orig.', () => set(Number(p.original(id)))],
+          ]
+            .filter(Boolean)
+            .map(([t, fn]) => h('button', { onclick: () => (fn(), node.type === 'int' && (input.value = String(Math.round(Number(input.value))))) }, t)),
+        )
+      : e?.suggestions
+        ? h('div', { class: 'quick' }, e.suggestions.slice(0, 8).map((s) => h('button', { onclick: () => (input.value = s) }, short(s))))
+        : null;
+    const timing = p.channel === 'live' || p.channel === 'live-generic' ? 'Applies to the running game immediately.' : p.channel === 'reload' ? 'Kept pending until you tap Apply & Reload.' : 'Goes into the exported save file.';
+    bodyEl.append(
+      h(
+        'div',
+        { class: 'sheet' },
+        h('h2', null, p.displayLabel(e || { label: node.key, nodeId: id })),
+        h('div', { class: 'path' }, e?.path || id),
+        h('div', { class: 'chips' }, h('span', { class: `badge ${p.channel}` }, CHANNEL_LABEL[p.channel]), h('span', { class: 'badge' }, node.type)),
+        h('div', { style: 'height:8px' }),
+        input,
+        h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn go', onclick: commit }, 'Apply'), h('button', { class: 'btn', onclick: back }, 'Cancel'), h('button', { class: 'btn', onclick: () => push({ type: 'info', id }) }, 'ⓘ Info')),
+        quick,
+        h('p', { class: 'note' }, `${timing} ${p.kind === 'live' ? 'Before trainer' : 'Original'}: ${show(p.original(id))}.`),
+      ),
+    );
+    describe(id);
+    win.setTimeout(() => input.focus(), 60);
+  }
+
+  // ---------- Apply & Reload (storage)
+  function renderApply() {
+    const p = S.provider;
+    const diff = p.diff ? p.diff() : [];
+    const sheet = h(
+      'div',
+      { class: 'sheet' },
+      h('h2', null, `Write ${diff.length} change(s) and reload`),
+      h('div', { class: 'warnbox' }, 'The page will reload. Anything you did in the game since its last save will be lost — save in-game first if needed.'),
+      h('div', { class: 'okbox' }, 'Before writing, SaveForge checks that the game has not saved meanwhile, verifies the rebuilt data, and stores a backup you can restore from “Backups & restore”.'),
+      h('ul', null, diff.slice(0, 50).map((d) => h('li', null, `${p.entryById.get(d.id)?.label || d.node.key}: ${show(d.before)} → ${show(d.after)}`))),
+      h(
+        'div',
+        { class: 'btns' },
+        h('button', { class: 'btn warn', onclick: doApply }, 'Apply & Reload'),
+        h('button', { class: 'btn', onclick: back }, 'Cancel'),
+      ),
+    );
+    bodyEl.append(sheet);
+    setDesc('Saved edits are written to browser storage, then the game reloads and reads them.', 'reload');
+  }
+
+  async function doApply() {
+    const p = S.provider;
+    try {
+      toast('Verifying and writing…');
+      await p.applyAndReload({ reload: true });
+    } catch (e) {
+      clear(bodyEl).append(
+        h(
+          'div',
+          { class: 'sheet' },
+          h('h2', null, 'Nothing was written'),
+          h('div', { class: 'badbox' }, e.message),
+          h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => reread() }, 'Re-read storage'), h('button', { class: 'btn', onclick: back }, 'Back')),
+        ),
+      );
+    }
+  }
+
+  async function reread() {
+    S.providers.delete(S.sourceId);
+    await selectSource(S.sourceId);
+  }
+
+  // ---------- backups
+  async function renderBackups() {
+    const p = S.provider;
+    const sheet = h('div', { class: 'sheet' }, h('h2', null, 'Backups & restore'));
+    bodyEl.append(sheet);
+    if (p.kind === 'live') {
+      const n = p.touched.size;
+      sheet.append(
+        h('p', null, `Live edits change the game’s memory. The value of every variable before the trainer first changed it is remembered (${n} so far) and stored in this browser.`),
+        h('div', { class: 'btns' }, h('button', { class: 'btn warn', onclick: () => (n && confirmRestoreLive()) }, `Restore ${n} original value(s)`)),
+        h('p', { class: 'note' }, 'Undo/redo work step by step from the toolbar. Nothing is saved to the game until you save in-game.'),
+      );
+    } else if (p.kind === 'file') {
+      sheet.append(h('p', null, 'The original file is backed up automatically in SaveForge (Analyze tab) and can be downloaded from the Export screen. Use Undo, Revert or Reset to go back.'));
+    }
+    const bstore = p.store || store;
+    if (bstore) {
+      const list = (await bstore.backups()).filter((b) => b.kind === 'storage');
+      if (p.kind === 'storage') sheet.append(h('h3', null, 'Storage snapshots (taken before each Apply & Reload)'));
+      if (p.kind === 'storage' && !list.length) sheet.append(h('p', { class: 'note' }, 'None yet. A snapshot is stored automatically before anything is written.'));
+      if (p.kind === 'storage') {
+        for (const b of list.slice(0, 10)) {
+          sheet.append(
+            h(
+              'div',
+              { class: 'okbox' },
+              h('b', null, new Date(b.savedAt).toLocaleString()),
+              ` · ${b.changes?.length || 0} change(s) were applied after it`,
+              h(
+                'div',
+                { class: 'btns' },
+                h('button', { class: 'btn warn', onclick: () => confirmRestoreStorage(b) }, 'Restore & reload'),
+                h('button', { class: 'btn', onclick: () => downloadJson(b.dump, `saveforge-backup-${b.savedAt}.json`) }, 'Download'),
+              ),
+            ),
+          );
+        }
+      }
+    }
+    setDesc('Backups are kept in this browser (separate from the game’s own data).');
+  }
+
+  function confirmRestoreLive() {
+    if (!win.confirm('Put every variable the trainer changed back to its original value?')) return;
+    try {
+      S.provider.restoreSessionStart();
+      toast('Original values restored');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function confirmRestoreStorage(b) {
+    if (!win.confirm('Overwrite the game’s current storage with this snapshot and reload? Progress saved after it will be replaced.')) return;
+    S.provider.restore(b).catch((e) => toast(e.message, true));
+  }
+
+  function downloadJson(obj, name) {
+    const url = win.URL.createObjectURL(new win.Blob([JSON.stringify(obj, null, 1)], { type: 'application/json' }));
+    const a = doc.createElement('a');
+    a.href = url;
+    a.download = name;
+    doc.body.append(a);
+    a.click();
+    win.setTimeout(() => (win.URL.revokeObjectURL(url), a.remove()), 4000);
+  }
+
+  // ---------- about / limitations
+  function limitationsBlock() {
+    if (!opts.limitations?.length) return null;
+    return h('div', null, h('h3', null, 'Detected engines that cannot be edited live'), opts.limitations.map((l) => h('div', { class: 'warnbox' }, h('b', null, l.name), ' — ', l.reason)));
+  }
+  function renderAbout() {
+    const p = S.provider;
+    bodyEl.append(
+      h(
+        'div',
+        { class: 'sheet' },
+        h('h2', null, p ? p.title : 'SaveForge trainer'),
+        p ? h('p', null, p.note) : null,
+        p?.truncated ? h('div', { class: 'warnbox' }, 'This game has a very large amount of data; only the first part was scanned.') : null,
+        h('h3', null, 'Edit types'),
+        h('ul', null, [
+          h('li', null, h('b', null, 'Live'), ' — written into the running game’s memory; immediate.'),
+          h('li', null, h('b', null, 'Live*'), ' — written into page globals found generically; the game may or may not read them.'),
+          h('li', null, h('b', null, 'Apply & Reload'), ' — written to browser storage, then the page reloads.'),
+          h('li', null, h('b', null, 'Saved edit'), ' — goes into an exported save file.'),
+        ]),
+        limitationsBlock(),
+        h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: back }, 'Back')),
+      ),
+    );
+    setDesc('');
+  }
+
+  // ---------- toolbar
+  function renderTools() {
+    clear(toolsEl);
+    const p = S.provider;
+    const tool = (icon, label, fn, disabled, cls) => h('button', { class: `tool${cls ? ` ${cls}` : ''}`, 'aria-label': label, disabled: !!disabled, onclick: fn }, ic(icon));
+    toolsEl.append(
+      tool('back', 'Back', back, S.stack.length < 2),
+      tool('undo', 'Undo', () => p.undo(), !p || !p.canUndo()),
+      tool('redo', 'Redo', () => p.redo(), !p || !p.canRedo()),
+      tool('search', 'Search', () => (top().type === 'search' ? null : push({ type: 'search' })), !p),
+      tool('star', 'Favorites', () => push({ type: 'list', title: 'Favorites', dynamic: 'fav' }), !p),
+    );
+    if (p && p.kind === 'storage' && p.pendingCount()) {
+      toolsEl.append(h('button', { class: 'tool primary', onclick: () => push({ type: 'apply' }) }, 'Apply & Reload ', h('span', { class: 'n' }, p.pendingCount())));
+    } else if (p && p.kind === 'file' && opts.onExport) {
+      toolsEl.append(h('button', { class: 'tool', style: 'flex:2', onclick: opts.onExport }, `Export${p.pendingCount() ? ` (${p.pendingCount()})` : ''}`));
+    }
+  }
+
+  // ---------- live value polling (values can change while the game runs)
+  const poll = win.setInterval(() => {
+    if (S.minimized || !S.provider || S.provider.kind !== 'live' || doc.hidden) return;
+    const v = top();
+    if ((v.type === 'list' || v.type === 'search' || v.type === 'home') && listRefresh) listRefresh();
+  }, 1000);
+
+  function short(v) {
+    const s = v === null || v === undefined ? 'null' : String(v);
+    return s.length > 18 ? s.slice(0, 17) + '…' : s;
+  }
+  function show(v) {
+    if (typeof v === 'string') return JSON.stringify(v.length > 80 ? v.slice(0, 80) + '…' : v);
+    return String(v);
+  }
+  function fmtNum(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v);
+    return Math.abs(n) >= 1e15 ? n.toExponential(3) : n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+
+  // ---------- controller
+  const ctl = {
+    show() {
+      setMinimized(false);
+    },
+    hide() {
+      setMinimized(true);
+    },
+    destroy() {
+      win.clearInterval(poll);
+      host.remove();
+      opts.onClose?.();
+    },
+    provider: () => S.provider,
+    selectSource,
+    root: shadow,
+  };
+
+  (async () => {
+    const pos = store ? await store.get('pos', null) : null;
+    if (pos?.panel?.[0]) Object.assign(panel.style, { left: pos.panel[0], top: pos.panel[1] });
+    if (pos?.orb?.[0]) Object.assign(orb.style, { left: pos.orb[0], top: pos.orb[1], right: 'auto', bottom: 'auto' });
+  })();
+  renderSources();
+  setMinimized(S.minimized);
+  if (opts.sources.length) selectSource(opts.sources[0].id);
+  else {
+    S.status = { error: 'No editable game data was found on this page.' };
+    renderAll();
+  }
+  return ctl;
+}

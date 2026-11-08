@@ -21,3 +21,16 @@ html = html.replace(/<script type="module" src="src\/main.js"><\/script>/, () =>
 mkdirSync(new URL('standalone/', root), { recursive: true });
 writeFileSync(new URL('standalone/SaveForge.html', root), html);
 console.log(`standalone/SaveForge.html ${(html.length / 1024).toFixed(1)} KB`);
+
+// Trainer overlay for game pages (loaded by the trainer bookmarklet or injected same-origin).
+const trainer = await build({
+  entryPoints: [new URL('src/trainer/bookmarklet-entry.js', root).pathname],
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  target: ['safari15', 'es2020'],
+  write: false,
+  legalComments: 'none',
+});
+writeFileSync(new URL('standalone/trainer.js', root), `/* SaveForge trainer — https://github.com/CriticaIl/Wand-Enhancer/tree/HEAD/save-analyzer */\n${trainer.outputFiles[0].text}`);
+console.log(`standalone/trainer.js ${(trainer.outputFiles[0].text.length / 1024).toFixed(1)} KB`);

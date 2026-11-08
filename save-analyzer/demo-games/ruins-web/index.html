@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ruins (web) — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+</head>
+<body>
+<header>SaveForge demo · stores a Ren'Py-format save in IndexedDB the way Ren'Py web builds do (Emscripten IDBFS: database "/home/web_user/.renpy", store "FILE_DATA"). Ren'Py web variables cannot be edited live, so this page is for the storage workflow (Apply &amp; Reload).</header>
+<main>
+  <h1>Ruins (web)</h1>
+  <p>Save files in browser storage:</p>
+  <div class="passage" id="files">Loading…</div>
+  <p class="log" id="log"></p>
+</main>
+<script>
+  var DB = '/home/web_user/.renpy';
+  var PATH = '/home/web_user/.renpy/ruins-1/1-1-LT1.save';
+  function open() {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open(DB, 21);
+      r.onupgradeneeded = function () { if (!r.result.objectStoreNames.contains('FILE_DATA')) r.result.createObjectStore('FILE_DATA'); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function list(db) {
+    return new Promise(function (res) {
+      var out = [];
+      var c = db.transaction('FILE_DATA').objectStore('FILE_DATA').openCursor();
+      c.onsuccess = function () { var x = c.result; if (!x) return res(out); out.push({ path: x.key, size: x.value.contents.length, time: x.value.timestamp }); x.continue(); };
+    });
+  }
+  open().then(function (db) {
+    return list(db).then(function (files) {
+      if (files.length) return files;
+      // first run: install the sample save (a synthetic Ren'Py 8 save from SaveForge's samples)
+      return fetch('../../samples/renpy8-1-1-LT1.save').then(function (r) { return r.arrayBuffer(); }).then(function (buf) {
+        return new Promise(function (res) {
+          var tx = db.transaction('FILE_DATA', 'readwrite');
+          tx.objectStore('FILE_DATA').put({ timestamp: new Date(), mode: 33206, contents: new Uint8Array(buf) }, PATH);
+          tx.oncomplete = function () { document.title = 'Ruins (web) — installed'; res(list(db)); };
+        });
+      });
+    });
+  }).then(function (files) {
+    document.getElementById('files').innerHTML = files.map(function (f) {
+      return '<div><code>' + f.path.split('/').pop() + '</code> · ' + f.size + ' bytes · ' + new Date(f.time).toLocaleString() + '</div>';
+    }).join('');
+    document.body.dataset.ready = '1';
+  }).catch(function (e) { document.getElementById('log').textContent = 'Storage error: ' + e.message; });
+</script>
+</body>
+</html>

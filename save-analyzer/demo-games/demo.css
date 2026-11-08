@@ -1,0 +1,15 @@
+/* shared look for the SaveForge demo games */
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; font: 16px/1.45 -apple-system, system-ui, sans-serif; color: #eef2f8; background: #101522; display: flex; flex-direction: column; align-items: center; }
+header { width: 100%; padding: 12px 16px; background: rgba(0,0,0,.35); font-size: 12px; color: #9aa6bf; text-align: center; }
+main { width: min(560px, 100%); padding: 16px; }
+h1 { margin: 6px 0 2px; }
+.hud { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 12px 0; }
+.hud div { background: rgba(255,255,255,.06); border-radius: 12px; padding: 10px; }
+.hud b { display: block; font-size: 22px; }
+.hud span { font-size: 12px; color: #9aa6bf; }
+button { font: inherit; padding: 12px 16px; border-radius: 12px; border: 0; background: #3b82f6; color: #fff; margin: 4px 4px 4px 0; }
+button.alt { background: #334155; }
+canvas { width: 100%; border-radius: 12px; background: #050913; display: block; }
+.log { font-size: 13px; color: #9aa6bf; min-height: 1.4em; }
+.passage { background: rgba(255,255,255,.05); border-radius: 12px; padding: 14px; margin: 10px 0; }

@@ -208,7 +208,7 @@ export function storageBridge(win, mode, payload) {
     return win.indexedDB.databases().then(function (dbs) {
       return dbs.reduce(function (p, info) {
         return p.then(function () {
-          if (!info.name) return;
+          if (!info.name || info.name === 'saveforge-trainer' || info.name === 'saveforge') return; // SaveForge's own bookkeeping
           return collectDb(info.name, info.version).then(
             function (d) {
               dump.indexedDB.push(d);

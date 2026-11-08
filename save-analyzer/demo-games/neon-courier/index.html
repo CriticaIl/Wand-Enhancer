@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Neon Courier — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+</head>
+<body>
+<header>SaveForge demo game · plain global state (generic live editing)</header>
+<main>
+  <h1>Neon Courier</h1>
+  <canvas id="c" width="520" height="220"></canvas>
+  <div class="hud">
+    <div><span>Credits</span><b id="credits"></b></div>
+    <div><span>Health</span><b id="health"></b></div>
+    <div><span>Level</span><b id="level"></b></div>
+    <div><span>Day</span><b id="day"></b></div>
+    <div><span>Boost drive</span><b id="boost"></b></div>
+    <div><span>Medkits</span><b id="medkits"></b></div>
+  </div>
+  <button id="deliver">Deliver package</button>
+  <button id="crash" class="alt">Take a hit</button>
+  <button id="save" class="alt">Save</button>
+  <p class="log" id="log"></p>
+</main>
+<script>
+  // All game state lives in one global object, read every frame.
+  var game = {
+    player: { name: 'Vex', health: 80, maxHealth: 100, level: 3, xp: 120, speed: 1.0 },
+    credits: 250,
+    day: 1,
+    inventory: { medkits: 2, batteries: 5 },
+    upgrades: { boostDrive: false, armorPlating: false },
+    stats: { deliveries: 4, crashes: 1 },
+    settings: { musicVolume: 0.7 },
+  };
+  var saved = localStorage.getItem('neoncourier.save');
+  if (saved) game = JSON.parse(saved);
+
+  var c = document.getElementById('c');
+  var ctx = c.getContext('2d');
+  var t = 0;
+  function frame() {
+    t += 1;
+    ctx.fillStyle = '#050913';
+    ctx.fillRect(0, 0, c.width, c.height);
+    for (var i = 0; i < 40; i++) {
+      ctx.fillStyle = 'rgba(56,189,248,' + (0.15 + (i % 5) / 10) + ')';
+      ctx.fillRect((i * 53 - t * (game.upgrades.boostDrive ? 6 : 2) * game.player.speed) % 560 + 20, (i * 37) % 200, 18, 2);
+    }
+    ctx.fillStyle = game.upgrades.boostDrive ? '#3df5a7' : '#f472b6';
+    ctx.fillRect(60, 100 + Math.sin(t / 15) * 10, 46, 18);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '14px system-ui';
+    ctx.fillText(game.player.name + '  HP ' + game.player.health + '/' + game.player.maxHealth + '  ₵' + game.credits, 14, 22);
+    document.getElementById('credits').textContent = game.credits;
+    document.getElementById('health').textContent = game.player.health + ' / ' + game.player.maxHealth;
+    document.getElementById('level').textContent = game.player.level;
+    document.getElementById('day').textContent = game.day;
+    document.getElementById('boost').textContent = game.upgrades.boostDrive ? 'ON' : 'off';
+    document.getElementById('medkits').textContent = game.inventory.medkits;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  function log(s) { document.getElementById('log').textContent = s; }
+  document.getElementById('deliver').onclick = function () {
+    game.credits += 40; game.player.xp += 25; game.stats.deliveries += 1;
+    if (game.player.xp >= game.player.level * 100) { game.player.level += 1; log('Level up!'); } else log('+40 credits');
+    if (game.stats.deliveries % 3 === 0) game.day += 1;
+  };
+  document.getElementById('crash').onclick = function () {
+    game.player.health = Math.max(0, game.player.health - 15); game.stats.crashes += 1; log(game.player.health ? 'Ouch.' : 'Wrecked!');
+  };
+  document.getElementById('save').onclick = function () { localStorage.setItem('neoncourier.save', JSON.stringify(game)); log('Saved.'); };
+</script>
+</body>
+</html>

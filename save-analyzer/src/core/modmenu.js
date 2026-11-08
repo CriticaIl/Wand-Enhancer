@@ -71,10 +71,22 @@ function adjust(cat, node) {
   return cat;
 }
 
+const NAME_KEY = /^_?(name|title|displayName|label)$/i;
+const nameCache = new WeakMap();
+function ownName(p) {
+  let v = nameCache.get(p);
+  if (v === undefined) {
+    const c = (p.children || []).find((x) => x.type === 'string' && x.value && x.value.length < 40 && NAME_KEY.test(x.key));
+    v = c ? c.value : null;
+    nameCache.set(p, v);
+  }
+  return v;
+}
+
 function nearestName(parents) {
   for (let i = parents.length - 1; i >= Math.max(0, parents.length - 3); i--) {
-    const c = (parents[i].children || []).find((x) => /^_?(name|title|displayName|label)$/i.test(x.key) && x.type === 'string' && x.value && x.value.length < 40);
-    if (c) return c.value;
+    const v = ownName(parents[i]);
+    if (v) return v;
   }
   return null;
 }

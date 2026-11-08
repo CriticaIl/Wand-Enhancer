@@ -1,5 +1,5 @@
 // Caches the single-file app so it opens without a connection after the first visit.
-const CACHE = 'saveforge-v1';
+const CACHE = 'saveforge-v2';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './SaveForge.html'].filter(Boolean)).catch(() => c.add('./SaveForge.html'))));
   self.skipWaiting();
