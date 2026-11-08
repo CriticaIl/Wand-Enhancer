@@ -83,14 +83,11 @@ I generated and checked this project on Linux; I couldn't compile it there. If i
 All of these reuse the same trainer. Pick one.
 
 ### A. Userscripts app (free, recommended without a Mac)
-[Userscripts](https://apps.apple.com/app/userscripts/id1463298887) is a free, open-source Safari extension from the App Store that runs user scripts.
+See **[USERSCRIPT.md](../USERSCRIPT.md)** for step-by-step instructions. In short:
 
-1. Install **Userscripts**, open it, and choose a folder in the Files app for your scripts.
-2. In Safari, open `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer.user.js`. Tap **Share → Save to Files** and put the file in that scripts folder. (Alternatively, tap **+** in the Userscripts popup and paste the file's contents.)
-3. Turn the extension on: Settings → Apps → Safari → Extensions → **Userscripts**. Set *All Websites* to **Ask**, so it only runs where you allow it.
-4. On a game page, tap **AA** → **Userscripts** and allow the site. A small translucent ⬢ button appears in the bottom-right corner. Tap it to open the trainer. Long-press it to hide it on that page.
-
-The script contains the whole trainer, so it works offline and doesn't need to load anything.
+1. Install [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) and enable it under Safari → Extensions.
+2. Open `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer.user.js` in Safari → **AA** → *Userscripts* → **Install**.
+3. A small ⬢ launcher appears on game pages, or add `#saveforge` to any address. Updates arrive automatically.
 
 ### B. Shortcuts app (built in)
 1. Open **Shortcuts** → **+** → add the action **Run JavaScript on Web Page**.

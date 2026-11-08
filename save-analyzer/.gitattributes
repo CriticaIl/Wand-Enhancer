@@ -5,3 +5,4 @@ standalone/trainer.js -diff linguist-generated
 safari-extension/extension/trainer.js -diff linguist-generated
 standalone/saveforge-trainer.user.js -diff linguist-generated
 safari-extension/ios/SaveForge.xcodeproj/project.pbxproj -diff linguist-generated
+standalone/saveforge-trainer.meta.js -diff linguist-generated

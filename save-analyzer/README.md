@@ -21,6 +21,7 @@ SaveForge also includes a **floating trainer overlay** that runs directly over b
   - from the Game tab, using the **SaveForge Trainer** bookmarklet (works on any site) or "Open trainer over game" for same-site games
   - on an imported save, via the app's floating button (saved edits, then Export)
 - **Demo games:** original demo games for trying it are in `demo-games/` (on GitHub Pages: `…/save-analyzer/demo-games/`).
+- **iPhone without a Mac:** install `standalone/saveforge-trainer.user.js` with the free **Userscripts** Safari extension. A launcher appears only on game pages, `#saveforge` opens the trainer anywhere, and updates come through `@updateURL`. See [USERSCRIPT.md](USERSCRIPT.md).
 - **iOS Safari extension:** `safari-extension/` packages the same trainer as a Safari Web Extension with a ready Xcode project (iOS app + extension). It asks for website access only when you tap it. If you don't have a Mac, there are fallbacks: the free Userscripts app (`standalone/saveforge-trainer.user.js`) or a Shortcuts share-sheet action. See [safari-extension/README.md](safari-extension/README.md).
 
 ## Using it on iPhone
@@ -106,7 +107,7 @@ The **Game** tab opens any http(s) game URL in a frame, with the floating mod me
 ```sh
 cd save-analyzer
 npm install          # esbuild (build), lz-string + pako (reference implementations for tests)
-npm test             # 111 tests: codecs, pickle, samples, engines, trainer, Safari extension, browser e2e
+npm test             # 117 tests: codecs, pickle, samples, engines, trainer, userscript, Safari extension, browser e2e
 npm run build        # -> standalone/SaveForge.html
 npm run samples      # regenerate samples/ (needs python3) and the embedded copies
 npm run serve        # http://localhost:8080/ (unbundled modules) and /standalone/
@@ -131,6 +132,7 @@ src/core/       bytes, compression, lzstring, zip, pickle (+terminal), json/ini/
 src/adapters/   engine profiles: detection, labels, categories, import guides
 src/bridge/     Storage Bridge (bookmarklet + same-origin integration)
 src/trainer/    floating trainer: live engine integrations, providers, virtualized GTA-style UI
+src/userscript/ userscript entry: game detection, launcher, #saveforge triggers, per-site modes
 src/core/explain.js  explanation engine behind every ⓘ panel
 demo-games/     original demo games used to test the trainer in a real browser
 src/ui/         app, styles, DOM helpers, backups (IndexedDB), embedded samples

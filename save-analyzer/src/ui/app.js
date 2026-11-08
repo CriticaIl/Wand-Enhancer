@@ -1111,26 +1111,28 @@ function launchOptionsCard() {
   const userscript = new URL(standalone ? 'saveforge-trainer.user.js' : 'standalone/saveforge-trainer.user.js', location.href).href;
   const repo = 'https://github.com/CriticaIl/Wand-Enhancer/tree/claude/html5-game-save-analyzer-ogbcnf/save-analyzer/safari-extension';
   const opt = (title, text, ...actions) => h('div', { class: 'notice' }, h('b', null, title), h('div', { class: 'muted', style: { fontSize: '13px', margin: '4px 0 8px' } }, text), h('div', { class: 'row' }, ...actions));
+  const guide = 'https://github.com/CriticaIl/Wand-Enhancer/blob/claude/html5-game-save-analyzer-ogbcnf/save-analyzer/USERSCRIPT.md';
   return h(
     'div',
     { class: 'card' },
     h('h2', null, 'Open the trainer on iPhone'),
-    h('p', { class: 'muted', style: { marginTop: 0 } }, 'All options open the same trainer over the game page. Pick whichever works with what you have.'),
+    h('p', { class: 'muted', style: { marginTop: 0 } }, 'All options open the same trainer over the game page. The first one needs only your iPhone.'),
     opt(
-      'Safari extension (needs a Mac with Xcode once)',
-      'Adds “SaveForge Trainer” to Safari’s page menu (AA). Asks for website access only when you tap it.',
-      h('a', { class: 'btn small', href: `${repo}#readme`, target: '_blank', rel: 'noopener' }, 'Install guide'),
-    ),
-    opt(
-      'Userscripts app (free, no Mac)',
-      'Install “Userscripts” from the App Store, save this script into its folder, then tap the small ⬢ button on a game page. Works offline.',
+      'Recommended: Userscripts app (free, iPhone only)',
+      '1) Install “Userscripts” and switch it on in Settings → Apps → Safari → Extensions. 2) Tap “Install script”, then tap AA → Userscripts → Install. A small ⬢ button then appears on game pages; or add #saveforge to any address. Updates arrive automatically.',
       h('a', { class: 'btn small', href: 'https://apps.apple.com/app/userscripts/id1463298887', target: '_blank', rel: 'noopener' }, 'Get Userscripts'),
-      h('a', { class: 'btn small', href: userscript, download: 'saveforge-trainer.user.js' }, 'Download script'),
+      h('a', { class: 'btn small primary', href: userscript }, 'Install script'),
+      h('a', { class: 'btn small', href: guide, target: '_blank', rel: 'noopener' }, 'Guide'),
     ),
     opt(
       'Shortcuts app (built in)',
       'New shortcut → “Run JavaScript on Web Page” → paste this code → Show in Share Sheet. Then Share → SaveForge Trainer on a game page. Needs a connection.',
       h('button', { class: 'btn small', onclick: () => copy(shortcutCode()) }, 'Copy shortcut code'),
+    ),
+    opt(
+      'Own Safari extension (needs a Mac with Xcode once)',
+      'Adds “SaveForge Trainer” to Safari’s page menu. Asks for website access only when you tap it.',
+      h('a', { class: 'btn small', href: `${repo}#readme`, target: '_blank', rel: 'noopener' }, 'Install guide'),
     ),
   );
 }

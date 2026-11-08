@@ -42,41 +42,37 @@ console.log(`standalone/trainer.js ${(trainer.outputFiles[0].text.length / 1024)
 const trainerFile = readFileSync(new URL('standalone/trainer.js', root), 'utf8');
 writeFileSync(new URL('safari-extension/extension/trainer.js', root), trainerFile);
 
-// Userscript (for the free "Userscripts" Safari extension on iOS — no Mac needed).
-// It only adds a small launcher button; the trainer starts when you tap it.
-const userscript = `// ==UserScript==
+// Userscript for iOS Safari userscript managers (Userscripts, Stay, Tampermonkey).
+// Built from the shared source; @version follows package.json so managers pick up updates.
+const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+const PAGES = 'https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone';
+const usBundle = await build({
+  entryPoints: [new URL('src/userscript/main.js', root).pathname],
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  target: ['safari15', 'es2020'],
+  write: false,
+  legalComments: 'none',
+  define: { __SAVEFORGE_VERSION__: JSON.stringify(pkg.version) },
+});
+const usMeta = `// ==UserScript==
 // @name         SaveForge Trainer
-// @description  Floating SaveForge trainer for browser games. Tap the small hexagon button to open it.
-// @version      1.0.0
+// @namespace    https://github.com/CriticaIl/Wand-Enhancer/save-analyzer
+// @version      ${pkg.version}
+// @description  GTA-style floating trainer for browser games: live editing, Apply & Reload, and an explanation for every variable. Shows a small launcher only on pages that look like games; add #saveforge to any address to open it.
+// @author       SaveForge
+// @icon         https://criticail.github.io/Wand-Enhancer/save-analyzer/safari-extension/extension/images/icon-128.png
 // @match        *://*/*
 // @run-at       document-idle
 // @inject-into  page
-// @noframes
+// @grant        none
+// @updateURL    ${PAGES}/saveforge-trainer.meta.js
+// @downloadURL  ${PAGES}/saveforge-trainer.user.js
+// @homepageURL  https://github.com/CriticaIl/Wand-Enhancer/blob/claude/html5-game-save-analyzer-ogbcnf/save-analyzer/USERSCRIPT.md
 // ==/UserScript==
-
-(function () {
-  'use strict';
-  if (window.__saveforgeLauncher) return;
-  window.__saveforgeLauncher = true;
-  if (sessionStorage.getItem('saveforge.launcher.hidden') === '1') return;
-  function startTrainer() {
-${trainerFile.replace(/^/gm, '    ')}
-  }
-  var b = document.createElement('button');
-  b.type = 'button';
-  b.title = 'Open SaveForge Trainer (long-press to hide on this page)';
-  b.setAttribute('aria-label', 'Open SaveForge Trainer');
-  b.textContent = '\\u2B22';
-  b.setAttribute('style', 'all:initial;position:fixed;z-index:2147483645;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#3df5a7,#22d3ee);color:#04140d;font:700 20px/40px system-ui;text-align:center;opacity:.55;box-shadow:0 4px 14px rgba(0,0,0,.4);cursor:pointer;');
-  var pressTimer = 0;
-  b.addEventListener('pointerdown', function (e) { e.stopPropagation(); pressTimer = setTimeout(function () { pressTimer = -1; sessionStorage.setItem('saveforge.launcher.hidden', '1'); b.remove(); }, 800); });
-  b.addEventListener('pointerup', function (e) { e.stopPropagation(); if (pressTimer === -1) return; clearTimeout(pressTimer); if (window.__saveforgeTrainer) window.__saveforgeTrainer.show(); else startTrainer(); sync(); });
-  b.addEventListener('click', function (e) { e.stopPropagation(); });
-  // hidden while the trainer is open (it has its own minimise button), back when it is closed
-  function sync() { b.style.display = window.__saveforgeTrainer ? 'none' : 'block'; }
-  setInterval(sync, 1000);
-  (document.body || document.documentElement).appendChild(b);
-})();
 `;
+const userscript = `${usMeta}\n${ascii(usBundle.outputFiles[0].text)}`;
 writeFileSync(new URL('standalone/saveforge-trainer.user.js', root), userscript);
+writeFileSync(new URL('standalone/saveforge-trainer.meta.js', root), usMeta);
 console.log(`standalone/saveforge-trainer.user.js ${(userscript.length / 1024).toFixed(1)} KB`);

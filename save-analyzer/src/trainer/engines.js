@@ -17,7 +17,7 @@ import { buildLiveTree } from './live-tree.js';
  * @property {Array<{label, run}>} [actions]
  */
 
-export function detectLiveEngines(win) {
+export function detectLiveEngines(win, { generic = true } = {}) {
   const found = [];
   const rpg = rpgMaker(win);
   if (rpg) found.push(rpg);
@@ -25,7 +25,8 @@ export function detectLiveEngines(win) {
   if (sc) found.push(sc);
   const c2 = construct2(win);
   if (c2) found.push(c2);
-  const g = genericGlobals(win, found.length > 0);
+  // the generic scan briefly creates a hidden iframe, so callers that must not touch the page skip it
+  const g = generic ? genericGlobals(win, found.length > 0) : null;
   if (g) found.push(g);
   return found;
 }

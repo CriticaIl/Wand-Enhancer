@@ -239,10 +239,10 @@ test('real extension: tapping the button opens the live trainer on a game page',
   }
 });
 
-test('userscript fallback is valid JavaScript with an on-demand launcher', () => {
+test('userscript is valid JavaScript built from the shared trainer source', () => {
   const src = readFileSync(join(ROOT, 'standalone/saveforge-trainer.user.js'), 'utf8');
   assert.match(src, /@inject-into\s+page/);
-  assert.match(src, /function startTrainer\(\)/);
+  assert.match(src, /saveforge-launcher/);
   execFileSync(process.execPath, ['--check', join(ROOT, 'standalone/saveforge-trainer.user.js')]);
   assert.ok(dirname(EXT));
 });
