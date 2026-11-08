@@ -42,6 +42,10 @@ const DICT = {
     골드: 'gold', 돈: 'money', 코인: 'coins', 보석: 'gems', 다이아: 'diamonds', 생명: 'life', 생명력: 'vitality', 체력: 'health (HP)', 경험치: 'experience points', 경험: 'experience', 레벨: 'level', 공격력: 'attack power', 공격: 'attack', 방어력: 'defense', 방어: 'defense', 속도: 'speed', 힘: 'strength', 마력: 'magic power', 마법: 'magic', 점수: 'score', 포인트: 'points', 아이템: 'items', 인벤토리: 'inventory', 가방: 'bag', 무기: 'weapon', 방어구: 'armor', 장비: 'equipment', 포션: 'potion', 물약: 'potion', 열쇠: 'key', 퀘스트: 'quest', 임무: 'mission', 챕터: 'chapter', 장: 'chapter', 일: 'day', 날: 'day', 시간: 'time', 이름: 'name', 플레이어: 'player', 적: 'enemy', 보스: 'boss', 호감도: 'affection level', 호감: 'affection', 사랑: 'love', 신뢰: 'trust', 우정: 'friendship', 해금: 'unlocked', 완료: 'completed', 최대: 'maximum', 현재: 'current', 합계: 'total', 방패: 'shield', 음식: 'food', 나무: 'wood', 돌: 'stone', 철: 'iron', 상점: 'shop', 가격: 'price', 보상: 'reward', 업적: 'achievements', 별: 'stars', 스테이지: 'stage', 세계: 'world', 지도: 'map', 게임: 'game', 최고: 'best', 횟수: 'count', 개수: 'quantity', 스킬: 'skill', 상태: 'status',
   },
 };
+import { PHRASES, UI_WORDS } from './translate-vocab.js';
+
+for (const [lang, words] of Object.entries(UI_WORDS)) DICT[lang] = { ...words, ...DICT[lang] };
+
 const LANG_NAMES = { es: 'Spanish', fr: 'French', de: 'German', pt: 'Portuguese', it: 'Italian', nl: 'Dutch', pl: 'Polish', tr: 'Turkish', ru: 'Russian', ja: 'Japanese', zh: 'Chinese', ko: 'Korean', uk: 'Ukrainian', el: 'Greek', ar: 'Arabic', he: 'Hebrew', th: 'Thai', hi: 'Hindi', vi: 'Vietnamese' };
 
 // Abbreviations: expansions are *guesses* (shown as such)
@@ -96,7 +100,7 @@ export function tokenize(text) {
     .replace(/([a-z\u00df-\u00ff\u0430-\u044f\u0451])([A-Z\u0410-\u042f\u0401])/g, '$1 $2')
     .replace(/([A-Za-z])(\d)/g, '$1 $2')
     .replace(/(\d)([A-Za-z])/g, '$1 $2')
-    .split(/[\s_\-.$:/\\|,;()[\]{}'"!?·›#]+/)
+    .split(/[\s_\-.$:/\\|,;()[\]{}'"!?¿¡«»“”‘’…·›#]+/)
     .filter(Boolean);
   for (const part of parts) {
     // split runs of different scripts (e.g. "HPの最大" → HP, の, 最大)
@@ -147,6 +151,12 @@ export function toEnglish(text) {
   const original = String(text ?? '');
   const result = { original, english: original, kind: 'english', language: null, languageName: null, parts: [], note: '' };
   if (!original.trim() || original.length > 400) return result;
+  const phraseKey = fold(original.toLowerCase()).replace(/[’‘]/g, "'").replace(/[.!?¿¡«»“”…:]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const phrase = PHRASES[phraseKey] || PHRASES[original.trim()];
+  if (phrase) {
+    const lang = scriptLanguage(original) || guessLatinLanguage(original);
+    return { ...result, english: phrase, kind: 'translation', language: lang, languageName: LANG_NAMES[lang] || lang, parts: [{ src: original, en: phrase, how: 'phrase' }], note: `Translated from ${LANG_NAMES[lang] || 'another language'} with SaveForge’s offline phrase list.` };
+  }
   const tokens = tokenize(original);
   if (!tokens.length) return result;
   const langVotes = new Map();
@@ -202,10 +212,16 @@ export function toEnglish(text) {
   result.language = (script === 'zh' && langVotes.has('ja') ? 'ja' : script) || (best ? best[0] : null);
   if (script === 'zh' && /[぀-ヿ]/.test(original)) result.language = 'ja';
   result.languageName = result.language ? LANG_NAMES[result.language] || result.language : null;
-  result.english = result.parts.map((p) => p.en ?? `“${p.src}”`).join(' ');
+  // grammar words with no gloss (articles, elided de/l'…) are understood but not shown
+  result.english = result.parts
+    .filter((p) => p.en !== '')
+    .map((p) => p.en ?? `“${p.src}”`)
+    .join(' ')
+    .replace(/^not (\w+) enough$/, 'not enough $1');
+  if (result.parts.length > 2) result.wordByWord = true;
   if (foreign && translated === foreign) {
     result.kind = 'translation';
-    result.note = `Translated from ${result.languageName || 'another language'} with SaveForge’s offline game dictionary (word by word; the developer’s exact meaning may differ).`;
+    result.note = `Translated from ${result.languageName || 'another language'} with SaveForge’s offline game dictionary${result.wordByWord ? ', word by word, so the exact wording may differ' : ''}.`;
   } else if (translated) {
     result.kind = 'partial';
     result.note = `Partly translated from ${result.languageName || 'another language'}: words in quotes are not in the offline dictionary.`;
@@ -243,6 +259,12 @@ export function englishLabel(label) {
 }
 
 /** Online translation link (opened only after the user agrees; sends just this text). */
+function guessLatinLanguage(text) {
+  const votes = new Map();
+  for (const tok of tokenize(text)) for (const h of INDEX.get(tok.toLowerCase()) || []) votes.set(h.lang, (votes.get(h.lang) || 0) + 1);
+  return [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+}
+
 export function onlineTranslateUrl(text) {
   return `https://translate.google.com/?sl=auto&tl=en&op=translate&text=${encodeURIComponent(String(text).slice(0, 1000))}`;
 }

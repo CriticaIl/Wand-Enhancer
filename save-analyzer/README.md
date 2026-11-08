@@ -108,7 +108,7 @@ The **Game** tab opens any http(s) game URL in a frame, with the floating mod me
 ```sh
 cd save-analyzer
 npm install          # esbuild (build), lz-string + pako (reference implementations for tests)
-npm test             # 139 tests: codecs, pickle, samples, engines, trainer, userscript, Safari extension, browser e2e
+npm test             # 148 tests: codecs, pickle, samples, engines, trainer, userscript, Safari extension, browser e2e
 npm run build        # -> standalone/SaveForge.html
 npm run samples      # regenerate samples/ (needs python3) and the embedded copies
 npm run serve        # http://localhost:8080/ (unbundled modules) and /standalone/

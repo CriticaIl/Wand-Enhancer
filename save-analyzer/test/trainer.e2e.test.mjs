@@ -69,7 +69,12 @@ async function inject(page) {
 const T = (page) => ({
   chip: (label) => page.locator('saveforge-trainer .chip', { hasText: label }).click(),
   rowByName: (label) => page.locator('saveforge-trainer .row').filter({ has: page.locator('.name', { hasText: label }) }).first(),
-  nav: (label) => page.locator('saveforge-trainer .row .lbl', { hasText: label }).first().click(),
+  async nav(label) {
+    const row = page.locator('saveforge-trainer .row .lbl', { hasText: label }).first();
+    // the list is virtualised: rows below the fold exist only after scrolling to them
+    if (!(await row.count())) await page.locator('saveforge-trainer .list').first().evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await row.click();
+  },
   tool: (label) => page.locator(`saveforge-trainer .tool[aria-label="${label}"]`).click(),
   async search(q) {
     await page.locator('saveforge-trainer .tool[aria-label="Search"]').click();
@@ -500,5 +505,121 @@ test('Apply & Reload is verified after the reload', { skip, timeout: 60000 }, as
   await inject(page);
   await t.chip('Saves in storage');
   await page.locator('saveforge-trainer .row .name', { hasText: 'After reload: 1/1 edits kept' }).waitFor({ timeout: 5000 });
+  await ctx.close();
+});
+
+// ---------------------------------------------------------------- 1.5: visible UI refresh, smarter search, mobile
+test('DOM game that redraws only on screen change: state vs screen, game redraw function, automatic refresh', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/boutique/');
+  await inject(page);
+  const t = T(page);
+  await t.search('money');
+  await t.rowByName('Argent').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('99999');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  const box = statusText(page);
+  await box.filter({ hasText: 'Visible UI not refreshed yet' }).waitFor({ timeout: 5000 });
+  assert.match(await box.innerText(), /Game state: ✓ Applied and verified/);
+  assert.equal(await page.evaluate(() => window.jeu.magasin.argent), 99999, 'game state changed');
+  assert.match(await page.locator('#argent').innerText(), /1\s822/, 'screen still old: the game redraws later');
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Update game display' }).click();
+  assert.deepEqual(await page.locator('saveforge-trainer .cand b').allTextContents(), ['afficherMagasin()']);
+  await page.locator('saveforge-trainer .cand button').first().click();
+  await page.locator('saveforge-trainer .okbox', { hasText: 'redrew the screen' }).waitFor();
+  assert.match(await page.locator('#argent').innerText(), /99\s999/);
+  await page.locator('saveforge-trainer .btn.go', { hasText: 'Use automatically' }).click();
+  await page.locator('saveforge-trainer .tool[aria-label=Back]').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('1234');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await box.filter({ hasText: 'Refreshed automatically' }).waitFor({ timeout: 5000 });
+  assert.match(await box.innerText(), /Visible UI refreshed/);
+  assert.match(await page.locator('#argent').innerText(), /1\s234/);
+  assert.equal(await page.evaluate(() => window.onglet), 'magasin', 'no screen switch or reload was used');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Display-only fallback updates the visible number without touching the game', { skip, timeout: 60000 }, async () => {
+  const { page, ctx } = await openGame('/demo-games/boutique/');
+  await inject(page);
+  const t = T(page);
+  await t.search('money');
+  await t.rowByName('Argent').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('5000');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await statusText(page).filter({ hasText: 'not refreshed yet' }).waitFor({ timeout: 5000 });
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Update game display' }).click();
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Show new number on screen' }).click();
+  await page.waitForFunction(() => /5\s?000/.test(document.getElementById('argent').textContent.replace(/ | /g, ' ')));
+  assert.equal(await page.evaluate(() => window.jeu.magasin.argent), 5000);
+  await ctx.close();
+});
+
+test('Engine games: screen status says the engine redraws by itself', { skip, timeout: 60000 }, async () => {
+  const { page, ctx } = await openGame('/demo-games/star-runner/');
+  await inject(page);
+  const t = T(page);
+  await t.search('lives');
+  await t.setNumber('Lives', 7);
+  await t.rowByName('Lives').locator('.info').click();
+  await statusText(page).filter({ hasText: 'redraws by itself' }).waitFor({ timeout: 5000 });
+  await ctx.close();
+});
+
+test('Search UI: ranking, dialogue hidden with a reveal link, English under text, filters, clear button, remembered search', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/boutique/');
+  await inject(page);
+  await page.locator('saveforge-trainer .tool[aria-label="Search"]').click();
+  const input = page.locator('saveforge-trainer .search input');
+  for (const [k, v] of Object.entries({ enterkeyhint: 'search', autocapitalize: 'none', autocorrect: 'off', inputmode: 'search' })) assert.equal(await input.getAttribute(k), v, k);
+  assert.equal(await input.evaluate((el) => getComputedStyle(el).fontSize), '16px', '16px stops iPhone zoom on focus');
+  await input.fill('money');
+  await page.waitForTimeout(300);
+  assert.deepEqual(await page.locator('saveforge-trainer .row .name').allTextContents(), ['Argent']);
+  await page.locator('saveforge-trainer .linkbtn', { hasText: 'hidden' }).click();
+  const names = await page.locator('saveforge-trainer .row .name').allTextContents();
+  assert.equal(names[0], 'Argent', 'numbers still first');
+  assert.ok(names.length >= 4, names.join(','));
+  const subs = await page.locator('saveforge-trainer .row .sub2').allTextContents();
+  assert.ok(subs.some((x) => /EN: Not enough money/.test(x)), subs.join(' | '));
+  assert.ok(subs.some((x) => /EN: Earn money/.test(x)));
+  // value search
+  await input.fill('1822');
+  await page.waitForTimeout(300);
+  assert.deepEqual(await page.locator('saveforge-trainer .row .name').allTextContents(), ['Argent']);
+  // filter: Text only
+  await input.fill('argent');
+  await page.locator('saveforge-trainer .fchip', { hasText: 'Text' }).click();
+  await page.waitForTimeout(200);
+  assert.ok(!(await page.locator('saveforge-trainer .row .name').allTextContents()).includes('Argent'));
+  await page.locator('saveforge-trainer .fchip', { hasText: 'All' }).click();
+  // clear
+  await page.locator('saveforge-trainer .clr').click();
+  assert.equal(await input.inputValue(), '');
+  assert.ok(await page.locator('saveforge-trainer .sugg').isVisible(), 'suggestions after clearing');
+  // remembered after closing and reopening the trainer
+  await input.fill('clients');
+  await page.waitForTimeout(400);
+  await page.locator('saveforge-trainer .hbtn[aria-label="Close trainer"]').click();
+  await inject(page);
+  await page.locator('saveforge-trainer .tool[aria-label="Search"]').click();
+  assert.equal(await page.locator('saveforge-trainer .search input').inputValue(), 'clients');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Compact view: smaller rows, path hidden, setting remembered', { skip, timeout: 60000 }, async () => {
+  const { page, ctx } = await openGame('/demo-games/neon-courier/');
+  await inject(page);
+  const t = T(page);
+  const h0 = await page.locator('saveforge-trainer .row').first().evaluate((el) => el.getBoundingClientRect().height);
+  await t.nav('Settings');
+  await page.locator('saveforge-trainer .setrow', { hasText: 'Compact view' }).locator('.toggle').click();
+  await t.home();
+  await t.nav('All variables');
+  const h1 = await page.locator('saveforge-trainer .row').first().evaluate((el) => el.getBoundingClientRect().height);
+  assert.equal(h0, 56);
+  assert.equal(h1, 44);
+  assert.equal(await page.locator('saveforge-trainer .row .sub2').first().evaluate((el) => getComputedStyle(el).display), 'none');
   await ctx.close();
 });

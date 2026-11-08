@@ -333,3 +333,95 @@ test('find a value: first and next scan narrow down to the real variable', async
   firstScan(win, 1);
   assert.equal(ran, 0);
 });
+
+// ---------------------------------------------------------------- 1.5: sentences, search ranking, display helpers
+test('translation of UI sentences: phrases, elision, word-by-word, partial marking', async () => {
+  const { toEnglish } = await import('../src/core/translate.js');
+  assert.deepEqual([toEnglish("Gagner de l'argent").english, toEnglish("Gagner de l'argent").kind], ['Earn money', 'translation']);
+  assert.equal(toEnglish('Pas assez d’argent !').english, 'Not enough money');
+  assert.equal(toEnglish('Acheter un ordinateur').english, 'buy a computer');
+  const wbw = toEnglish('Vous avez gagné 50 pièces');
+  assert.equal(wbw.kind, 'translation');
+  assert.match(wbw.note, /word by word/);
+  assert.equal(toEnglish('No tienes suficiente dinero').english, "You don't have enough money");
+  assert.equal(toEnglish('お金が足りません').english, 'Not enough money');
+  const partial = toEnglish('Le client est content');
+  assert.equal(partial.kind, 'partial');
+  assert.match(partial.english, /“content”/, 'unknown word shown in quotes, not guessed');
+  assert.equal(toEnglish('Welcome to the store').kind, 'english');
+});
+
+function searchProvider(state) {
+  return new LiveProvider({}, { id: 's', name: 'S', channel: 'live-generic', note: '', root: () => state, snapshot: () => buildLiveTree(state) }, memStore());
+}
+
+test('search: gameplay numbers rank above dialogue; aliases, translations and values match', async () => {
+  const { searchEntries } = await import('../src/trainer/search.js');
+  const state = {
+    store: { money: 1822, customers: 4 },
+    textes: { tuto: "Gagnez de l'argent en vendant des ordinateurs.", erreur: "Pas assez d'argent", bouton: 'Gagner de l’argent', moneyHint: 'Earn money by selling computers to customers.' },
+    etat: { argent: 50, jour: 3 },
+    player: { name: 'Vex', hp: 30 },
+  };
+  const p = searchProvider(state);
+  const paths = (r) => r.results.map((x) => x.entry.path.replace(/^.*?› /, ''));
+  const money = searchEntries(p, 'money');
+  assert.equal(paths(money)[0], 'store › money', 'the real money variable first');
+  assert.ok(paths(money).includes('etat › argent'), 'French “argent” found through its translation');
+  assert.ok(!paths(money).some((x) => x.startsWith('textes')), 'dialogue hidden in gameplay mode');
+  assert.ok(money.hiddenText >= 3);
+  const all = searchEntries(p, 'money', { gameplayOnly: false });
+  const iMoney = paths(all).indexOf('store › money');
+  const iText = paths(all).findIndex((x) => x.startsWith('textes'));
+  assert.ok(iText > iMoney, 'text matches come after gameplay numbers');
+  assert.equal(paths(searchEntries(p, 'cash'))[0], 'store › money', 'alias');
+  assert.deepEqual(paths(searchEntries(p, '1822')), ['store › money'], 'search by current value');
+  assert.deepEqual(paths(searchEntries(p, '1 822')), ['store › money'], 'value with a thousands space');
+  assert.equal(paths(searchEntries(p, 'day'))[0], 'etat › jour', 'English name of a French variable');
+  assert.equal(paths(searchEntries(p, 'argent'))[0], 'etat › argent', 'original-language name');
+  assert.ok(paths(searchEntries(p, 'name')).includes('player › name'), 'short names are gameplay text');
+  // filters and exact mode
+  assert.ok(searchEntries(p, 'money', { filter: 'text', gameplayOnly: false }).results.every((x) => p.node(x.entry.nodeId).type === 'string'));
+  assert.ok(searchEntries(p, 'money', { filter: 'number' }).results.every((x) => p.node(x.entry.nodeId).type === 'int'));
+  assert.deepEqual(paths(searchEntries(p, 'mon', { mode: 'exact' })), []);
+  assert.ok(paths(searchEntries(p, 'mon')).includes('store › money'));
+});
+
+test('search stays fast with 10,000+ variables', async () => {
+  const { searchEntries } = await import('../src/trainer/search.js');
+  const world = {};
+  for (let i = 0; i < 3500; i++) world[`npc${i}`] = { gold: i, hp: i % 90, line: `Bonjour voyageur numéro ${i}, as-tu de l'argent ?` };
+  const p = searchProvider({ world });
+  searchEntries(p, 'gold'); // first search builds the cached index
+  const t0 = performance.now();
+  const r = searchEntries(p, 'money');
+  const ms = performance.now() - t0;
+  assert.ok(r.total >= 3500, `total ${r.total}`);
+  assert.equal(r.results.length, 1000, 'display list is capped');
+  assert.ok(ms < 800, `search took ${ms.toFixed(0)} ms`);
+});
+
+test('display helpers: number forms and safe redraw candidates only', async () => {
+  const { displayForms, redrawCandidates } = await import('../src/trainer/display.js');
+  const forms = displayForms(1822);
+  for (const f of ['1822', '1,822', '1 822', '1.822', '1.8K', '1.82K']) assert.ok(forms.has(f), f);
+  const win = {
+    afficherMagasin() {
+      return document;
+    },
+    updateMoney() {
+      el.textContent = 1;
+    },
+    update() {},
+    refresh() {},
+    tick() {},
+    buyItem() {},
+    ajouterArgent() {},
+    changerOnglet(n) {
+      return n;
+    },
+    renderAll() {},
+  };
+  const labels = redrawCandidates(win).map((c) => c.label);
+  assert.deepEqual(labels.sort(), ['afficherMagasin()', 'renderAll()', 'updateMoney()']);
+});

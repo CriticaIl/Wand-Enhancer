@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Boutique Informatique — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+<style>.tabs button { background: #334155; } .tabs button.on { background: #3b82f6; } #argent { font-variant-numeric: tabular-nums; }</style>
+</head>
+<body>
+<header>SaveForge demo game · a French HTML (DOM) shop game that only redraws a screen when you open it, like many idle/shop games. Original demo, not a real game.</header>
+<main>
+  <h1>Boutique Informatique</h1>
+  <p>Argent : <b id="argent"></b> · Clients : <b id="clients"></b></p>
+  <div class="tabs"><button id="t-magasin" class="on">Magasin</button><button id="t-ameliorations">Améliorations</button></div>
+  <div class="passage" id="ecran"></div>
+  <p class="log" id="log"></p>
+</main>
+<script>
+  // Game state (French names, like a real French game)
+  var jeu = { magasin: { argent: 1822, clients: 3, ordinateurs: 2, niveau: 1 }, ameliorations: { vitesse: 1, publicite: false } };
+  // UI strings live inside the game object (dialogue/tutorial text, not gameplay)
+  var textes = jeu.textes = {
+    tutoriel: "Bienvenue ! Gagnez de l'argent en vendant des ordinateurs à vos clients.",
+    erreurArgent: "Pas assez d'argent",
+    boutonGagner: 'Gagner de l’argent',
+    boutonAcheter: 'Acheter un ordinateur',
+  };
+  var onglet = 'magasin';
+  // Renders the current screen. The money label is only written here, so a
+  // change to jeu.magasin.argent shows up the next time a screen is opened.
+  function afficherMagasin() {
+    document.getElementById('argent').textContent = jeu.magasin.argent.toLocaleString('fr-FR') + ' €';
+    document.getElementById('clients').textContent = jeu.magasin.clients;
+    var e = document.getElementById('ecran');
+    if (onglet === 'magasin') {
+      e.innerHTML = '<p>' + textes.tutoriel + '</p><p>Ordinateurs en stock : ' + jeu.magasin.ordinateurs + '</p><button id="gagner">' + textes.boutonGagner + '</button> <button id="acheter">' + textes.boutonAcheter + ' (500 €)</button>';
+    } else {
+      e.innerHTML = '<p>Vitesse : ' + jeu.ameliorations.vitesse + '</p><p>Publicité : ' + (jeu.ameliorations.publicite ? 'oui' : 'non') + '</p>';
+    }
+  }
+  function changerOnglet(nom) {
+    onglet = nom;
+    document.getElementById('t-magasin').className = nom === 'magasin' ? 'on' : '';
+    document.getElementById('t-ameliorations').className = nom === 'ameliorations' ? 'on' : '';
+    afficherMagasin();
+  }
+  document.getElementById('t-magasin').onclick = function () { changerOnglet('magasin'); };
+  document.getElementById('t-ameliorations').onclick = function () { changerOnglet('ameliorations'); };
+  document.addEventListener('click', function (ev) {
+    if (ev.target.id === 'gagner') { jeu.magasin.argent += 25; afficherMagasin(); }
+    if (ev.target.id === 'acheter') {
+      if (jeu.magasin.argent < 500) { document.getElementById('log').textContent = textes.erreurArgent; return; }
+      jeu.magasin.argent -= 500; jeu.magasin.ordinateurs += 1; afficherMagasin();
+    }
+  });
+  afficherMagasin();
+</script>
+</body>
+</html>

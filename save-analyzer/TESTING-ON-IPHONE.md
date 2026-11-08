@@ -1,4 +1,24 @@
-# SaveForge 1.4 on iPhone: install, test and what to expect
+# SaveForge 1.5 on iPhone: install, test and what to expect
+
+## What's new in 1.5
+- **Game state and the screen are reported separately.** After an edit, the status box shows the *Game state* (✓ verified) and the *Screen*:
+  - ✓ refreshed
+  - ✓ the engine redraws by itself
+  - ⚠ not refreshed yet
+  - ? can't check
+- **Update game display:** shows how the game draws, lists the game's own redraw functions (e.g. `afficherMagasin()`), and runs one only when you tap **Try**. It then checks the screen and can be set to run automatically after edits on that site.
+  - **Display-only fallback:** shows the new number on screen without changing the game.
+  - **Manual fallback:** switch screens in the game.
+  - It never reloads the page or taps buttons for you.
+- **Smarter search:** matches names, English translations, original-language names, paths and current values (type `1822`). Synonyms work (money/cash/coins/argent/所持金…).
+  - **Filters:** All / Numbers / Text / On/Off / Editable / Game state, plus *Gameplay only* and *Exact*.
+  - **Ranking:** gameplay numbers rank above dialogue.
+  - **Clear button**, and your last search is remembered.
+- **English for text values:** UI sentences are translated offline, e.g. “Gagner de l’argent” → *Earn money* and “Pas assez d’argent” → *Not enough money*.
+  - **Where translations appear:** under the text in lists, plus a **Translate to English** button and the full text in ⓘ.
+  - **Game text is never changed.**
+- **Compact view** and larger, easier-to-read rows.
+
 
 ## 1. Install or update (no Mac needed)
 
@@ -11,7 +31,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **1.4.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **1.5.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -61,7 +81,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 139 tests)
+### Verified by the automated tests (Chromium, 148 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -84,6 +104,9 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Existing features:** analyzer, saves, Diagnostics, favourites, backups, Safari extension and all earlier tests still pass.
 
 ### Not verifiable here (please test on your iPhone)
+
+- Whether tukann's game (or any real game) exposes a redraw function SaveForge can find. Many games keep their render functions private. In that case the screen status says "not refreshed yet" and the display-only and manual fallbacks remain. The Update game display screen shows exactly what was found.
+
 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.

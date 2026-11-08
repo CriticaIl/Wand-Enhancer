@@ -5,10 +5,12 @@
 import { sliderRange } from '../core/modmenu.js';
 import { englishLabel, onlineTranslateUrl, toEnglish } from '../core/translate.js';
 import { firstScan, foundValuesEngine, nextScan } from './scan.js';
+import { checkDisplay, detectRenderer, engineRedraw, patchVisibleNumber, redrawCandidates, tryRedraw } from './display.js';
+import { searchEntries, SUGGESTIONS } from './search.js';
 import { LiveProvider, SECTIONS, STATUS } from './providers.js';
 import { TRAINER_CSS } from './styles.js';
 
-const ROW_H = 52;
+let ROW_H = 56; // 44 in compact view
 const OVERSCAN = 6;
 const ICONS = {
   logo: 'M12 2l8 4.5v11L12 22l-8-4.5v-11L12 2zm0 4.2L7.6 8.7v6.6l4.4 2.5 4.4-2.5V8.7L12 6.2z',
@@ -97,6 +99,10 @@ export function mountTrainer(win, opts) {
     query: '',
     status: null,
     englishLabels: false,
+    enInResults: true,
+    compact: false,
+    search: { filter: 'all', gameplayOnly: true, mode: 'partial', hidden: 0, aliases: [] },
+    display: { renderer: null, status: new Map(), auto: null, candidates: null },
     scan: { target: '', paths: null, kept: [], history: [], info: '' },
   };
   const store = opts.store;
@@ -229,6 +235,16 @@ export function mountTrainer(win, opts) {
     S.favorites = new Set(await store.get(`fav:${scope}`, []));
     S.recent = await store.get(`recent:${scope}`, []);
     S.englishLabels = !!(await store.get('englishLabels', false));
+    S.enInResults = await store.get('enInResults', true);
+    S.compact = !!(await store.get('compact', false));
+    ROW_H = S.compact ? 44 : 56;
+    panel.classList.toggle('compact', S.compact);
+    const last = await store.get('search', null);
+    if (last) {
+      S.query = last.query || '';
+      Object.assign(S.search, { filter: last.filter || 'all', gameplayOnly: last.gameplayOnly !== false, mode: last.mode || 'partial' });
+    }
+    S.display.auto = await store.get(`redraw:${S.sourceId}`, null);
   }
   function saveFavs() {
     store?.set(`fav:${S.sourceId}`, [...S.favorites]);
@@ -274,7 +290,40 @@ export function mountTrainer(win, opts) {
       return;
     }
     el.className = `statusbox st-${st.state}`;
-    el.append(h('b', null, `${STATUS_MARK[st.state] || ''} ${STATUS[st.state] || st.state}`), h('div', null, st.detail || ''));
+    el.append(h('b', null, `Game state: ${STATUS_MARK[st.state] || ''} ${STATUS[st.state] || st.state}`), h('div', null, st.detail || ''));
+    const d = S.display.status.get(id);
+    if (d) {
+      const mark = { shown: '✓', auto: '✓', stale: '⚠', unknown: '?', checking: '…' }[d.state] || '';
+      const title = { shown: 'Visible UI refreshed', auto: 'Visible UI redraws by itself', stale: 'Visible UI not refreshed yet', unknown: 'Visible UI: cannot check', checking: 'Checking the screen…' }[d.state] || d.state;
+      el.append(h('div', { class: `displine ds-${d.state}` }, h('b', null, `Screen: ${mark} ${title}`), h('div', null, d.detail)));
+    }
+  }
+
+  // ---------- visible UI refresh (separate from the game state)
+  function renderer() {
+    if (!S.display.renderer) S.display.renderer = detectRenderer(win, (opts.engineInfo || []).map((x) => x.id));
+    return S.display.renderer;
+  }
+  async function afterEditDisplay(id, before, after) {
+    if (S.provider?.kind !== 'live') return;
+    S.display.status.set(id, { state: 'checking', detail: 'Looking at the screen…' });
+    refreshStatusViews(id);
+    const eng = (opts.engineInfo || []).map((x) => x.id);
+    for (const e of eng) engineRedraw(win, e);
+    let res = await checkDisplay(win, { newValue: after, oldValue: before, renderer: renderer() });
+    if (res.state === 'stale' && S.display.auto) {
+      const cand = (S.display.candidates ||= redrawCandidates(win)).find((c) => c.label === S.display.auto);
+      if (cand) {
+        const r = await tryRedraw(win, cand, { newValue: after, oldValue: before, renderer: renderer() });
+        res = { state: r.state, detail: r.state === 'shown' ? `Refreshed automatically with ${cand.label}: the screen shows ${after}.` : r.detail };
+      }
+    }
+    S.display.status.set(id, { ...res, before, after });
+    refreshStatusViews(id);
+    if (res.state === 'stale') toast('Game state updated · the screen redraws later: tap “Update game display”');
+  }
+  function refreshStatusViews(id) {
+    if (statusBoxes.has(id)) fillStatus(statusBoxes.get(id), id);
   }
 
   function renderSources() {
@@ -317,6 +366,7 @@ export function mountTrainer(win, opts) {
     items.push({ kind: 'nav', label: 'Backups & restore', icon: 'shield', count: '', view: { type: 'backups' } });
     if (opts.diagnostics) items.push({ kind: 'nav', label: 'Diagnostics', icon: 'info', count: '', hint: 'Detected engine, frame, and where each variable comes from.', view: { type: 'diagnostics' } });
     for (const a of p.actions || []) items.push({ kind: 'action', label: a.label, icon: 'refresh', hint: a.hint, run: a.run });
+    if (p.kind === 'live') items.push({ kind: 'nav', label: 'Update game display', icon: 'refresh', count: '', hint: 'Make the game redraw its screen after an edit, and see how this game draws.', view: { type: 'display', id: S.recent[0] || null } });
     items.push({ kind: 'nav', label: 'Find a value', icon: 'search', count: '', hint: 'Unknown game? Type a number you see on screen, change it in the game, scan again: SaveForge finds the real variable.', view: { type: 'findvalue' } });
     items.push({ kind: 'action', label: 'Rescan game', icon: 'refresh', hint: 'Look for the game again: engines that finished loading, new variables, new saves.', run: () => rescanGame() });
     items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
@@ -328,14 +378,11 @@ export function mountTrainer(win, opts) {
     if (v.dynamic === 'fav') return [...S.favorites].map((id) => p.entryById.get(id)).filter(Boolean);
     if (v.dynamic === 'recent') return S.recent.map((id) => p.entryById.get(id)).filter(Boolean);
     if (v.type === 'search') {
-      const q = S.query.trim().toLowerCase();
-      if (!q) return [];
-      const out = [];
-      for (const e of p.entries) {
-        if (e.search.includes(q) || (p.liveName(e.nodeId) || '').toLowerCase().includes(q) || (S.englishLabels && labelOf(e).text.toLowerCase().includes(q))) out.push(e);
-        if (out.length >= 2000) break;
-      }
-      return out;
+      if (!S.query.trim()) return [];
+      const r = searchEntries(p, S.query, S.search);
+      S.search.hidden = r.hiddenText;
+      S.search.aliases = r.aliases;
+      return r.results.map((x) => x.entry);
     }
     return v.entries;
   }
@@ -357,7 +404,7 @@ export function mountTrainer(win, opts) {
       clear(compatEl).append(h('span', { class: `cdot ${c.level}` }), c.label);
     }
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -393,6 +440,7 @@ export function mountTrainer(win, opts) {
     if (v.type === 'about') return renderAbout();
     if (v.type === 'diagnostics') return renderDiagnostics();
     if (v.type === 'findvalue') return renderFindValue();
+    if (v.type === 'display') return renderDisplay(v.id);
     if (v.type === 'settings') return renderSettings();
     if (v.type === 'locks') {
       const p = S.provider;
@@ -494,6 +542,27 @@ export function mountTrainer(win, opts) {
     return e.en ? { text: e.en.text, original: base, kind: e.en.kind } : { text: base, original: null };
   }
 
+  function subLine(e, node, original, st) {
+    const p = S.provider;
+    if (st && (st.state === 'reverted' || st.state === 'adjusted' || st.state === 'failed')) return `${STATUS[st.state]}: now ${short(p.value(e.nodeId))}`;
+    if (S.enInResults && node.type === 'string') {
+      const v = p.value(e.nodeId);
+      if (typeof v === 'string' && v.length > 1) {
+        const tr = cachedTranslation(v);
+        if (tr && tr.kind !== 'english' && tr.kind !== 'none') return `EN${tr.kind === 'translation' ? '' : ' (partial)'}: ${tr.english}`;
+      }
+    }
+    return original ? `${original} · ${e.path}` : e.path;
+  }
+  const trCache = new Map();
+  function cachedTranslation(text) {
+    if (trCache.has(text)) return trCache.get(text);
+    const r = toEnglish(text);
+    if (trCache.size > 5000) trCache.clear();
+    trCache.set(text, r);
+    return r;
+  }
+
   function compatibility() {
     const eng = opts.engineInfo || [];
     const p = S.provider;
@@ -548,7 +617,7 @@ export function mountTrainer(win, opts) {
         'div',
         { class: 'lbl', onclick: () => (S.selected === i ? openEdit(e.nodeId) : choose()) },
         h('span', { class: 'name' }, st && STATUS_MARK[st.state] ? h('span', { class: `st st-${st.state}`, title: STATUS[st.state] }, STATUS_MARK[st.state]) : null, S.favorites.has(e.nodeId) ? h('span', { class: 'star' }, '★') : null, label),
-        h('span', { class: 'sub2' }, original ? `${original} · ${e.path}` : st && (st.state === 'reverted' || st.state === 'adjusted' || st.state === 'failed') ? `${STATUS[st.state]}: now ${short(p.value(e.nodeId))}` : e.path),
+        h('span', { class: 'sub2' }, subLine(e, node, original, st)),
       ),
       valueWidget(node, value, e, choose),
       h('button', { class: 'info', 'aria-label': `About ${label}`, onclick: () => (choose(), push({ type: 'info', id: e.nodeId })) }, 'ⓘ'),
@@ -586,6 +655,7 @@ export function mountTrainer(win, opts) {
 
   function apply(id, value, label) {
     try {
+      const beforeValue = S.provider.value(id);
       const res = S.provider.set({ id, value: typeof value === 'number' ? String(value) : value }, label);
       if (res.changed) {
         if (S.provider.channel === 'reload') toast('⟳ Requires reload: tap Apply & Reload to write it');
@@ -597,6 +667,7 @@ export function mountTrainer(win, opts) {
             if (!st) return;
             const msg = { verified: `✓ ${name}: applied and verified in the game`, adjusted: `≈ ${name}: the game adjusted it to ${st.observed}`, reverted: `↺ ${name}: the game changed it back to ${st.observed}. Try Lock`, failed: `✕ ${name}: ${st.detail}` }[st.state];
             if (msg) toast(msg, st.state === 'reverted' || st.state === 'failed');
+            if (st.state === 'verified' || st.state === 'adjusted') afterEditDisplay(id, beforeValue, S.provider.value(id));
           });
         }
       }
@@ -626,29 +697,62 @@ export function mountTrainer(win, opts) {
 
   // ---------- search
   function renderSearch() {
-    const input = h('input', { type: 'search', placeholder: `Search ${S.provider.entries.length} variables`, value: S.query, autocapitalize: 'off', autocorrect: 'off', spellcheck: false });
-    const wrap = h('div', { class: 'search' }, input);
+    const p = S.provider;
+    const input = h('input', { type: 'search', inputmode: 'search', enterkeyhint: 'search', placeholder: `Search ${p.entries.length} variables or a value`, value: S.query, autocapitalize: 'none', autocorrect: 'off', autocomplete: 'off', spellcheck: false, 'aria-label': 'Search variables' });
+    const clearBtn = h('button', { class: 'clr', 'aria-label': 'Clear search', onclick: () => ((input.value = ''), (S.query = ''), saveSearch(), run(), input.focus()) }, '×');
+    const chip = (label, on, fn) => h('button', { class: `fchip${on ? ' on' : ''}`, 'aria-pressed': String(on), onclick: fn }, label);
+    const filters = h('div', { class: 'filters' });
     const results = h('div');
-    bodyEl.append(wrap, results);
+    const fillFilters = () => {
+      clear(filters).append(
+        ...[['all', 'All'], ['number', 'Numbers'], ['text', 'Text'], ['bool', 'On/Off'], ['editable', 'Editable'], ['game', 'Game state']].map(([k, l]) => chip(l, S.search.filter === k, () => ((S.search.filter = k), saveSearch(), fillFilters(), run()))),
+        h('span', { class: 'fsep' }),
+        chip('Gameplay only', S.search.gameplayOnly, () => ((S.search.gameplayOnly = !S.search.gameplayOnly), saveSearch(), fillFilters(), run())),
+        chip(S.search.mode === 'exact' ? 'Exact' : 'Partial', S.search.mode === 'exact', () => ((S.search.mode = S.search.mode === 'exact' ? 'partial' : 'exact'), saveSearch(), fillFilters(), run())),
+      );
+    };
+    bodyEl.append(h('div', { class: 'search' }, h('div', { class: 'sfield' }, input, clearBtn), filters), results);
     let t = 0;
     const run = () => {
       clear(results);
+      clearBtn.style.visibility = S.query ? 'visible' : 'hidden';
+      if (!S.query.trim()) {
+        results.append(
+          h(
+            'div',
+            { class: 'sugg' },
+            h('div', { class: 'note' }, 'Try a word or the number you see in the game (e.g. 1822). Synonyms and other languages are matched too.'),
+            h('div', { class: 'chips' }, SUGGESTIONS.map((w) => h('button', { class: 'fchip', onclick: () => ((input.value = w), (S.query = w), saveSearch(), run()) }, w))),
+          ),
+        );
+        setDesc('');
+        return;
+      }
       const items = viewEntries(top());
+      const info = [];
+      if (S.search.aliases.length) info.push(`Also matching: ${S.search.aliases.slice(0, 6).join(', ')}${S.search.aliases.length > 6 ? '…' : ''}`);
+      if (S.search.hidden) info.push(h('button', { class: 'linkbtn', onclick: () => ((S.search.gameplayOnly = false), saveSearch(), fillFilters(), run()) }, `${S.search.hidden} text/dialogue match(es) hidden — show`));
+      if (info.length) results.append(h('div', { class: 'sinfo' }, info.map((x) => h('div', null, x))));
       if (!items.length) {
-        results.append(h('div', { class: 'empty', style: 'height:min(44vh,400px)' }, S.query ? 'No matches.' : 'Type a name, e.g. gold, hp, love, day…'));
+        results.append(h('div', { class: 'empty' }, 'No matches.'));
         setDesc('');
         return;
       }
       renderList(items, null, results);
-      results.querySelector('.list').style.height = 'min(44vh, 412px)';
+      results.querySelector('.list').style.height = S.compact ? 'min(38vh, 420px)' : 'min(34vh, 380px)';
     };
     input.addEventListener('input', () => {
       S.query = input.value;
       win.clearTimeout(t);
-      t = win.setTimeout(run, 120);
+      t = win.setTimeout(() => (saveSearch(), run()), 140);
     });
+    input.addEventListener('keydown', (e) => e.key === 'Enter' && input.blur()); // closes the iPhone keyboard
+    fillFilters();
     run();
-    win.setTimeout(() => input.focus(), 50);
+    if (!S.query) win.setTimeout(() => input.focus(), 50);
+  }
+  function saveSearch() {
+    store?.set('search', { query: S.query, filter: S.search.filter, gameplayOnly: S.search.gameplayOnly, mode: S.search.mode });
   }
 
   // ---------- info (explanation) sheet
@@ -670,7 +774,9 @@ export function mountTrainer(win, opts) {
       h('h3', null, 'What changing it might do'),
       h('p', null, x.effect),
       h('h3', null, 'Current value'),
-      h('dl', { class: 'kv' }, h('dt', null, 'Now'), h('dd', null, show(x.value)), h('dt', null, p.kind === 'live' ? 'Before trainer' : 'Original'), h('dd', null, show(x.original)), h('dt', null, 'Type'), h('dd', null, x.type)),
+      typeof x.value === 'string' && x.value.length > 80
+        ? h('div', null, h('details', { class: 'fulltext' }, h('summary', null, `${x.value.slice(0, 80)}… (show full text, ${x.value.length} characters)`), h('div', { class: 'textval' }, x.value)), h('dl', { class: 'kv' }, h('dt', null, 'Type'), h('dd', null, x.type)))
+        : h('dl', { class: 'kv' }, h('dt', null, 'Now'), h('dd', { class: typeof x.value === 'string' ? 'textval' : '' }, typeof x.value === 'string' ? x.value : show(x.value)), h('dt', null, p.kind === 'live' ? 'Before trainer' : 'Original'), h('dd', null, show(x.original)), h('dt', null, 'Type'), h('dd', null, x.type)),
       h('h3', null, 'When it applies'),
       h('p', null, x.timing.text),
       x.source || x.frame ? h('h3', null, 'Where it comes from') : null,
@@ -759,6 +865,7 @@ export function mountTrainer(win, opts) {
         h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn go', onclick: commit }, 'Apply'), h('button', { class: 'btn', onclick: back }, p.kind === 'live' ? 'Done' : 'Cancel'), h('button', { class: 'btn', onclick: () => push({ type: 'info', id }) }, 'ⓘ Info')),
         statusSection(id),
         quick,
+        node.type === 'string' ? translateBox(String(cur)) : null,
         h('p', { class: 'note' }, `${timing} ${p.kind === 'live' ? 'Before trainer' : 'Original'}: ${show(p.original(id))}.`),
       ),
     );
@@ -777,6 +884,7 @@ export function mountTrainer(win, opts) {
       const locked = p.locks.has(id);
       btns.append(h('button', { class: `btn${locked ? ' warn' : ''}`, onclick: () => { try { locked ? p.unlock(id) : p.lock(id); toast(locked ? 'Unlocked' : `Locked at ${short(p.value(id))}: SaveForge re-applies it if the game changes it`); renderAll(); } catch (e) { toast(e.message, true); } } }, ic('lock'), locked ? 'Unlock' : 'Lock value'));
     }
+    if (p.kind === 'live') btns.append(h('button', { class: 'btn', onclick: () => push({ type: 'display', id }) }, ic('refresh'), 'Update game display'));
     if (p.isEdited(id) && p.restoreOriginal) {
       btns.append(h('button', { class: 'btn', onclick: () => { p.restoreOriginal(id); toast(`Restoring original value ${short(p.original(id))}`); renderAll(); } }, '↺ Restore original'));
     }
@@ -808,9 +916,83 @@ export function mountTrainer(win, opts) {
     return h('div', null, h('h3', null, 'In English'), parts);
   }
 
+  /** "Translate to English" for a text value: display only, the game's text is never changed. */
+  function translateBox(text) {
+    const box = h('div', { class: 'trbox' });
+    const showIt = () => {
+      const r = toEnglish(text);
+      clear(box).append(
+        h('div', null, h('b', null, 'English: '), r.kind === 'english' ? 'Already English.' : r.kind === 'none' ? 'Not in the offline dictionary.' : r.english),
+        r.note ? h('div', { class: 'note' }, r.note) : null,
+        r.kind !== 'translation' && r.kind !== 'english' ? h('button', { class: 'btn', onclick: () => translateOnline(text) }, 'Translate online (asks first)') : null,
+        h('div', { class: 'note' }, 'Shown for reading only; the game’s own text is not changed.'),
+      );
+    };
+    box.append(h('button', { class: 'btn', onclick: showIt }, 'Translate to English'));
+    return box;
+  }
+
   function translateOnline(text) {
     const ok = win.confirm(`Send only this text to Google Translate?\n\n“${String(text).slice(0, 200)}”\n\nNothing else from the game or your saves is sent. It opens in a new tab.`);
     if (ok) win.open(onlineTranslateUrl(text), '_blank', 'noopener');
+  }
+
+  // ---------- update game display (investigate + refresh the visible UI)
+  function renderDisplay(id) {
+    const p = S.provider;
+    const r = renderer();
+    const d = id ? S.display.status.get(id) : null;
+    const cands = (S.display.candidates = redrawCandidates(win));
+    const resultEl = h('div');
+    const sheet = h(
+      'div',
+      { class: 'sheet' },
+      h('h2', null, 'Update game display'),
+      h('p', null, 'Your edit is already in the game’s state. This screen is about the picture: making the game redraw what it shows.'),
+      h('h3', null, 'How this game draws'),
+      h('p', null, `${r.kind === 'engine-loop' ? 'Engine render loop' : r.kind === 'framework' ? `${r.name} app` : r.kind === 'canvas' ? 'Canvas' : 'HTML page'}: ${r.evidence}.`),
+      d ? h('div', { class: `statusbox ds-${d.state}` }, h('b', null, 'Screen now'), h('div', null, d.detail)) : null,
+      h('h3', null, `The game’s own redraw functions (${cands.length})`),
+      cands.length
+        ? h(
+            'div',
+            null,
+            h('p', { class: 'note' }, 'Found in the page by name. SaveForge only runs one when you tap Try, then checks the screen. Functions that look like they change the game (tick, buy, add, save…) are never listed.'),
+            cands.map((c) =>
+              h(
+                'div',
+                { class: 'cand' },
+                h('div', null, h('b', null, c.label), h('div', { class: 'note' }, `${c.touchesDom ? 'writes to the page' : 'unknown effect'}${c.mutates ? ' · also changes numbers, so use with care' : ''}`)),
+                h('button', { class: 'btn', onclick: () => runCandidate(c, id, resultEl) }, 'Try'),
+              ),
+            ),
+          )
+        : h('p', null, r.kind === 'engine-loop' ? 'Not needed: the engine redraws every frame.' : 'No redraw function could be identified safely. Many games keep them private.'),
+      resultEl,
+      id && d && d.state === 'stale' ? h('div', null, h('h3', null, 'Display-only fallback'), h('p', { class: 'note' }, `Replace ${d.before} with ${d.after} in the text currently on screen. This changes only what you see, not the game; the game’s next redraw shows the same value anyway.`), h('button', { class: 'btn', onclick: () => { const n = patchVisibleNumber(win, d.before, d.after); toast(n ? `Updated ${n} number(s) on screen (display only)` : 'The old number is no longer on screen'); afterEditDisplay(id, d.before, d.after); } }, 'Show new number on screen')) : null,
+      h('h3', null, 'Manual fallback'),
+      h('p', null, 'Switch to another screen or tab in the game and back. The game redraws then, and your new value appears. Your progress is not affected.'),
+      S.display.auto ? h('div', { class: 'okbox' }, `Automatic after edits on this site: ${S.display.auto}`, h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: async () => { S.display.auto = null; await store?.set(`redraw:${S.sourceId}`, null); renderAll(); } }, 'Stop automatic redraw'))) : null,
+    );
+    bodyEl.append(sheet);
+    setDesc('Game state and the visible screen are separate: a value can be correct in the game before the screen shows it.');
+  }
+
+  async function runCandidate(c, id, resultEl) {
+    const d = id ? S.display.status.get(id) : null;
+    const r = await tryRedraw(win, c, { newValue: d ? d.after : undefined, oldValue: d ? d.before : undefined, renderer: renderer() });
+    clear(resultEl).append(
+      h(
+        'div',
+        { class: r.ok ? 'okbox' : 'warnbox' },
+        r.detail,
+        r.ok ? h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: async () => { S.display.auto = c.label; await store?.set(`redraw:${S.sourceId}`, c.label); toast(`Will run ${c.label} after edits on this site`); renderAll(); } }, 'Use automatically after edits')) : null,
+      ),
+    );
+    if (id && d) {
+      S.display.status.set(id, { ...d, state: r.state === 'error' ? d.state : r.state, detail: r.detail });
+      refreshStatusViews(id);
+    }
   }
 
   // ---------- find a value (value scanner)
@@ -874,6 +1056,18 @@ export function mountTrainer(win, opts) {
         await store?.set('englishLabels', S.englishLabels);
         renderAll();
       }, 'Translates or explains variable names offline. The original name stays underneath, and editing always uses the original variable.'),
+      toggleRow('English for text values', S.enInResults, async () => {
+        S.enInResults = !S.enInResults;
+        await store?.set('enInResults', S.enInResults);
+        renderAll();
+      }, 'Shows an English translation under foreign-language text in lists and search results (display only).'),
+      toggleRow('Compact view', S.compact, async () => {
+        S.compact = !S.compact;
+        ROW_H = S.compact ? 44 : 56;
+        panel.classList.toggle('compact', S.compact);
+        await store?.set('compact', S.compact);
+        renderAll();
+      }, 'Smaller rows so more variables fit on the iPhone screen.'),
     );
     if (opts.siteMode) {
       const mode = await opts.siteMode.get();

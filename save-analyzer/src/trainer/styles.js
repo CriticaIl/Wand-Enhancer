@@ -53,12 +53,12 @@ svg { width: 18px; height: 18px; fill: currentColor; flex: 0 0 auto; }
 .body { position: relative; }
 .list { position: relative; height: min(40vh, 468px); overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .spacer { position: relative; width: 100%; }
-.row { position: absolute; left: 0; right: 0; height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; background: rgba(0,0,0,.55); border-bottom: 1px solid rgba(255,255,255,.04); }
+.row { position: absolute; left: 0; right: 0; height: 56px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; background: rgba(0,0,0,.55); border-bottom: 1px solid rgba(255,255,255,.04); }
 .row.sel { background: #f4f6fb; color: #06070b; }
 .row.sel .sub2, .row.sel .val .orig { color: #475569; }
 .row .lbl { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; height: 100%; }
-.row .name { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row .sub2 { font-size: 11px; color: #8b95ad; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Menlo, monospace; }
+.row .name { font-size: 15px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sub2 { font-size: 11.5px; color: #8b95ad; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, Menlo, monospace; }
 .row .star { color: #fbbf24; font-size: 12px; margin-right: 2px; }
 .row.edited .name::after { content: " •"; color: #fbbf24; }
 .row .nav { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -146,5 +146,31 @@ textarea.field { height: 90px; font-size: 15px; padding: 10px 12px; font-weight:
 .cdot.full { background: #3df5a7; box-shadow: 0 0 8px #3df5a7; } .cdot.partial { background: #a3e635; } .cdot.saves { background: #fbbf24; } .cdot.none { background: #fb7185; }
 .setrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1e2433; }
 .tr { padding: 8px 0; border-bottom: 1px solid #1e2433; }
+/* compact view, search, display refresh, text */
+.panel.compact .row { height: 44px; }
+.panel.compact .row .sub2 { display: none; }
+.panel.compact .arrow, .panel.compact .info { height: 34px; }
+.panel.compact .num, .panel.compact .text { height: 30px; }
+.num { font-size: 15px; }
+.sfield { position: relative; }
+.sfield input { padding-right: 46px; -webkit-appearance: none; appearance: none; }
+.sfield input::-webkit-search-cancel-button { display: none; }
+.clr { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 38px; height: 38px; border-radius: 19px; font-size: 22px; line-height: 38px; color: #cbd5e1; background: #1b2131; }
+.filters { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.filters::-webkit-scrollbar { display: none; }
+.fchip { flex: 0 0 auto; height: 32px; padding: 0 11px; border-radius: 16px; background: #151926; border: 1px solid #262c3d; font-size: 12.5px; font-weight: 750; white-space: nowrap; }
+.fchip.on { background: #f4f6fb; color: #06070b; border-color: #f4f6fb; }
+.fsep { flex: 0 0 1px; background: #262c3d; margin: 4px 2px; }
+.sinfo { padding: 6px 12px; font-size: 12px; color: #94a3b8; background: #050608; }
+.linkbtn { color: #7dd3fc; font-weight: 700; font-size: 12px; padding: 4px 0; }
+.sugg { padding: 14px; height: min(30vh, 300px); }
+.displine { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.08); }
+.ds-shown b, .ds-auto b { color: #3df5a7; } .ds-stale b { color: #fbbf24; } .ds-unknown b, .ds-checking b { color: #94a3b8; }
+.cand { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid #1e2433; }
+.cand b { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+.textval { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; }
+.fulltext summary { cursor: pointer; color: #dbe3f0; }
+.fulltext .textval { margin-top: 6px; padding: 8px; border-radius: 8px; background: #0f1320; max-height: 40vh; overflow: auto; }
+.trbox { margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 `;
