@@ -1,0 +1,38 @@
+{
+  "version": "0.9.3",
+  "player": {
+    "name": "Builder",
+    "level": 6,
+    "xp": 1340,
+    "hp": 82,
+    "maxHp": 120,
+    "energy": 40.5
+  },
+  "resources": {
+    "coins": 4200,
+    "gems": 15,
+    "wood": 380,
+    "stone": 125,
+    "iron": 12
+  },
+  "unlocks": {
+    "workshop": true,
+    "harbor": false,
+    "airship": false
+  },
+  "achievements": {
+    "firstHouse": true,
+    "hundredTrees": true,
+    "millionaire": false
+  },
+  "settings": {
+    "musicVolume": 0.6,
+    "language": "en"
+  },
+  "stats": {
+    "playtimeSeconds": 18003,
+    "buildingsPlaced": 57
+  },
+  "lastSaved": 1731000000123,
+  "bigSeed": 12345678901234567000
+}

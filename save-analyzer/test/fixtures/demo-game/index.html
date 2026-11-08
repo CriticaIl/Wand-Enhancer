@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pebble Farm (SaveForge demo game)</title>
+<style>
+  body { margin: 0; font: 16px system-ui, sans-serif; background: #14231a; color: #eaf7ee; display: grid; place-items: center; min-height: 100vh; }
+  .box { text-align: center; padding: 24px; }
+  button { font: inherit; padding: 12px 18px; border-radius: 12px; border: 0; background: #64d38c; color: #082012; margin: 4px; }
+</style>
+</head>
+<body>
+<!-- A deliberately tiny sandbox game used by the end-to-end tests. It saves
+     to localStorage (Base64 JSON) and to IndexedDB (an object with bytes),
+     like many HTML5 games do. -->
+<div class="box">
+  <h1>Pebble Farm</h1>
+  <p>Coins: <b id="coins"></b> · Pebbles: <b id="pebbles"></b> · Day <b id="day"></b></p>
+  <button id="earn">Collect pebbles</button>
+  <button id="save">Save</button>
+</div>
+<script>
+  var state = { coins: 10, pebbles: 0, day: 1, unlocked: { quarry: false } };
+  function render() {
+    document.getElementById('coins').textContent = state.coins;
+    document.getElementById('pebbles').textContent = state.pebbles;
+    document.getElementById('day').textContent = state.day;
+  }
+  function save() {
+    localStorage.setItem('pebblefarm_save', btoa(JSON.stringify(state)));
+    var open = indexedDB.open('pebblefarm', 1);
+    open.onupgradeneeded = function () { open.result.createObjectStore('slots'); };
+    open.onsuccess = function () {
+      var tx = open.result.transaction('slots', 'readwrite');
+      tx.objectStore('slots').put({ savedAt: new Date(1731000000000), blob: new TextEncoder().encode(JSON.stringify({ gems: 3 })) }, 'slot1');
+      tx.oncomplete = function () { document.title = 'saved'; };
+    };
+  }
+  var raw = localStorage.getItem('pebblefarm_save');
+  if (raw) state = JSON.parse(atob(raw));
+  render();
+  document.getElementById('earn').onclick = function () { state.pebbles += 5; state.coins += 1; render(); };
+  document.getElementById('save').onclick = save;
+  if (!raw) save();
+</script>
+</body>
+</html>

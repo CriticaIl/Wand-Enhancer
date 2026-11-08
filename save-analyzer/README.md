@@ -1,0 +1,126 @@
+# SaveForge: save analyzer and mod menu for HTML5 and Ren'Py games
+
+SaveForge is an offline, mobile-first save editor for single-player browser games, built for iPhone Safari. You import a save. It works out how the save is encoded and decodes it without running any code from the file. Then it builds a mod menu from the variables it actually finds. It rebuilds the file in the same format, checks the result, and gives it back to you as a download.
+
+Everything runs locally. Files never leave the device.
+
+- **App:** `standalone/SaveForge.html` is one self-contained file of about 140 KB. It has no network dependencies.
+- **Source:** `src/` uses plain ES modules with no framework, so it runs directly from `index.html` on any static server.
+
+## Using it on iPhone
+
+Safari won't run JavaScript in an HTML file you open from the Files app, so the page has to be served:
+
+1. **Recommended:** host `standalone/` on any HTTPS static host, such as GitHub Pages or Netlify Drop. Open `SaveForge.html` in Safari and choose **Share → Add to Home Screen**. A small service worker (`standalone/sw.js`) caches the app so it opens without a connection afterwards.
+2. **On a computer:** run `npm run serve` inside `save-analyzer/`, then open `http://<computer-ip>:8080/standalone/SaveForge.html` from the phone on the same Wi‑Fi.
+
+## Workflow
+
+1. **Analyze:** import a file, paste a save string, or try one of the built-in samples. You'll see the detected engine, the full encoding chain (for example `UTF-8 text › LZString (Base64) › JSON`), the field counts, any warnings, and the reason each locked field is read-only.
+2. **Mod Menu:** controls are grouped into categories: money, resources, stats, level and XP, inventory, relationships, story flags, unlocks, achievements, time, variables, text and other.
+   - Each control matches the value's type:
+     - switches for booleans
+     - number fields with ± buttons, a slider and quick ×2/Max buttons for numbers
+     - text fields with suggestions for strings
+   - Large lists such as RPG Maker switches or item tables become searchable groups with bulk actions.
+   - Engine internals (the Ren'Py rollback log, `@c` ids and so on) are hidden by default and can be shown with one toggle.
+3. **Fields:** an expandable tree of every decoded value showing its real type, class names for Python objects, and a lock icon that explains why a field can't be edited. You can search keys and values and edit any field inline.
+4. **Changes:** a before/after list of your edits, each with its own revert. You can also **compare against a second save** (for example, before and after buying something) to find which variable you need, then copy values across.
+5. **Export:** the save is rebuilt and then **decoded again and checked field by field**: edited values must match your edits and everything else must be unchanged. Only then is the download offered, under the original file name. The export screen also offers the untouched original and engine-specific steps for putting the file back into the game.
+6. **Floating mod menu:** a draggable button opens the menu as a draggable panel (a bottom sheet on phones) over any tab, including the game browser.
+
+Undo/redo (including ⌘Z / ⇧⌘Z), revert-one and reset-all are always available. The original file is **backed up automatically** to the browser's IndexedDB the first time you change it, and the Analyze tab lists those backups.
+
+## Supported formats
+
+| Format | Encoding chain | Support |
+| --- | --- | --- |
+| Ren'Py save slot (`*.save`) | ZIP › `log` = Python pickle (protocols 0–5) | Read & write |
+| Ren'Py persistent | zlib › pickle (+ signature trailer) | Read & write if unsigned; **read-only if signed** |
+| RPG Maker MV (`*.rpgsave`, `RPG File1` in localStorage) | LZString Base64 › JSON (JsonEx) | Read & write |
+| RPG Maker MZ (`*.rmmzsave`, localforage) | binary string › zlib › JSON | Read & write |
+| SugarCube / Twine exports (`*.save`) | LZString Base64 › JSON | Read & write |
+| Generic HTML5 saves | JSON, Base64 (standard/URL-safe), gzip, zlib, LZString (Base64/UTF-16/URI/raw), URI-encoding, JSON-in-JSON strings, in any nesting | Read & write |
+| INI saves (GameMaker `ini_*`, others) | INI text | Read & write (number formatting kept) |
+| Storage Bridge exports | localStorage + IndexedDB JSON | Read & write, including Ren'Py web saves stored in IndexedDB |
+| Construct `saveState` JSON | JSON | Read & write (detection is a heuristic) |
+
+Detection is based on content, not file extension. A layer only counts as decoded if the next layer parses successfully all the way down to a terminal format: JSON, pickle, ZIP or INI. When nothing matches, the app lists what it checked and shows no data, rather than guessing.
+
+**Not supported:**
+
+- encrypted or proprietary binary saves
+- server-side progress
+- editing a running game's memory (browsers don't allow it)
+- adding variables that aren't already in the save
+- re-signing Ren'Py data
+
+Unity/Godot binary saves are handled only when they happen to be JSON or INI.
+
+## How edits preserve everything else
+
+- **JSON / INI:** the parser records each value's character range, and edits are spliced into the original text. Whitespace, key order, duplicate keys, escapes and number spelling outside the edited value stay byte-identical. Integers above 2^53 are kept as BigInt and never rounded. Floats stay floats: if a float edit lands on a whole number it is written as `41.0`, not `41`.
+- **Pickle:** the decoder is a stack machine over the opcode stream that **never imports or calls anything**. `GLOBAL`, `REDUCE`, `BUILD` and `NEWOBJ` become inert descriptive nodes. An edit replaces only the opcode that produced that value, using the same opcode family:
+  - `BININT*`/`LONG1`/`INT`, `BINFLOAT`/`FLOAT`
+  - `BINUNICODE`/`SHORT_BINUNICODE`/`UNICODE`, and Python 2 `SHORT_BINSTRING`/`BINSTRING`/`STRING`
+  - `NEWTRUE`/`NEWFALSE`/`I01`
+
+  Python memoizes strings, so one string can be shared by several variables. When you edit a shared string, the original is kept in the memo and swapped out with `PUT, POP, <new value>`, so the other references keep their value. Protocol 4/5 `FRAME` lengths are recomputed. Object identity, such as the same object appearing in both the store and the rollback log, is preserved.
+- **ZIP:** unchanged entries are copied with their original compressed bytes. Changed entries are recompressed.
+- **Compression:** inflate is pure JS. Deflate uses the platform `CompressionStream`, falling back to spec-valid stored blocks.
+
+## Ren'Py notes
+
+These are based on reading Ren'Py's `renpy/loadsave.py`, `renpy/persistent.py`, `renpy/savetoken.py` and `renpy/compat/pickle.py`:
+
+- A save slot is a ZIP containing `screenshot.png`, `extra_info`, `json`, `renpy_version`, `log` and (8.1+) `signatures`. `log` is `pickle.dumps((roots, rollback_log), HIGHEST_PROTOCOL)`, and `roots` maps `store.<name>` to each variable. The menu shows those variables. The rollback log and `store._*` internals are hidden by default.
+- **Signatures (8.1+):** if the signature doesn't match, `check_load` refuses the save. An *unsigned* save is accepted after a single "do you trust this save" prompt. So when the log changes, SaveForge writes an empty `signatures` entry, and you answer **Yes** once when loading. Web builds (`renpy.emscripten`) skip this check entirely.
+- **Persistent data:** this is `zlib.compress(pickle) + signatures`. If the signature doesn't verify, `check_persistent` returns `None` and the game silently resets persistent data. The signing key isn't in the file, so SaveForge opens signed persistent files **read-only** and explains why.
+- **Ren'Py web builds** keep saves in IndexedDB (Emscripten IDBFS). The Storage Bridge exports them as bytes, and SaveForge decodes the ZIP and pickle inside, then writes them back.
+
+## Game browser and Storage Bridge
+
+The **Game** tab opens any http(s) game URL in a frame, with the floating mod menu on top.
+
+- **Same-origin games:** for example, a game hosted next to SaveForge. SaveForge can read the game's localStorage and IndexedDB directly ("Read game storage") and write a verified edit back before reloading the game.
+- **Other origins:** Safari correctly blocks access to another site's storage. Use the separate workflow instead: run the **Storage Bridge** bookmarklet on the game's own page. It exports localStorage and IndexedDB to a JSON file. Structured-clone types such as `Uint8Array`, `Date`, `Map`, `Set` and `Blob` are tagged so they import back losslessly. Edit that file in SaveForge, then import it with the same bookmarklet. The import checks the origin and asks you to reload. Setup steps for iPhone are in the Game tab.
+
+## Development
+
+```sh
+cd save-analyzer
+npm install          # esbuild (build), lz-string + pako (reference implementations for tests)
+npm test             # 80 tests: codecs, pickle, every sample round trip, engines, browser e2e
+npm run build        # -> standalone/SaveForge.html
+npm run samples      # regenerate samples/ (needs python3) and the embedded copies
+npm run serve        # http://localhost:8080/ (unbundled modules) and /standalone/
+```
+
+**What the tests prove:**
+
+- **Codecs:** LZString output matches the reference `lz-string` package in all four variants. Inflate decodes `pako` output at every level. `pako` and Python `zipfile` read SaveForge's zlib, gzip and ZIP output.
+- **Pickle:** a malicious pickle (`os.system`) is described as a class name and never executed. Edits load correctly in **CPython's own unpickler** for protocols 0–5. Memo sharing, `FRAME` recomputation, Python 2 strings and big integers are all covered.
+- **Every sample:** exporting with no edits is byte-identical, and editing *every* editable field round-trips with types preserved.
+- **Engines:** edited Ren'Py saves are verified in CPython, including shared objects and the cleared signature. RPG Maker MV/MZ output decodes with `lz-string` and `pako` exactly as `StorageManager` does. SugarCube output re-imports through `lz-string`.
+- **Unsupported input:** random bytes, prose, broken JSON and truncated ZIPs are rejected with reasons.
+- **Browser end-to-end (Playwright):** same-origin read, edit and write-back into a running demo game, plus a full bookmarklet export → edit → import cycle.
+
+`samples/` contains synthetic saves; see `samples/README.md`. The demo game used by the browser tests is `test/fixtures/demo-game/`.
+
+### Layout
+
+```
+src/core/       bytes, compression, lzstring, zip, pickle (+terminal), json/ini/zip terminals,
+                pipeline (format detection), model, modmenu (menu generator), document (session, export, validation)
+src/adapters/   engine profiles: detection, labels, categories, import guides
+src/bridge/     Storage Bridge (bookmarklet + same-origin integration)
+src/ui/         app, styles, DOM helpers, backups (IndexedDB), embedded samples
+tools/          build, sample generators, Ren'Py fixtures + CPython verifier
+test/           node:test suites
+```
+
+### Adding a format adapter
+
+1. If the format is a new *encoding layer*, add it to `src/core/pipeline.js` with a decoder and an `encode`. If it is a new *terminal* (a container or data format), add a terminal class with `root` and `serialize(edits)`.
+2. If it is a new *engine*, add a structural detector, labels and an import guide in `src/adapters/profiles.js`.
+3. Add a sample to `tools/make-samples.mjs` and an expectation to `test/engines.test.mjs`. The round-trip suite picks it up automatically.

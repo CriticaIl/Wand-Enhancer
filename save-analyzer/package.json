@@ -1,0 +1,18 @@
+{
+  "name": "saveforge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline HTML5 / Ren'Py game save analyzer and mod menu generator",
+  "type": "module",
+  "scripts": {
+    "samples": "python3 tools/make_renpy_samples.py && node tools/make-samples.mjs && node tools/embed-samples.mjs",
+    "test": "node --test test/*.test.mjs",
+    "build": "node tools/build.mjs",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0",
+    "lz-string": "1.5.0",
+    "pako": "2.1.0"
+  }
+}
