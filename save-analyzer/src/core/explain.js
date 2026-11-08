@@ -438,6 +438,8 @@ export function explain(node, parents, opts = {}) {
     risk,
     confidence: { level, score: Math.round(score * 100) / 100, reasons },
     summary: shortSummary(controls),
+    source: opts.source || null,
+    frame: opts.frame || null,
   };
 }
 

@@ -3,7 +3,9 @@
 // state somewhere page scripts cannot reach (a Web Worker, WebAssembly, a
 // closure), it is reported as not live-editable instead of being faked.
 
+import { applyMutation, classifyGlobal, countChanges, sampleNumbers } from './game-state.js';
 import { buildLiveTree } from './live-tree.js';
+import { childId } from '../core/model.js';
 
 /**
  * @typedef LiveEngine
@@ -25,6 +27,8 @@ export function detectLiveEngines(win, { generic = true } = {}) {
   if (sc) found.push(sc);
   const c2 = construct2(win);
   if (c2) found.push(c2);
+  const ph = phaser(win);
+  if (ph) found.push(ph);
   // the generic scan briefly creates a hidden iframe, so callers that must not touch the page skip it
   const g = generic ? genericGlobals(win, found.length > 0) : null;
   if (g) found.push(g);
@@ -53,6 +57,12 @@ export function liveLimitations(win) {
   if (has('GameMaker_Init') || has('g_pBuiltIn') || win.document?.querySelector?.('#canvas[gamemaker], script[src*="html5game"]')) {
     out.push({ id: 'gamemaker', name: 'GameMaker HTML5', reason: 'GameMaker HTML5 compiles variables into obfuscated runtime structures, so they cannot be identified reliably live. INI/JSON saves in browser storage can be edited with Apply & Reload.' });
   }
+  if (has('unityInstance') || has('createUnityInstance') || win.document?.querySelector?.('#unity-canvas, script[src*=".loader.js"]')) {
+    out.push({ id: 'unity', name: 'Unity WebGL', reason: 'Unity runs the game in WebAssembly memory that page scripts cannot read as variables. PlayerPrefs and save files in IndexedDB (/idbfs) can be edited with Apply & Reload.' });
+  }
+  if (has('GODOT_CONFIG') || has('Godot') || win.document?.querySelector?.('script[src*="godot"], canvas#canvas[data-godot]')) {
+    out.push({ id: 'godot', name: 'Godot (web)', reason: 'Godot runs the game in WebAssembly; its variables are not reachable from the page. Save files in IndexedDB (/userfs) can be edited with Apply & Reload.' });
+  }
   return out;
 }
 
@@ -70,6 +80,7 @@ function rpgMaker(win) {
   return {
     id: 'rpgmaker',
     name: `RPG Maker ${mz}`,
+    evidence: 'DataManager.makeSaveContents and $gameParty are present',
     channel: 'live',
     note: 'Connected to the running RPG Maker engine ($gameParty, $gameActors, $gameVariables, $gameSwitches). Changes apply immediately; save in-game to keep them.',
     snapshot() {
@@ -119,6 +130,7 @@ function sugarCube(win) {
   return {
     id: 'sugarcube',
     name: 'SugarCube (Twine)',
+    evidence: 'window.SugarCube.State.variables is present',
     channel: 'live',
     note: 'Connected to SugarCube.State.variables (the active moment). Story logic sees changes immediately; text already on screen updates when the passage is re-rendered. Save in-game to keep them.',
     snapshot() {
@@ -151,6 +163,7 @@ function construct2(win) {
   return {
     id: 'construct2',
     name: 'Construct 2',
+    evidence: 'cr_getC2Runtime().all_global_vars is present',
     channel: 'live',
     note: 'Connected to Construct 2 global variables. Changes apply on the next game tick; save in-game to keep them.',
     snapshot() {
@@ -191,9 +204,14 @@ function genericGlobals(win, hasEngine) {
   } catch {
     return null;
   }
-  const candidates = [];
+  const pageGlobals = [];
+  const prefiltered = []; // shown in Diagnostics as excluded, never scanned
   for (const k of names) {
-    if (baseline.has(k) || LIB_GLOBALS.test(k) || /^on[a-z]+$/.test(k)) continue;
+    if (baseline.has(k) || /^on[a-z]+$/.test(k) || /^__saveforge/.test(k)) continue;
+    if (LIB_GLOBALS.test(k)) {
+      if (prefiltered.length < 200) prefiltered.push(k);
+      continue;
+    }
     let d;
     try {
       d = Object.getOwnPropertyDescriptor(win, k);
@@ -203,19 +221,149 @@ function genericGlobals(win, hasEngine) {
     if (!d || !('value' in d)) continue;
     const v = d.value;
     if (typeof v === 'function' || v === undefined) continue;
-    if (typeof v === 'object' && v !== null && (typeof v.nodeType === 'number' || v === win)) continue;
-    candidates.push(k);
+    // DOM nodes, windows and frames (an <iframe id="x"> creates a global that is
+    // the frame's window; reading anything from a cross-origin one throws)
+    if (typeof v === 'object' && v !== null && isNodeOrWindow(v, win)) continue;
+    // engine objects handled by a dedicated adapter (Phaser game instances)
+    if (safe(() => v && typeof v === 'object' && v.registry && v.scene && Array.isArray(v.scene.scenes))) continue;
+    pageGlobals.push(k);
   }
-  if (!candidates.length) return null;
-  return {
+  if (!pageGlobals.length) return null;
+
+  const read = (k) => {
+    try {
+      return Object.getOwnPropertyDescriptor(win, k)?.value;
+    } catch {
+      return undefined;
+    }
+  };
+  let results = null; // [{name, kind, score, reasons}]
+  const classifyAll = (changes) => {
+    results = pageGlobals.map((k) => {
+      const r = classifyGlobal(k, read(k));
+      return changes ? applyMutation(r, changes.get(k) || 0) : r;
+    });
+    results.sort((x, y) => y.score - x.score);
+    for (const k of prefiltered) results.push({ name: k, kind: 'website', score: 0, reasons: ['known library, analytics or engine global (handled by an engine adapter if it is one)'] });
+  };
+  const engine = {
     id: 'generic',
-    name: hasEngine ? 'Other page globals' : 'Page globals (generic)',
+    name: hasEngine ? 'Other game state' : 'Game state (generic)',
     channel: 'live-generic',
-    note: 'Found game data in the page’s global JavaScript variables. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
+    includeAll: false,
+    note: 'Game-state variables found in the page’s global JavaScript, with website globals (analytics, ads, page data) filtered out. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
+    /** Samples numeric values twice so state that changes while the game runs counts as evidence. */
+    async prepare(ms = 700) {
+      const first = new Map(pageGlobals.map((k) => [k, sampleNumbers(read(k))]));
+      await new Promise((r) => win.setTimeout(r, ms));
+      const changes = new Map(pageGlobals.map((k) => [k, countChanges(first.get(k), sampleNumbers(read(k)))]));
+      classifyAll(changes);
+    },
+    classification() {
+      if (!results) classifyAll(null);
+      return results;
+    },
+    included() {
+      return this.classification()
+        .filter((r) => this.includeAll || r.kind === 'game')
+        .map((r) => r.name);
+    },
     snapshot() {
-      return buildLiveTree(win, { rootKeys: candidates, maxNodes: 30000, maxDepth: 7, rootLabel: 'window' });
+      const keys = this.included();
+      return buildLiveTree(win, { rootKeys: keys, maxNodes: 30000, maxDepth: 7, rootLabel: 'window' });
+    },
+    sourceOf(id) {
+      const top = (id.split('/')[1] || '').replace(/~1/g, '/').replace(/~0/g, '~');
+      const r = this.classification().find((x) => x.name === top);
+      return r ? `window.${top} (game-state score ${r.score}${r.kind === 'game' ? '' : ', shown because “include website globals” is on'})` : `window.${top}`;
     },
   };
+  return engine;
+}
+
+// ---------------------------------------------------------------- Phaser 3
+
+const PHASER_SCENE_KEYS = new Set(['sys', 'game', 'anims', 'cache', 'registry', 'sound', 'textures', 'events', 'cameras', 'add', 'make', 'scene', 'children', 'lights', 'data', 'input', 'load', 'time', 'tweens', 'physics', 'matter', 'impact', 'plugins', 'renderer', 'scale', 'facebook', 'plugin', 'rexUI']);
+
+function phaser(win) {
+  let P;
+  try {
+    P = win.Phaser;
+    if (!P || typeof P !== 'object') return null;
+  } catch {
+    return null;
+  }
+  const isGame = (v) => {
+    try {
+      return !!v && typeof v === 'object' && v.registry && typeof v.registry.list === 'object' && v.scene && Array.isArray(v.scene.scenes);
+    } catch {
+      return false;
+    }
+  };
+  const games = [];
+  for (const k of Object.getOwnPropertyNames(win)) {
+    let d;
+    try {
+      d = Object.getOwnPropertyDescriptor(win, k);
+    } catch {
+      continue;
+    }
+    if (d && 'value' in d && isGame(d.value) && !games.some((g) => g.value === d.value)) games.push({ name: k, value: d.value });
+  }
+  if (Array.isArray(P.GAMES)) for (const g of P.GAMES) if (isGame(g) && !games.some((x) => x.value === g)) games.push({ name: 'Phaser.GAMES', value: g });
+  if (!games.length) return null;
+  const { name: gameVar, value: game } = games[0];
+  return {
+    id: 'phaser',
+    name: `Phaser ${String(P.VERSION || '3').split(/[ -]/)[0]}`,
+    channel: 'live',
+    evidence: `window.${gameVar} is a Phaser game (registry + scenes)`,
+    note: 'Connected to the Phaser game: the global registry and the custom properties and data of each scene. Changes apply on the next frame; save in-game to keep them.',
+    snapshot() {
+      const refs = new Map();
+      let count = 0;
+      let truncated = false;
+      const graft = (obj, prefix, label, rootKeys) => {
+        const t = buildLiveTree(obj, { prefix, rootLabel: label, rootKeys, maxNodes: 20000, maxDepth: 5 });
+        t.root.key = label;
+        for (const [k, v] of t.refs) refs.set(k, v);
+        count += t.count;
+        truncated ||= t.truncated;
+        return t.root;
+      };
+      const children = [graft(game.registry.list, '$/registry', 'registry')];
+      const scenesNode = { id: '$/scenes', key: 'scenes', type: 'object', value: undefined, editable: false, children: [], meta: {} };
+      for (const scene of game.scene.scenes) {
+        const key = safe(() => scene.sys.settings.key) || 'scene';
+        const own = Object.keys(scene).filter((k) => {
+          if (PHASER_SCENE_KEYS.has(k) || k.startsWith('_')) return false;
+          const v = scene[k];
+          if (typeof v === 'function') return false;
+          return !(v && typeof v === 'object' && ('scene' in v || 'sys' in v || 'renderer' in v));
+        });
+        const node = graft(scene, childId('$/scenes', key), key, own);
+        node.meta.className = 'Phaser.Scene';
+        if (scene.data && typeof scene.data.list === 'object') node.children.push(graft(scene.data.list, `${node.id}/data`, 'data'));
+        scenesNode.children.push(node);
+      }
+      children.push(scenesNode);
+      const root = { id: '$', key: 'Phaser', type: 'object', value: undefined, editable: false, children, meta: {} };
+      return { root, refs, count, truncated };
+    },
+    sourceOf(id) {
+      if (id.startsWith('$/registry')) return `${gameVar}.registry (Phaser data registry)`;
+      const m = /^\$\/scenes\/([^/]+)(\/data)?/.exec(id);
+      return m ? `scene “${m[1].replace(/~1/g, '/').replace(/~0/g, '~')}”${m[2] ? '.data' : ' property'}` : 'Phaser game';
+    },
+  };
+}
+
+function isNodeOrWindow(v, win) {
+  try {
+    return v === win || v.window === v || typeof v.nodeType === 'number';
+  } catch {
+    return true; // cross-origin window: not readable
+  }
 }
 
 function safe(fn) {

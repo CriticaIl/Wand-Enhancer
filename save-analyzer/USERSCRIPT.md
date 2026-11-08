@@ -87,10 +87,25 @@ The script has `@version` and `@updateURL` pointing at GitHub Pages. The Userscr
   - **Native apps and App Store games.** Userscripts only run inside Safari.
 - **Strict security settings:** if a site blocks injected scripts with a strict Content-Security-Policy, the manager may not be able to run the script there. The Userscripts FAQ suggests changing the script's `@inject-into` to `auto` in that case, but then live engine access may not work.
 
+## Game portals (games inside frames)
+
+On many portals (game catalogue sites), the page you see is the *portal*. The game itself runs in an **iframe**, usually from another site and sometimes nested inside a second "wrapper" frame. Each of those frames has its own variables, and Safari lets a page read only its own.
+
+- **Which frame gets the trainer:** the userscript runs in every frame. The frame that actually contains the game shows the ⬢ launcher. Typing `#saveforge` on the portal page sends the trainer into that frame.
+- **Website globals are never shown as game variables:** analytics, ads, cookie consent, portal SDKs and page data (such as a `window.game = {title, plays, rating…}` description of the game) are filtered out.
+  - **How each global is judged:** SaveForge scores every page global on what it contains: numbers, game-like names, values that change while you play, URLs and website-like keys.
+  - **Seeing the decisions:** Main menu → **Diagnostics** lists every included and excluded global and the reason for each.
+- **If the trainer opens on the portal with "No game variables found here":** open **Diagnostics**. It shows the game frame's site and whether SaveForge is running there.
+  - **Not running there:** allow Userscripts on that site too. Simplest: Settings → Apps → Safari → Extensions → Userscripts → *All Websites: Allow*. Alternatively, tap **Open game frame directly** to load the game on its own. Be aware that a game opened outside the portal may use separate saves from the embedded copy, because Safari keeps embedded sites' storage apart.
+- **ⓘ shows where a value comes from:** every row's ⓘ panel names its source (engine, global, scene or storage key) and the frame it lives in.
+
 ## Troubleshooting
 
 - **No ⬢ button on a game:**
   - The game may load slowly. Wait about 6 seconds, or add `#saveforge` to the address.
   - Check that Userscripts is allowed on that site (AA → Userscripts).
 - **The popup doesn't offer Install:** the address must end in `.user.js`. Open the exact link above, not a GitHub page about it.
-- **The trainer opens but says no data was found:** the game keeps its state somewhere Safari won't let pages reach. Try the *Saves in storage* source after saving in-game.
+- **The trainer opens but says no data was found:**
+  - Open **Diagnostics**. The game may be in a frame (see above).
+  - Otherwise the game keeps its state somewhere Safari won't let pages reach: inside closures, in WebAssembly (Unity, Godot, Ren'Py web), or on a server. Try the *Saves in storage* source after saving in-game.
+- **Only a few unrelated-looking values:** check **Diagnostics → Page globals**. Since 1.3.0, website globals are excluded. If you really want them, *Include website globals (advanced)* shows them.

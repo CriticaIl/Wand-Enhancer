@@ -25,6 +25,8 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
   const api = {
     version: VERSION,
     open,
+    openHere: () => openHere(),
+    frameReports: () => [...reports.values()],
     get mode() {
       return mode;
     },
@@ -34,9 +36,88 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
   };
   win.__saveforgeUserscript = api;
 
-  function open() {
+  // ---------------------------------------------------------------- frames
+  // Games on portals usually run in an iframe (often another site, sometimes
+  // nested). This script runs in every frame; each instance reports a detected
+  // game to its parent, reports are relayed up, and "open" is routed down to the
+  // frame that actually holds the game. Messages are namespaced and checked
+  // against the sending window; frames without a game stay silent unless the
+  // user opens SaveForge (which pings them for the Diagnostics screen).
+  const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const MSG = '__saveforge';
+  const routes = new Map(); // report id -> direct child window that leads to it
+  const reports = new Map(); // report id -> report (from descendants)
+  const isTop = (() => {
+    try {
+      return win === win.top;
+    } catch {
+      return false;
+    }
+  })();
+  const isChildWindow = (w) => {
+    for (let i = 0; i < win.frames.length; i++) if (win.frames[i] === w) return true;
+    return false;
+  };
+  const myReport = () => ({ id, origin: safeOrigin(), href: safeHref(), game: !!detected, reason: detected || '' });
+  const post = (target, msg) => {
+    try {
+      target.postMessage({ [MSG]: 1, ...msg }, '*');
+    } catch {
+      /* frame gone */
+    }
+  };
+  function reportUp() {
+    if (!isTop) post(win.parent, { type: 'report', report: myReport() });
+  }
+  win.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || typeof d !== 'object' || d[MSG] !== 1) return;
+    if (d.type === 'report' && d.report && isChildWindow(e.source)) {
+      routes.set(d.report.id, e.source);
+      reports.set(d.report.id, d.report);
+      if (d.report.game) hideLauncherForChild();
+      if (!isTop) post(win.parent, { type: 'report', report: d.report });
+    } else if (e.source === win.parent && d.type === 'ping') {
+      reportUp();
+      for (let i = 0; i < win.frames.length; i++) post(win.frames[i], { type: 'ping' });
+    } else if (e.source === win.parent && d.type === 'open') {
+      if (d.target === id) openHere();
+      else if (routes.has(d.target)) post(routes.get(d.target), { type: 'open', target: d.target });
+    }
+  });
+  function hideLauncherForChild() {
+    // the game frame shows its own launcher; avoid a second one on the portal page
+    if (!detected && mode !== 'always') removeLauncher();
+  }
+  async function pingFrames(wait = 600) {
+    for (let i = 0; i < win.frames.length; i++) post(win.frames[i], { type: 'ping' });
+    await new Promise((r) => win.setTimeout(r, wait));
+    return [...reports.values()].map((r) => ({ ...r, source: routes.get(r.id) }));
+  }
+  function openInFrame(report) {
+    const route = routes.get(report.id);
+    if (!route) throw new Error('That frame is no longer available.');
+    post(route, { type: 'open', target: report.id });
+  }
+
+  async function open() {
+    // no game state here but a descendant frame has one: open it there
+    if (!detected) {
+      const found = [...reports.values()].find((r) => r.game) || (await pingFrames(500)).find((r) => r.game);
+      if (found) {
+        toast('Opening SaveForge in the game frame…');
+        openInFrame(found);
+        return null;
+      }
+    }
+    return openHere();
+  }
+
+  function openHere() {
     hideLauncher();
     const ctl = openTrainer(win, {
+      frameReports: () => pingFrames(500),
+      openInFrame,
       onClose: () => {
         delete win.__saveforgeTrainer;
         if (mode !== 'never' && (mode === 'always' || detected)) showLauncher();
@@ -44,6 +125,21 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
     });
     ctl.show();
     return ctl;
+  }
+
+  function safeOrigin() {
+    try {
+      return win.location.origin;
+    } catch {
+      return '';
+    }
+  }
+  function safeHref() {
+    try {
+      return win.location.href;
+    } catch {
+      return '';
+    }
   }
 
   async function changeMode(m) {
@@ -201,6 +297,7 @@ export function startUserscript(win, { detectDelays = [1500, 6000] } = {}) {
         const res = await looksLikeGame(win);
         if (res.game) {
           detected = res.reason;
+          reportUp();
           showLauncher();
           break;
         }

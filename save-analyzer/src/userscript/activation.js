@@ -2,6 +2,7 @@
 // touching the page: no DOM changes, no storage writes, no network.
 
 import { detectLiveEngines, liveLimitations } from '../trainer/engines.js';
+import { classifyGlobal } from '../trainer/game-state.js';
 
 const RENPY_DB = '/home/web_user/.renpy';
 
@@ -27,7 +28,9 @@ export async function looksLikeGame(win) {
   // 4) a well-known game-state global holding numbers (read-only peek, no getters invoked)
   for (const name of GAME_GLOBALS) {
     const d = safe(() => Object.getOwnPropertyDescriptor(win, name), null);
-    if (d && 'value' in d && hasNumbers(d.value)) return { game: true, reason: `game state in window.${name}` };
+    if (!d || !('value' in d) || !hasNumbers(d.value)) continue;
+    // a portal's `window.game = {title, plays, rating, thumb…}` is page data, not game state
+    if (classifyGlobal(name, d.value).kind === 'game') return { game: true, reason: `game state in window.${name}` };
   }
   // 5) Ren'Py web save storage (listing databases does not create one)
   try {

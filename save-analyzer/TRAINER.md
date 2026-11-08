@@ -24,7 +24,8 @@ Each integration uses only objects the engine publishes on `window`. When an eng
 | **RPG Maker MV / MZ** | **Live** | `DataManager.makeSaveContents()` returns the live `$gameSystem`, `$gameSwitches`, `$gameVariables`, `$gameSelfSwitches`, `$gameActors` and `$gameParty` objects, which have the same layout as a save file. | Names come from `$dataSystem.switches/variables` and `$dataItems/$dataWeapons/$dataArmors`. After a write, the actor's `refresh()` (which clamps HP/MP) and `$gameMap.requestRefresh()` (which re-evaluates event pages) are called. |
 | **SugarCube 2** | **Live** | `SugarCube.State.variables` (the active moment). | The "Refresh passage" action calls `SugarCube.Engine.show()` to re-render text that is already on screen. The values persist into later moments when the player navigates. |
 | **Construct 2** | **Live** | `cr_getC2Runtime().all_global_vars[].data` | Changes are picked up on the next tick. |
-| **Generic HTML5** | **Live\*** | Global variables are found by comparing `window` with a fresh frame's `window`, then walked with caps on depth and node count. Library globals (Phaser, PIXI, jQuery…) are excluded. | This works for games that keep state in globals. If a game keeps state in closures or modules, nothing is found. The game may recompute or overwrite edited values, so these edits are marked *Live (unverified)*. |
+| **Phaser 3** | **Live** | The global game instance's `registry.list`, plus each scene's custom properties and `data.list`. | Game objects and Phaser internals are skipped. |
+| **Generic HTML5** | **Live\*** | Global variables are found by comparing `window` with a fresh frame's `window`, scored as game state or website data, then walked with caps on depth and node count. | This works for games that keep state in globals. If a game keeps state in closures or modules, nothing is found. The game may recompute or overwrite edited values, so these edits are marked *Live (unverified)*. |
 | **Ren'Py web** | Apply & Reload | Ren'Py web runs Python in WebAssembly. Its only bridge is Python→JS (`emscripten.run_script`, see `renpy/webloader.py`), and there is no JS→Python API. | Save slots in IndexedDB (`/home/web_user/.renpy`, store `FILE_DATA`) are decoded with SaveForge's safe pickle reader, edited, rebuilt and written back. Ren'Py web builds skip the save-token check. |
 | **Construct 3** | Apply & Reload | By default the runtime runs in a Web Worker, which the page can't reach. | Saves in localforage/IndexedDB can be edited. |
 | **Twine Harlowe** | Apply & Reload | Story state is private to the engine. | Saves in localStorage can be edited. |
@@ -32,6 +33,38 @@ Each integration uses only objects the engine publishes on `window`. When an eng
 | Server-side, encrypted or WebAssembly-only state | No | There is nothing the page can safely read or change. | — |
 
 The original demo games in `demo-games/` imitate the public API shape of RPG Maker, SugarCube and Construct 2, plus Ren'Py web's storage layout. They exist so these integrations can be tested in a real browser without redistributing those engines. Running against the real engines depends on their globals matching the documented API. The integration code checks for each object before using it.
+
+## Finding the real game state
+
+Many pages expose website globals that have nothing to do with the game.
+
+**1. Engine adapters first.** These read documented engine objects:
+
+| Engine | Objects read |
+| --- | --- |
+| RPG Maker | save contents |
+| SugarCube | `State.variables` |
+| Construct 2 | global variables |
+| Phaser 3 | `game.registry`, custom scene properties and `scene.data` (game objects and Phaser internals are skipped) |
+
+**2. Generic page globals are scored, not trusted** (`src/trainer/game-state.js`). Only game state is listed; everything else stays visible in Diagnostics with the reason.
+
+| Signal | Effect |
+| --- | --- |
+| Known analytics, ads, consent, framework and portal-SDK globals | Excluded outright |
+| Numbers | Raise the score |
+| Game-like key names | Raise the score |
+| Values that change during a ~0.7 s sample while the game runs | Raise the score |
+| Game-like class names | Raise the score |
+| Website-like keys (`title`, `slug`, `url`, `plays`, `rating`, `thumb`…) | Lower the score |
+| URL strings | Lower the score |
+| Text-heavy objects | Lower the score |
+
+**3. Frames.** Portals run games in (often cross-origin, often nested) iframes.
+- **Userscript:** runs in every frame. The frame with the game reports to its parent through namespaced `postMessage`; frames without a game stay silent unless the user opens SaveForge. "Open" is routed down to the game frame.
+- **Bookmarklet/extension on a portal page:** Diagnostics lists game-sized frames with their origin and offers "Open trainer in this frame" (same site) or "Open game frame directly".
+
+**4. Engines that can't be read live are named in Diagnostics:** Ren'Py web, Construct 3, Harlowe, GameMaker, Unity WebGL and Godot.
 
 ## The three kinds of edit
 

@@ -78,8 +78,31 @@ class BaseProvider {
       path: entry?.path,
       liveName: this.liveName(id),
       references: entry ? this.refCounts.get(entry.key) : 0,
+      source: this.sourceOf(id),
+      frame: frameLabel(this.win),
     });
   }
+  sourceOf() {
+    return null;
+  }
+}
+
+/** "top page (origin)" or "iframe, depth n (origin)" for the window the data lives in. */
+export function frameLabel(win) {
+  if (!win) return null;
+  let depth = 0;
+  try {
+    for (let w = win; w !== w.parent && depth < 10; w = w.parent) depth++;
+  } catch {
+    /* cross-origin parent: depth still counted up to that point */
+  }
+  let origin = '';
+  try {
+    origin = win.location.origin;
+  } catch {
+    origin = 'unknown origin';
+  }
+  return depth === 0 ? `top page (${origin})` : `iframe, depth ${depth} (${origin})`;
 }
 
 // ---------------------------------------------------------------- live
@@ -112,6 +135,12 @@ export class LiveProvider extends BaseProvider {
 
   liveName(id) {
     return this.engine.liveName ? this.engine.liveName(id, this.refs.get(id)) : null;
+  }
+
+  sourceOf(id) {
+    if (this.engine.sourceOf) return `${this.engine.name}: ${this.engine.sourceOf(id)}`;
+    const path = this.entryById.get(id)?.path;
+    return `${this.engine.name}${path ? `: ${path}` : ''}`;
   }
 
   value(id) {
@@ -265,6 +294,19 @@ export class StorageProvider extends BaseProvider {
   }
   diff() {
     return this.session.diff();
+  }
+
+  sourceOf(id) {
+    const seg = id.split('/').map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~'));
+    if (seg[1] === 'localStorage') return `localStorage key “${seg[2]}”`;
+    if (seg[1] === 'indexedDB') {
+      const db = this.dump.indexedDB?.[Number(seg[2])];
+      const store = db?.stores?.[Number(seg[4])];
+      const rec = store?.records?.[Number(seg[6])];
+      const key = rec ? (typeof rec.key === 'string' ? rec.key : JSON.stringify(rec.key)) : '?';
+      return `IndexedDB “${db?.name ?? '?'}” › ${store?.name ?? '?'} › ${key}`;
+    }
+    return 'browser storage';
   }
 
   /** Checks storage has not changed since it was read (e.g. a game autosave). */

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Star Runner — SaveForge demo</title>
+<link rel="stylesheet" href="../demo.css" />
+</head>
+<body>
+<header>SaveForge demo game · imitates the public object shape of a Phaser 3 game (game.registry.list, game.scene.scenes, scene.data.list, custom scene properties). It is not Phaser.</header>
+<main>
+  <h1>Star Runner</h1>
+  <canvas id="c" width="520" height="300"></canvas>
+  <div class="hud">
+    <div><span>Score</span><b id="score"></b></div>
+    <div><span>Lives</span><b id="lives"></b></div>
+    <div><span>Stars (registry)</span><b id="stars"></b></div>
+    <div><span>Shield</span><b id="shield"></b></div>
+  </div>
+</main>
+<script>
+  (function () {
+    // ---- minimal stand-ins for Phaser's public classes
+    function DataManager(parent) { this.parent = parent; this.list = {}; }
+    DataManager.prototype.get = function (k) { return this.list[k]; };
+    DataManager.prototype.set = function (k, v) { this.list[k] = v; return this; };
+    function Scene(key) {
+      this.sys = { settings: { key: key }, game: null };
+      this.data = new DataManager(this);
+      this.add = { sprite: function () {} };
+      this.cameras = { main: { scrollX: 0 } };
+      this.events = { on: function () {} };
+    }
+    function SceneManager() { this.scenes = []; }
+    function Game(config) {
+      this.config = config;
+      this.registry = new DataManager(this);
+      this.scene = new SceneManager();
+      this.isBooted = true;
+      this.loop = { frame: 0, delta: 16 };
+    }
+    window.Phaser = { VERSION: '3.80.1-demo-shape', Game: Game, Scene: Scene };
+
+    // ---- the game itself
+    var play = new Scene('Play');
+    play.score = 0;
+    play.lives = 3;
+    play.level = 1;
+    play.speed = 2.5;
+    play.player = { scene: play, type: 'Sprite', x: 60, y: 150, active: true }; // a game object: not shown as a variable
+    play.data.set('shield', false);
+    play.data.set('combo', 0);
+    var game = new Game({ width: 520, height: 300, type: 0 });
+    game.registry.set('stars', 12);
+    game.registry.set('bestScore', 340);
+    play.sys.game = game;
+    game.scene.scenes.push(play);
+    window.game = game; // Phaser games are commonly kept in a global like this
+
+    var c = document.getElementById('c');
+    var ctx = c.getContext('2d');
+    function frame() {
+      game.loop.frame++;
+      play.score += 1; // the score grows while the game runs
+      ctx.fillStyle = '#050913'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = play.data.get('shield') ? '#3df5a7' : '#f472b6';
+      ctx.fillRect(play.player.x, play.player.y + Math.sin(game.loop.frame / 12) * 20, 30, 18);
+      document.getElementById('score').textContent = play.score;
+      document.getElementById('lives').textContent = play.lives;
+      document.getElementById('stars').textContent = game.registry.get('stars');
+      document.getElementById('shield').textContent = play.data.get('shield') ? 'ON' : 'off';
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+</script>
+</body>
+</html>

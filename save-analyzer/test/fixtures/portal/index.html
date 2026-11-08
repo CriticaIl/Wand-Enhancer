@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fun Games Portal — Star Runner</title>
+<!-- Regression fixture: a typical HTML5 game portal page (e.g. like mopoga.com).
+     The page itself is full of website globals (analytics, ads, consent, page
+     metadata about the game); the actual game runs in a cross-origin iframe.
+     The iframe origin is passed as ?game=<origin>. -->
+<style>
+  body { margin: 0; font: 15px system-ui, sans-serif; background: #f4f5f9; color: #222; }
+  header { padding: 12px 16px; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .ad { margin: 8px auto; width: 300px; height: 50px; background: #ddd; display: grid; place-items: center; color: #777; }
+  .player { margin: 8px; height: 560px; }
+  .player iframe { width: 100%; height: 100%; border: 0; background: #000; }
+  .meta span { margin-right: 10px; }
+</style>
+<script>
+  // --- analytics / tags / consent / ads (as found on real portals)
+  window.dataLayer = [{ event: 'gtm.js', 'gtm.start': 1731000000000 }, { event: 'page_view', page_type: 'game' }];
+  function gtag() { dataLayer.push(arguments); }
+  window.GoogleAnalyticsObject = 'ga';
+  window.adsbygoogle = [{ google_ad_client: 'ca-pub-0000', enable_page_level_ads: true }];
+  window.googletag = { cmd: [], pubads: function () { return {}; } };
+  window.__tcfapi = function () {};
+  window.Cookiebot = { consent: { necessary: true, statistics: false, marketing: false }, consented: false };
+  // --- site configuration and page metadata
+  window.siteConfig = { siteName: 'Fun Games Portal', lang: 'en', cdn: 'https://cdn.example.net', ads: { enabled: true, refresh: 30 }, theme: 'light' };
+  window.game = { id: 4821, title: 'Star Runner', slug: 'star-runner', category: 'arcade', plays: 125430, rating: 4.6, votes: 2210, thumb: 'https://cdn.example.net/thumbs/star-runner.webp', url: '/game/star-runner', developer: 'Indie Studio', width: 800, height: 600, mobile: true };
+  window.relatedGames = [{ id: 1, title: 'Moon Dash', plays: 9800 }, { id: 2, title: 'Rock Hopper', plays: 7400 }];
+  window.pageViews = 1200;
+  window.isMobile = true;
+  window.userSettings = { darkMode: false, autoplay: true, volume: 0.8 };
+  window.__INITIAL_STATE__ = { route: '/game/star-runner', user: null };
+  window.portalSDK = { version: '2.1', showAd: function () {} };
+</script>
+</head>
+<body>
+<header><b>Fun Games Portal</b></header>
+<div class="ad">Advertisement</div>
+<h2 style="margin:8px 16px">Star Runner</h2>
+<div class="meta" style="margin:0 16px"><span>▶ 125,430 plays</span><span>★ 4.6</span></div>
+<div class="player"><iframe id="game-frame" allow="autoplay; fullscreen; gamepad" title="Star Runner"></iframe></div>
+<iframe class="ad" src="about:blank" title="ad slot" style="border:0"></iframe>
+<script>
+  var gameOrigin = new URLSearchParams(location.search).get('game') || location.origin;
+  document.getElementById('game-frame').src = gameOrigin + '/test/fixtures/portal/wrapper.html';
+</script>
+</body>
+</html>

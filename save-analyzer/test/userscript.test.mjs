@@ -201,3 +201,88 @@ test("Ren'Py web pages are detected from their save storage", { skip, timeout: 3
   await launcher(page).waitFor({ timeout: 6000 });
   await ctx.close();
 });
+
+// ---------------------------------------------------------------- regression: game portals (e.g. mopoga.com)
+// The portal page is full of website globals and the game runs in a
+// cross-origin iframe (nested one level deeper). Previously the trainer listed
+// ~15 website globals from the portal page as "game variables".
+
+const portalUrl = () => `${base()}/test/fixtures/portal/?game=${encodeURIComponent(`http://localhost:${port}`)}`;
+const gameFrame = (page) => page.frames().find((f) => f.url().includes('/demo-games/star-runner/'));
+
+test('portal: no launcher on the portal page; the launcher appears inside the nested game frame', { skip, timeout: 40000 }, async () => {
+  const { ctx, page, errors } = await newPage();
+  await page.goto(portalUrl());
+  const game = page.frameLocator('#game-frame').frameLocator('iframe');
+  await launcher(game).waitFor({ timeout: 8000 });
+  await page.waitForTimeout(500);
+  assert.equal(await page.locator('saveforge-launcher').count(), 0, 'portal page left alone');
+  assert.equal(await page.frameLocator('#game-frame').locator('saveforge-launcher').count(), 0, 'wrapper page left alone');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('portal: #saveforge on the portal page opens the trainer in the game frame with real game state', { skip, timeout: 40000 }, async () => {
+  const { ctx, page, errors } = await newPage();
+  await page.goto(portalUrl());
+  const game = page.frameLocator('#game-frame').frameLocator('iframe');
+  await launcher(game).waitFor({ timeout: 8000 });
+  await page.evaluate(() => (location.hash = '#saveforge'));
+  await game.locator('saveforge-trainer .chip[aria-pressed=true]', { hasText: 'Phaser' }).waitFor({ timeout: 8000 });
+  assert.equal(await page.locator('saveforge-trainer').count(), 0, 'not opened on the portal page');
+  // live edit reaches the game
+  await game.locator('saveforge-trainer .tool[aria-label="Search"]').click();
+  await game.locator('saveforge-trainer .search input').fill('lives');
+  await game.locator('saveforge-trainer .row').filter({ has: game.locator('.name', { hasText: 'Lives' }) }).first().locator('.num').click();
+  await game.locator('saveforge-trainer .sheet .field').fill('9');
+  await game.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await game.locator('#lives', { hasText: '9' }).waitFor({ timeout: 3000 });
+  // ⓘ tells where the variable comes from
+  await game.locator('saveforge-trainer .row .info').first().click();
+  const info = await game.locator('saveforge-trainer .sheet').innerText();
+  assert.match(info, /where it comes from/i);
+  assert.match(info, /scene “Play”/);
+  assert.match(info, /iframe, depth 2 \(http:\/\/localhost/);
+  // none of the portal's website globals leaked in
+  const all = await gameFrame(page).evaluate(() => window.__saveforgeTrainer.provider().entries.map((e) => e.path).join('|'));
+  assert.doesNotMatch(all, /dataLayer|siteConfig|plays|rating|thumb|adsbygoogle|Cookiebot/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('portal: opened on the portal page itself, website globals are not shown as game variables and Diagnostics explains why', { skip, timeout: 40000 }, async () => {
+  // bookmarklet / extension style: trainer injected into the top page only
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(portalUrl());
+  await page.frameLocator('#game-frame').frameLocator('iframe').locator('#score').waitFor();
+  await page.addScriptTag({ content: readFileSync(join(ROOT, 'standalone/trainer.js'), 'utf8') });
+  await page.locator('saveforge-trainer .row').first().waitFor();
+  await page.waitForTimeout(1200); // generic source samples values for ~0.7 s
+  const counts = await page.evaluate(() => {
+    const p = window.__saveforgeTrainer.provider();
+    return { source: p.title, entries: p.entries.length };
+  });
+  assert.equal(counts.entries, 0, `website globals listed as game variables: ${JSON.stringify(counts)}`);
+  assert.ok(await page.locator('saveforge-trainer .row .name', { hasText: 'No game variables found here' }).isVisible());
+  await page.locator('saveforge-trainer .row .lbl', { hasText: 'Diagnostics' }).first().click();
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('h3', { hasText: 'Frames on this page' }).waitFor();
+  const text = await sheet.innerText();
+  assert.match(text, /probably the game/i);
+  assert.match(text, /localhost/, 'game frame origin shown');
+  assert.match(text, /other site/i);
+  assert.match(text, /not running in this frame/i);
+  await sheet.locator('summary', { hasText: 'Excluded' }).click();
+  const excluded = await sheet.locator('details').innerText();
+  for (const name of ['dataLayer', 'adsbygoogle', 'Cookiebot', 'siteConfig', 'game', 'relatedGames']) assert.match(excluded, new RegExp(`\\b${name}\\b`), `${name} listed as excluded`);
+  assert.match(excluded, /website-like keys: title, slug/);
+  assert.ok(await sheet.locator('button', { hasText: 'Open game frame directly' }).isVisible());
+  // advanced: website globals can still be inspected on request
+  await sheet.locator('button', { hasText: 'Include website globals' }).click();
+  assert.ok((await page.evaluate(() => window.__saveforgeTrainer.provider().entries.length)) > 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

@@ -266,6 +266,9 @@ export function mountTrainer(win, opts) {
   function homeItems() {
     const p = S.provider;
     const items = [];
+    if (!p.entries.length) {
+      items.push({ kind: 'nav', label: 'No game variables found here', icon: 'info', count: '', hint: 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
+    }
     for (const sec of SECTIONS) {
       const entries = p.entries.filter((e) => e.section === sec.id && (sec.id !== 'advanced' || e.category !== 'internal'));
       if (entries.length) items.push({ kind: 'nav', label: sec.name, icon: sec.icon, count: entries.length, view: { type: 'list', title: sec.name, entries } });
@@ -274,6 +277,7 @@ export function mountTrainer(win, opts) {
     items.push({ kind: 'nav', label: 'Recently modified', icon: 'clock', count: S.recent.length, view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
     items.push({ kind: 'nav', label: 'All variables', icon: 'list', count: p.entries.length, view: { type: 'list', title: 'All variables', entries: p.entries } });
     items.push({ kind: 'nav', label: 'Backups & restore', icon: 'shield', count: '', view: { type: 'backups' } });
+    if (opts.diagnostics) items.push({ kind: 'nav', label: 'Diagnostics', icon: 'info', count: '', hint: 'Detected engine, frame, and where each variable comes from.', view: { type: 'diagnostics' } });
     for (const a of p.actions || []) items.push({ kind: 'action', label: a.label, icon: 'refresh', hint: a.hint, run: a.run });
     if (p.kind === 'live') items.push({ kind: 'action', label: 'Rescan variables', icon: 'refresh', hint: 'Re-read the game’s variables (for values created after the trainer opened).', run: () => p.rescan() });
     return items;
@@ -308,7 +312,7 @@ export function mountTrainer(win, opts) {
   function renderSub() {
     clear(subEl);
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -342,6 +346,7 @@ export function mountTrainer(win, opts) {
     if (v.type === 'backups') return renderBackups();
     if (v.type === 'apply') return renderApply();
     if (v.type === 'about') return renderAbout();
+    if (v.type === 'diagnostics') return renderDiagnostics();
   }
 
   // ---------- virtual list
@@ -578,6 +583,8 @@ export function mountTrainer(win, opts) {
       h('dl', { class: 'kv' }, h('dt', null, 'Now'), h('dd', null, show(x.value)), h('dt', null, p.kind === 'live' ? 'Before trainer' : 'Original'), h('dd', null, show(x.original)), h('dt', null, 'Type'), h('dd', null, x.type)),
       h('h3', null, 'When it applies'),
       h('p', null, x.timing.text),
+      x.source || x.frame ? h('h3', null, 'Where it comes from') : null,
+      x.source || x.frame ? h('dl', { class: 'kv' }, x.source ? [h('dt', null, 'Source'), h('dd', null, x.source)] : null, x.frame ? [h('dt', null, 'Frame'), h('dd', null, x.frame)] : null) : null,
       h('h3', null, 'Side effects & progression'),
       h('p', null, x.progression),
       x.sideEffects.length ? h('ul', null, x.sideEffects.map((s) => h('li', null, s))) : null,
@@ -779,6 +786,59 @@ export function mountTrainer(win, opts) {
     doc.body.append(a);
     a.click();
     win.setTimeout(() => (win.URL.revokeObjectURL(url), a.remove()), 4000);
+  }
+
+  // ---------- diagnostics
+  async function renderDiagnostics() {
+    const sheet = h('div', { class: 'sheet' }, h('h2', null, 'Diagnostics'), h('p', { class: 'note' }, 'Reading…'));
+    bodyEl.append(sheet);
+    setDesc('What SaveForge found on this page and why.');
+    let d;
+    try {
+      d = await opts.diagnostics();
+    } catch (e) {
+      clear(sheet).append(h('div', { class: 'badbox' }, e.message));
+      return;
+    }
+    if (top().type !== 'diagnostics') return;
+    const p = S.provider;
+    const generic = p && p.engine && p.engine.id === 'generic' ? p.engine : null;
+    const included = d.globals.filter((g) => g.kind === 'game');
+    const excluded = d.globals.filter((g) => g.kind !== 'game');
+    const gameFrame = d.frames.find((f) => f.share >= 25);
+    clear(sheet).append(h(
+      'div',
+      null,
+      h('h2', null, 'Diagnostics'),
+      h('dl', { class: 'kv' }, h('dt', null, 'This frame'), h('dd', null, d.frame || '?'), h('dt', null, 'Address'), h('dd', null, d.href || '?')),
+      !d.engines.some((e) => e.id !== 'generic') && !included.length && gameFrame
+        ? h('div', { class: 'warnbox' }, `No game state was found on this page, but a large frame (${gameFrame.size}, ${gameFrame.share}% of the screen, from ${gameFrame.origin}) is probably the game. Its variables live in that frame — open the trainer there.`)
+        : null,
+      h('h3', null, 'Engines'),
+      d.engines.length ? h('ul', null, d.engines.map((e) => h('li', null, h('b', null, e.name), ` — ${e.channel === 'live' ? 'live' : e.channel === 'live-generic' ? 'live (generic)' : e.channel}${e.evidence ? ` · ${e.evidence}` : ''}`))) : h('p', null, 'No supported engine globals on this page.'),
+      d.limitations.length ? h('div', null, d.limitations.map((l) => h('div', { class: 'warnbox' }, h('b', null, l.name), ' — ', l.reason))) : null,
+      h('h3', null, `Frames on this page (${d.frames.length})`),
+      d.frames.length
+        ? d.frames.map((f) =>
+            h(
+              'div',
+              { class: f.saveforge.startsWith('running · game') ? 'okbox' : 'warnbox' },
+              h('b', null, f.origin), ` · ${f.size} (${f.share}% of screen) · ${f.sameOrigin ? 'same site' : 'other site'}`,
+              h('div', { class: 'path' }, f.href),
+              h('div', null, `SaveForge: ${f.saveforge}`),
+              !f.sameOrigin && !/^running/.test(f.saveforge) ? h('div', { class: 'note' }, 'Safari does not let this page read another site’s frame. Allow your userscript manager on that frame’s site, or open the frame directly. Note: a game opened directly may use separate saves from the embedded one.') : null,
+              f.actions.length ? h('div', { class: 'btns' }, f.actions.map((a) => h('button', { class: 'btn', onclick: () => { try { a.run(); } catch (e) { toast(e.message, true); } } }, a.label))) : null,
+            ),
+          )
+        : h('p', null, 'No game-sized frames.'),
+      h('h3', null, `Page globals: ${included.length} game state, ${excluded.length} website/other`),
+      h('p', { class: 'note' }, 'Each global is scored from its contents (numbers, game-like names, values changing while the page runs) against website signals (analytics, ads, page data, URLs). Only game state is listed in the trainer.'),
+      included.length ? h('ul', null, included.slice(0, 40).map((g) => h('li', null, h('b', null, g.name), ` — score ${g.score}: ${g.reasons.join('; ')}`))) : null,
+      excluded.length ? h('details', null, h('summary', null, `Excluded (${excluded.length})`), h('ul', null, excluded.slice(0, 80).map((g) => h('li', null, h('b', null, g.name), ` — ${g.kind}, score ${g.score}: ${g.reasons.join('; ')}`)))) : null,
+      generic
+        ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
+        : null,
+    ));
   }
 
   // ---------- about / limitations

@@ -176,3 +176,26 @@ test('menu generation stays fast for 10,000+ variables', () => {
   assert.equal(menu.all.length, 16000);
   assert.ok(ms < 1500, `took ${ms.toFixed(0)} ms`);
 });
+
+test('game-state classifier: website globals out, game state in, mutation evidence counts', async () => {
+  const { classifyGlobal, applyMutation, sampleNumbers, countChanges } = await import('../src/trainer/game-state.js');
+  const out = (n, v) => classifyGlobal(n, v).kind;
+  assert.equal(out('dataLayer', [{ event: 'x' }]), 'website');
+  assert.equal(out('PokiSDK', { init() {} }), 'website');
+  assert.equal(out('game', { id: 1, title: 'X', slug: 'x', plays: 100, rating: 4.5, thumb: 'https://a/b.png', url: '/game/x' }), 'website');
+  assert.equal(out('siteConfig', { lang: 'en', cdn: 'https://x', theme: 'dark' }), 'website');
+  assert.equal(out('state', { player: { hp: 10, maxHp: 20, level: 2 }, gold: 5, inventory: { potion: 1 } }), 'game');
+  assert.equal(out('score', 10), 'game');
+  assert.notEqual(out('isMobile', true), 'game');
+  // values that change while the page runs push an ambiguous object over the line
+  const ambiguous = { a: 1, b: 2, c: 3 };
+  const r = classifyGlobal('mgr', ambiguous);
+  assert.notEqual(r.kind, 'game');
+  const s1 = sampleNumbers(ambiguous);
+  ambiguous.a = 2;
+  const changed = countChanges(s1, sampleNumbers(ambiguous));
+  assert.equal(changed, 1);
+  assert.equal(applyMutation(r, changed).kind, 'game');
+  // known website globals never get mutation credit
+  assert.equal(applyMutation(classifyGlobal('dataLayer', []), 5).kind, 'website');
+});

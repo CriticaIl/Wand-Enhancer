@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Game wrapper</title>
+<!-- Regression fixture: the game host's wrapper page (portal SDK, preroll ad
+     config) that loads the actual game in a second, nested iframe. -->
+<style>html, body { margin: 0; height: 100%; background: #000; } iframe { width: 100%; height: 100%; border: 0; display: block; }</style>
+<script>
+  window.GD_OPTIONS = { gameId: 'abc123', onEvent: function () {} };
+  window.sdkConfig = { preroll: true, adFrequency: 180, locale: 'en' };
+  window.wrapperVersion = '3.4.1';
+</script>
+</head>
+<body>
+<iframe src="../../../demo-games/star-runner/" allow="autoplay; fullscreen; gamepad" title="game"></iframe>
+</body>
+</html>

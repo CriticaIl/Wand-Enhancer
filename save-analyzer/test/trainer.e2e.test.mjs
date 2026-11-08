@@ -96,7 +96,7 @@ test('generic live editing: Neon Courier reacts immediately; undo and restore wo
   const { page, ctx, errors } = await openGame('/demo-games/neon-courier/');
   await inject(page);
   const t = T(page);
-  assert.equal(await page.locator('saveforge-trainer .chip[aria-pressed=true]').innerText(), 'Page globals (generic)');
+  assert.equal(await page.locator('saveforge-trainer .chip[aria-pressed=true]').innerText(), 'Game state (generic)');
   await t.search('credits');
   await t.setNumber('Credits', 9999);
   await page.locator('#credits', { hasText: '9999' }).waitFor({ timeout: 3000 });
@@ -328,6 +328,24 @@ test('SaveForge app: floating trainer edits an imported save; Game tab opens the
   await frame.locator('saveforge-trainer .sheet .field').fill('31415');
   await frame.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
   await frame.locator('#gold', { hasText: '31415' }).waitFor({ timeout: 3000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Phaser 3-style game: registry, scene properties and scene data are live; game objects are not listed', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/star-runner/');
+  await inject(page);
+  const t = T(page);
+  assert.match(await page.locator('saveforge-trainer .chip[aria-pressed=true]').innerText(), /Phaser 3\.80/);
+  const paths = await page.evaluate(() => window.__saveforgeTrainer.provider().entries.map((e) => e.path));
+  for (const p of ['registry › stars', 'registry › bestScore', 'scenes › Play › score', 'scenes › Play › lives', 'scenes › Play › data › shield']) assert.ok(paths.some((x) => x.endsWith(p)), `${p} in ${paths.join(', ')}`);
+  assert.ok(!paths.some((p) => /player|sys|cameras|events/.test(p)), 'engine internals and game objects are not listed');
+  await t.search('stars');
+  await t.setNumber('Stars', 99);
+  await page.locator('#stars', { hasText: '99' }).waitFor({ timeout: 3000 });
+  await t.search('shield');
+  await t.rowByName('Shield').locator('.toggle').click();
+  await page.locator('#shield', { hasText: 'ON' }).waitFor({ timeout: 3000 });
   assert.deepEqual(errors, []);
   await ctx.close();
 });
