@@ -22,6 +22,7 @@ export const SECTIONS = [
   { id: 'world', name: 'World', icon: 'clock', cats: ['time', 'variables'] },
   { id: 'story', name: 'Story', icon: 'flag', cats: ['flags', 'relationships'] },
   { id: 'unlocks', name: 'Unlocks', icon: 'key', cats: ['unlocks', 'achievements'] },
+  { id: 'potential', name: 'Potential game variables', icon: 'search', cats: [] },
   { id: 'advanced', name: 'Advanced', icon: 'gear', cats: ['other', 'internal'] },
 ];
 export const SECTION_OF = Object.fromEntries(SECTIONS.flatMap((s) => s.cats.map((c) => [c, s.id])));
@@ -45,7 +46,9 @@ class BaseProvider {
     this.entries = this.menu.all;
     this.entryById = new Map(this.entries.map((e) => [e.nodeId, e]));
     for (const e of this.entries) {
-      e.section = SECTION_OF[e.category] || 'advanced';
+      e.detect = this.index.byId.get(e.nodeId)?.meta?.detect || null;
+      // the generic detector's uncertain finds get their own section instead of being hidden
+      e.section = e.detect?.tier === 'potential' ? 'potential' : SECTION_OF[e.category] || 'advanced';
       e.search = `${e.label} ${e.path}`.toLowerCase();
     }
     this.refCounts = null;
@@ -157,6 +160,32 @@ export class LiveProvider extends BaseProvider {
     this.timers = win && typeof win.setTimeout === 'function' ? win : globalThis;
     this.backupSaved = false;
     this.rescan();
+    // session learning: variables that start changing while you play are promoted
+    if (engine.onLearned && engine.startLearning) {
+      this.unlearn = engine.onLearned(() => this.relearn());
+      engine.startLearning();
+    }
+  }
+
+  /** Re-runs detection without leaving the current screen (new evidence, a mark, a verified edit). */
+  relearn() {
+    const snap = this.engine.snapshot();
+    this.refs = snap.refs;
+    this.truncated = snap.truncated;
+    this.load(snap.root);
+    this.emit('learned');
+  }
+  detection(id) {
+    return this.engine.detection ? this.engine.detection(id) : null;
+  }
+  canMark() {
+    return typeof this.engine.mark === 'function';
+  }
+  /** tier: 'game' | 'not' | null (forget). Remembered for this website. */
+  mark(id, tier) {
+    if (!this.canMark()) return;
+    this.engine.mark(id, tier);
+    this.relearn();
   }
 
   rescan() {
@@ -297,6 +326,7 @@ export class LiveProvider extends BaseProvider {
         if (continued) {
           const done = { ...st, state: 'verified', observed: cur, at: Date.now(), detail: `Applied and verified: the game kept your value and keeps changing it as you play (now ${cur}).` };
           this.status.set(id, done);
+          if (this.engine.markVerified) this.engine.markVerified(id);
           this.emit('status', [id]);
           return resolve(done);
         }
@@ -309,6 +339,7 @@ export class LiveProvider extends BaseProvider {
         if (++i < VERIFY_AFTER.length) return void this.timers.setTimeout(check, VERIFY_AFTER[i] - VERIFY_AFTER[i - 1]);
         const done = { ...st, state: st.state === 'adjusted' ? 'adjusted' : 'verified', at: Date.now(), detail: st.state === 'adjusted' ? st.detail : `Applied and verified: the game still has ${cur} after ${VERIFY_AFTER[VERIFY_AFTER.length - 1] / 1000} s (${via}).` };
         this.status.set(id, done);
+        if (this.engine.markVerified) this.engine.markVerified(id);
         this.emit('status', [id]);
         resolve(done);
       };
@@ -358,6 +389,8 @@ export class LiveProvider extends BaseProvider {
   }
   dispose() {
     this.unlockAll();
+    if (this.unlearn) this.unlearn();
+    if (this.engine.stopLearning) this.engine.stopLearning();
   }
 
   async saveBackup() {

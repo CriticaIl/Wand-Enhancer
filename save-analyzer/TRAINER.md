@@ -47,18 +47,25 @@ Many pages expose website globals that have nothing to do with the game.
 | Construct 2 | global variables |
 | Phaser 3 | `game.registry`, custom scene properties and `scene.data` (game objects and Phaser internals are skipped) |
 
-**2. Generic page globals are scored, not trusted** (`src/trainer/game-state.js`). Only game state is listed; everything else stays visible in Diagnostics with the reason.
+**2. Generic page globals are judged variable by variable** (`src/trainer/game-state.js` → `scoreLeaf`, `src/trainer/engines.js` → `genericGlobals`). Since 1.6 a global that *looks* like website data as a whole (e.g. `app = {config, assets, ui, data: {money…}}`) is no longer thrown away: every number, switch and text inside it gets its own score, with the objects around it as context. Known analytics, ads, consent, framework and portal-SDK globals are still skipped outright.
 
-| Signal | Effect |
+| Evidence for one variable | Effect |
 | --- | --- |
-| Known analytics, ads, consent, framework and portal-SDK globals | Excluded outright |
-| Numbers | Raise the score |
-| Game-like key names | Raise the score |
-| Values that change during a ~0.7 s sample while the game runs | Raise the score |
-| Game-like class names | Raise the score |
-| Website-like keys (`title`, `slug`, `url`, `plays`, `rating`, `thumb`…) | Lower the score |
-| URL strings | Lower the score |
-| Text-heavy objects | Lower the score |
+| Number / on-off value | +0.25 / +0.15 |
+| Game-like name (translated: `argent`, `所持金`, `clients`, `jour`…) | +0.35 |
+| Inside a game-like object (`stock`, `inventory`…) | +0.15 |
+| Changed while the trainer was open (sampled at open, then every 2 s) | +0.4 |
+| Its value is shown on the page (numbers ≥ 10) | +0.25 |
+| The whole object looks like game state / website data | +0.15 / −0.15 (no penalty when the variable or its parent has a game-like name) |
+| Website-like name (`title`, `url`, `plays`, `rating`, `lang`…) | −0.45 |
+| Inside website data (`config`, `settings`, `page`, `ads`…) | −0.25 |
+| Setting (`volume`, `theme`, `autoplay`…) / identifier (`id`, `token`, `seed`…) / timestamp | −0.1 / −0.15 / −0.2 |
+| URL or file name / long text | −0.35 / −0.3 |
+| Entry of a large numeric table (> 20 numbers) | −0.3 |
+| Edit verified in the game | at least 1 |
+| You tapped *This is a game variable* / *Not a game variable* | at least 0.9 / −1 (remembered per website) |
+
+Tiers: **≥ 0.5 game variable** (listed in its normal section), **≥ 0.3 potential** (listed under *Potential game variables*), otherwise excluded. Text next to detected game variables (item names, dialogue) is kept for search and translation; URLs and website fields are not. Each tier and its reasons are shown in ⓘ → *Detection* and in Diagnostics. Diagnostics also says whether the game state is *inaccessible* (isolated script context) or simply *not detected*, lists excluded variables with *Mark as game*, and can copy a report (names, types and reasons, never values).
 
 **3. Frames.** Portals run games in (often cross-origin, often nested) iframes.
 - **Userscript:** runs in every frame. The frame with the game reports to its parent through namespaced `postMessage`; frames without a game stay silent unless the user opens SaveForge. "Open" is routed down to the game frame.

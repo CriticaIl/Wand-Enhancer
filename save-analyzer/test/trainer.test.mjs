@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeFile } from '../src/core/document.js';
@@ -163,7 +164,7 @@ test('LiveProvider: writes into live objects, undo/redo, engine hook, session-st
 test('trainer sections cover every mod-menu category', () => {
   const cats = ['currency', 'resources', 'stats', 'progression', 'inventory', 'relationships', 'flags', 'unlocks', 'achievements', 'time', 'variables', 'text', 'other', 'internal'];
   for (const c of cats) assert.ok(SECTION_OF[c], c);
-  assert.deepEqual(SECTIONS.map((s) => s.name), ['Player', 'Money', 'Inventory', 'World', 'Story', 'Unlocks', 'Advanced']);
+  assert.deepEqual(SECTIONS.map((s) => s.name), ['Player', 'Money', 'Inventory', 'World', 'Story', 'Unlocks', 'Potential game variables', 'Advanced']);
 });
 
 test('menu generation stays fast for 10,000+ variables', () => {
@@ -198,6 +199,46 @@ test('game-state classifier: website globals out, game state in, mutation eviden
   assert.equal(applyMutation(r, changed).kind, 'game');
   // known website globals never get mutation credit
   assert.equal(applyMutation(classifyGlobal('dataLayer', []), 5).kind, 'website');
+});
+
+test('regression 1.6: a custom game under a generic global is excluded by the whole-object classifier but found variable by variable', async () => {
+  const { classifyGlobal, scoreLeaf } = await import('../src/trainer/game-state.js');
+  const vm = await import('node:vm');
+  const html = readFileSync(new URL('./fixtures/generic-app/index.html', import.meta.url), 'utf8');
+  const code = html.split('<script>')[1].split('</script>')[0];
+  const ctx = { addEventListener() {}, URLSearchParams, location: { search: '' } };
+  ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  // the old verdict on the whole object: config, asset URLs and UI settings drown the game data
+  assert.notEqual(classifyGlobal('app', ctx.app).kind, 'game', 'whole-object score excludes app (the bug users hit)');
+  const leaf = (path, extra = {}) => {
+    const keys = path.split('.');
+    let v = ctx;
+    for (const k of keys) v = v[k];
+    const type = typeof v === 'number' ? (Number.isInteger(v) ? 'int' : 'float') : typeof v === 'boolean' ? 'bool' : 'string';
+    return scoreLeaf({ key: keys.at(-1), type, value: v, parentKeys: keys.slice(0, -1), globalKind: classifyGlobal(keys[0], ctx[keys[0]]).kind, ...extra });
+  };
+  for (const p of ['argent', 'app.donnees.jour', 'app.donnees.clients', 'app.donnees.employes']) assert.equal(leaf(p).tier, 'game', p);
+  for (const p of ['app.donnees.stock.croissant', 'app.donnees.prix.pain']) assert.notEqual(leaf(p).tier, 'excluded', p);
+  for (const p of ['app.config.version', 'app.config.apiUrl', 'app.config.analyticsId', 'app.config.build', 'app.config.debug', 'app.assets.title', 'app.ui.volume', 'app.ui.theme', 'siteConfig.ads.refresh', 'siteConfig.cdn', 'pageMeta.plays', 'pageMeta.rating', 'pageMeta.thumb']) {
+    const r = leaf(p);
+    assert.equal(r.tier, 'excluded', `${p}: ${r.reasons.join('; ')}`);
+    assert.ok(r.reasons.length, `${p} explains why`);
+  }
+  // evidence from the session: a cryptic counter that changes while playing is promoted;
+  // a verified edit or the user's mark wins; "not a game variable" always hides
+  assert.equal(leaf('app.donnees.cpt').tier, 'excluded');
+  assert.equal(leaf('app.donnees.cpt', { changed: true }).tier, 'game');
+  assert.equal(leaf('app.ui.volume', { mark: 'game' }).tier, 'game');
+  assert.equal(leaf('app.donnees.fourOuvert', { verified: true }).tier, 'game');
+  assert.equal(leaf('argent', { mark: 'not' }).tier, 'excluded');
+  // a changing website value does not become game state (ad refresh timers, view counters)
+  assert.equal(leaf('siteConfig.ads.refresh', { changed: true }).tier, 'excluded');
+  assert.equal(leaf('pageMeta.plays', { changed: true, onScreen: true }).tier, 'excluded');
+  // timestamps and big data tables stay out
+  assert.equal(scoreLeaf({ key: 'n', type: 'int', value: 1731000000000, parentKeys: ['app', 'donnees'], globalKind: 'unknown' }).tier, 'excluded');
+  assert.equal(scoreLeaf({ key: '17', type: 'int', value: 4, parentKeys: ['tables', 'curve'], globalKind: 'unknown', inLargeArray: true }).tier, 'excluded');
 });
 
 // ---------------------------------------------------------------- translation (offline)

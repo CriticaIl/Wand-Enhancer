@@ -1,6 +1,17 @@
-# SaveForge 1.5 on iPhone: install, test and what to expect
+# SaveForge 1.6 on iPhone: install, test and what to expect
 
-## What's new in 1.5
+## What's new in 1.6
+- **Game variables are found one by one.** A game that keeps everything in one generic object (settings, asset lists *and* its money) no longer shows "Game state: 0". You should not need *Include website globals* any more.
+- **Potential game variables:** a new home-screen category for values SaveForge is not sure about. They are shown, not hidden.
+- **Learning while you play:** values that change while the trainer is open (checked every 2 s), and values whose edits were verified, are promoted to game variables.
+- **You decide:** ⓘ → *Detection* shows the score and reasons, with *This is a game variable* / *Not a game variable*. Your choice is remembered for that website.
+- **Diagnostics explains zero:**
+  - *Game state inaccessible* (SaveForge cannot reach the game's JavaScript) vs. *No game state detected* (with the reason)
+  - counts of confirmed, potential and excluded variables
+  - **Why was this excluded?**, with *Mark as game*
+  - **Copy detection report** (names, types and reasons only; no values)
+
+## What was new in 1.5
 - **Game state and the screen are reported separately.** After an edit, the status box shows the *Game state* (✓ verified) and the *Screen*:
   - ✓ refreshed
   - ✓ the engine redraws by itself
@@ -31,7 +42,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **1.5.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **1.6.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -75,13 +86,14 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
    - the *script context* (it must say "page")
    - the detected engines
    - frames on the page
-   - why each global was kept or excluded
+   - confirmed / potential / excluded variables, and whether the state is *inaccessible* or *not detected*
+   - why each variable was excluded (tap *Mark as game* if it belongs to the game)
 5. **Late-loading games.** The button can appear up to 60 s after the page loads (it watches for the game). **Rescan game** looks again on demand.
 6. **Restore.** **↺ Restore original** in the edit or ⓘ sheet puts back one value. *Backups & restore* puts back everything.
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 148 tests)
+### Verified by the automated tests (Chromium, 150 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -89,6 +101,11 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**Detection (1.6):**
+- The 1.5 "Game state: 0" case: a custom game with no engine whose state sits under a generic global, next to config, asset URLs and UI settings. Money, shop stats and stock are found without website globals; config, assets, UI settings and site data stay out.
+- A cryptic counter that changes while you play is promoted automatically. Marks are remembered after reopening the trainer, and the detection report contains no values.
+- The game-portal page still lists no website globals, and Diagnostics says "No game state detected" with the reason.
 
 **English:**
 - Offline translation for Japanese, Chinese, Korean, Russian, Spanish, French, German, Portuguese and Italian names.
@@ -111,12 +128,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 1.4.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 1.6.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.
 
 **Real games and sites:**
+- Whether the per-variable scores pick the right values on *your* game. If something is wrong, Diagnostics → *Copy detection report* gives a report you can share.
 - Real commercial games and portals such as mopoga.com. The demo games imitate the engines' public APIs, but they are not those engines. Unknown engines rely on the generic detector and Find a value.
 - Games that keep state in closures, ES modules, WebAssembly (Unity, Godot, Ren'Py web, GameMaker) or on a server. Those values cannot be found or edited live; SaveForge tells you so in Diagnostics.
 

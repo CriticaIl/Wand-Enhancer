@@ -95,8 +95,13 @@ On many portals (game catalogue sites), the page you see is the *portal*. The ga
 
 - **Which frame gets the trainer:** the userscript runs in every frame. The frame that actually contains the game shows the ⬢ launcher. Typing `#saveforge` on the portal page sends the trainer into that frame.
 - **Website globals are never shown as game variables:** analytics, ads, cookie consent, portal SDKs and page data (such as a `window.game = {title, plays, rating…}` description of the game) are filtered out.
-  - **How each global is judged:** SaveForge scores every page global on what it contains: numbers, game-like names, values that change while you play, URLs and website-like keys.
-  - **Seeing the decisions:** Main menu → **Diagnostics** lists every included and excluded global and the reason for each.
+  - **How it is judged (1.6):** every variable is scored on its own: its type, its name (translated), the object around it, whether it changes while you play, whether its value is on screen, and whether your edits worked. Game data inside a generic object (`app.data.money` next to `app.config.url`) is found; the URL is not.
+  - **Not sure?** Uncertain finds appear under **Potential game variables**. ⓘ → *Detection* explains the score. Tap *This is a game variable* or *Not a game variable* and SaveForge remembers it for that website.
+  - **Seeing the decisions:** Main menu → **Diagnostics** shows:
+    - the confirmed / potential / excluded counts
+    - why nothing was found (inaccessible vs. not detected)
+    - every excluded variable with its reason and a *Mark as game* button
+    - *Copy detection report*, for bug reports
 - **If the trainer opens on the portal with "No game variables found here":** open **Diagnostics**. It shows the game frame's site and whether SaveForge is running there.
   - **Not running there:** allow Userscripts on that site too. Simplest: Settings → Apps → Safari → Extensions → Userscripts → *All Websites: Allow*. Alternatively, tap **Open game frame directly** to load the game on its own. Be aware that a game opened outside the portal may use separate saves from the embedded copy, because Safari keeps embedded sites' storage apart.
 - **ⓘ shows where a value comes from:** every row's ⓘ panel names its source (engine, global, scene or storage key) and the frame it lives in.
@@ -110,4 +115,4 @@ On many portals (game catalogue sites), the page you see is the *portal*. The ga
 - **The trainer opens but says no data was found:**
   - Open **Diagnostics**. The game may be in a frame (see above).
   - Otherwise the game keeps its state somewhere Safari won't let pages reach: inside closures, in WebAssembly (Unity, Godot, Ren'Py web), or on a server. Try the *Saves in storage* source after saving in-game.
-- **Only a few unrelated-looking values:** check **Diagnostics → Page globals**. Since 1.3.0, website globals are excluded. If you really want them, *Include website globals (advanced)* shows them.
+- **A game value is missing:** open **Diagnostics → Why was this excluded?**, find it and tap *Mark as game* (remembered for that site). Or play for a few seconds: values that change are promoted automatically. *Include website globals (advanced)* is still there, but should not be needed.

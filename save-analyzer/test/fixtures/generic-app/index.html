@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ma Boulangerie</title>
+<!-- Regression fixture (SaveForge 1.6): a custom game with no engine. Its whole
+     state lives under one generic global, `app`, next to configuration, asset
+     lists and UI settings, and its money is a French top-level `var argent`.
+     The old whole-object classifier excluded `app` (website-like keys, many
+     URL strings) and `argent` (English-only name check), so Diagnostics showed
+     "Game state: 0". The page also carries ordinary website globals that must
+     stay hidden. -->
+<style>
+  body { margin: 0; font: 16px system-ui, sans-serif; background: #fff7ed; color: #431407; }
+  main { padding: 16px; }
+  .hud { display: flex; gap: 14px; font-weight: 700; margin-bottom: 12px; }
+  button { font: inherit; padding: 10px 14px; border-radius: 10px; border: 0; background: #f97316; color: #fff; margin: 4px 4px 0 0; }
+</style>
+<script>
+  // --- ordinary website globals (must stay hidden)
+  window.dataLayer = [{ event: 'page_view' }];
+  window.siteConfig = { siteName: 'Jeux du Web', lang: 'fr', cdn: 'https://cdn.example.net', ads: { enabled: true, refresh: 30 } };
+  window.pageMeta = { title: 'Ma Boulangerie — jouer gratuitement', url: '/jeux/ma-boulangerie', plays: 48210, rating: 4.4, thumb: 'https://cdn.example.net/t/boulangerie.webp' };
+
+  // --- the game
+  var argent = 1822;
+  var app = {
+    config: { version: '1.0.3', lang: 'fr', apiUrl: 'https://api.example.net/v1', analyticsId: 'UA-000000-1', debug: false, build: 20241105 },
+    assets: {
+      images: Array.from({ length: 320 }, (_, i) => `/img/sprites/item_${i}.png`),
+      sounds: ['/snd/ding.mp3', '/snd/cash.mp3', '/snd/door.mp3'],
+      title: 'Ma Boulangerie',
+      description: 'Un jeu de gestion de boulangerie',
+    },
+    ui: { theme: 'chaud', volume: 0.6, musique: true, langue: 'fr' },
+    donnees: {
+      jour: 4,
+      clients: 3,
+      reputation: 12,
+      stock: { pain: 12, croissant: 5, baguette: 8 },
+      prix: { pain: 2, croissant: 3, baguette: 1 },
+      employes: 1,
+      cpt: 0,
+      fourOuvert: true,
+      nomBoutique: 'Chez Lucie',
+      message: 'Bienvenue dans votre boulangerie !',
+    },
+  };
+  function afficher() {
+    document.getElementById('argent').textContent = `Argent : ${argent} €`;
+    document.getElementById('jour').textContent = `Jour ${app.donnees.jour}`;
+    document.getElementById('clients').textContent = `Clients : ${app.donnees.clients}`;
+    document.getElementById('stock').textContent = `Croissants : ${app.donnees.stock.croissant}`;
+  }
+  function vendre() {
+    if (app.donnees.stock.croissant <= 0) return;
+    app.donnees.stock.croissant--;
+    argent += app.donnees.prix.croissant;
+    afficher();
+  }
+  function nouveauClient() {
+    app.donnees.clients++;
+    app.donnees.cpt++;
+    afficher();
+  }
+  addEventListener('DOMContentLoaded', () => {
+    afficher();
+    // customers arrive slowly while the shop is idle (slower than the 0.5 s first sample)
+    setInterval(nouveauClient, Number(new URLSearchParams(location.search).get('every') || 2500));
+  });
+</script>
+</head>
+<body>
+<main>
+  <div class="hud"><span id="argent"></span><span id="jour"></span><span id="clients"></span><span id="stock"></span></div>
+  <button id="vendre" onclick="vendre()">Vendre un croissant</button>
+</main>
+</body>
+</html>

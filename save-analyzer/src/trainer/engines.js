@@ -3,9 +3,9 @@
 // state somewhere page scripts cannot reach (a Web Worker, WebAssembly, a
 // closure), it is reported as not live-editable instead of being faked.
 
-import { applyMutation, classifyGlobal, countChanges, sampleNumbers } from './game-state.js';
+import { applyMutation, classifyGlobal, countChanges, sampleNumbers, scoreLeaf, screenNumbers } from './game-state.js';
 import { buildLiveTree } from './live-tree.js';
-import { childId } from '../core/model.js';
+import { childId, escapeSegment } from '../core/model.js';
 
 /**
  * @typedef LiveEngine
@@ -272,45 +272,242 @@ function genericGlobals(win, hasEngine) {
     }
   };
   let results = null; // [{name, kind, score, reasons}]
+  const changedIds = new Set(); // leaves seen changing during this session
+  const verifiedIds = new Set(); // leaves whose edits the game kept
+  let marks = {}; // id (or id prefix) -> 'game' | 'not', remembered per website
+  let store = null;
+  let leafReport = []; // every scored leaf of the last snapshot (Diagnostics)
+  let lastSample = null;
+  let learnTimer = null;
+  const learnListeners = new Set();
+
   const classifyAll = (changes) => {
     results = pageGlobals.map((k) => {
       const r = classifyGlobal(k, read(k));
       return changes ? applyMutation(r, changes.get(k) || 0) : r;
     });
     results.sort((x, y) => y.score - x.score);
-    for (const k of prefiltered) results.push({ name: k, kind: 'website', score: 0, reasons: ['known library, analytics or engine global (handled by an engine adapter if it is one)'] });
+    for (const k of prefiltered) results.push({ name: k, kind: 'website', score: 0, known: true, reasons: ['known library, analytics or engine global (handled by an engine adapter if it is one)'] });
+    for (const r of results) if (r.reasons[0]?.startsWith('known ')) r.known = true;
   };
+  const markOf = (id) => {
+    let best = null;
+    for (const k in marks) if ((id === k || id.startsWith(`${k}/`)) && (!best || k.length > best.length)) best = k;
+    return best ? marks[best] : null;
+  };
+  /** Globals whose variables are inspected one by one (known analytics/ads/library globals are not, unless marked). */
+  const candidateKeys = () => {
+    const cls = engine.classification();
+    const keys = cls.filter((r) => !r.known || markOf(`$/${escapeSegment(r.name)}`) === 'game' || engine.includeAll).map((r) => r.name);
+    // `var textes = jeu.textes = {…}`: walk the object where the game keeps it (inside the
+    // game-state global), so it is judged as part of the game rather than on its own
+    const gameObjs = cls.filter((r) => r.kind === 'game').map((r) => read(r.name)).filter((v) => v && typeof v === 'object');
+    const alias = (k) => {
+      const v = read(k);
+      if (!v || typeof v !== 'object') return false;
+      return gameObjs.some((g) => g !== v && safe(() => Object.keys(g).some((x) => Object.getOwnPropertyDescriptor(g, x)?.value === v)));
+    };
+    return keys.filter((k) => !alias(k));
+  };
+  /** Numeric leaves of the candidate globals, keyed by tree id (own data properties only). */
+  const sampleIds = (keys, limit = 6000) => {
+    const out = new Map();
+    const seen = new Set();
+    const walk = (v, id, depth) => {
+      if (out.size >= limit || depth > 6 || !v || typeof v !== 'object' || seen.has(v)) return;
+      if (isNodeOrWindow(v, win)) return;
+      seen.add(v);
+      let ks;
+      try {
+        ks = Object.keys(v);
+      } catch {
+        return;
+      }
+      for (const k of ks.slice(0, 300)) {
+        let d;
+        try {
+          d = Object.getOwnPropertyDescriptor(v, k);
+        } catch {
+          continue;
+        }
+        if (!d || !('value' in d)) continue;
+        const cid = childId(id, k);
+        if (typeof d.value === 'number' || typeof d.value === 'boolean') out.set(cid, d.value);
+        else if (d.value && typeof d.value === 'object') walk(d.value, cid, depth + 1);
+        if (out.size >= limit) return;
+      }
+    };
+    for (const k of keys) {
+      const v = read(k);
+      const id = childId('$', k);
+      if (typeof v === 'number' || typeof v === 'boolean') out.set(id, v);
+      else walk(v, id, 1);
+    }
+    return out;
+  };
+  /** Compares with the previous sample; returns the leaves that changed for the first time. */
+  const learn = () => {
+    const now = sampleIds(candidateKeys());
+    const fresh = [];
+    if (lastSample) {
+      for (const [id, v] of now) {
+        if (lastSample.has(id) && lastSample.get(id) !== v && !changedIds.has(id)) {
+          changedIds.add(id);
+          fresh.push(id);
+        }
+      }
+    }
+    lastSample = now;
+    return fresh;
+  };
+  const tierOfId = (id) => leafReport.find((l) => l.id === id)?.tier;
+  const persistMarks = () => store && store.set('detection-marks', marks).catch(() => {});
+
   const engine = {
     id: 'generic',
     name: hasEngine ? 'Other game state' : 'Game state (generic)',
     channel: 'live-generic',
     includeAll: false,
-    note: 'Game-state variables found in the page’s global JavaScript, with website globals (analytics, ads, page data) filtered out. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
-    /** Samples numeric values twice so state that changes while the game runs counts as evidence. */
+    note: 'Game variables found in the page’s global JavaScript. Each variable is judged on its own (name, type, where it sits, whether it changes while you play, whether its value is on screen), so game state inside a generic object is still found while analytics, ads and page data stay hidden. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
+    /** Samples values twice so state that changes while the game runs counts as evidence. */
     async prepare(ms = 500) {
       const first = new Map(pageGlobals.map((k) => [k, sampleNumbers(read(k))]));
+      learn();
       await new Promise((r) => win.setTimeout(r, ms));
       const changes = new Map(pageGlobals.map((k) => [k, countChanges(first.get(k), sampleNumbers(read(k)))]));
       classifyAll(changes);
+      learn();
     },
+    /** Loads the variables the user marked on this website. */
+    async useStore(s) {
+      store = s;
+      try {
+        marks = (await s.get('detection-marks', {})) || {};
+      } catch {
+        marks = {};
+      }
+    },
+    /** Keeps watching while the trainer is open; variables that start changing are promoted. */
+    startLearning(every = 2000) {
+      if (learnTimer) return;
+      learnTimer = win.setInterval(() => {
+        let fresh;
+        try {
+          fresh = learn();
+        } catch {
+          return;
+        }
+        if (fresh.length) {
+          const promoted = fresh.filter((id) => tierOfId(id) !== 'game');
+          if (promoted.length) for (const fn of learnListeners) fn(promoted);
+        }
+      }, every);
+    },
+    stopLearning() {
+      if (learnTimer) win.clearInterval(learnTimer);
+      learnTimer = null;
+    },
+    onLearned(fn) {
+      learnListeners.add(fn);
+      return () => learnListeners.delete(fn);
+    },
+    /** Marks a variable (or a whole object) as game state or not; remembered for this website. */
+    mark(id, tier) {
+      if (tier === 'game' || tier === 'not') marks[id] = tier;
+      else delete marks[id];
+      persistMarks();
+    },
+    marks: () => ({ ...marks }),
+    /** Called when an edit was verified in the game: the strongest evidence there is. */
+    markVerified(id) {
+      verifiedIds.add(id);
+    },
+    detection(id) {
+      return leafReport.find((l) => l.id === id) || null;
+    },
+    leaves: () => leafReport,
     classification() {
       if (!results) classifyAll(null);
       return results;
     },
+    /** Globals that contribute at least one game or potential variable. */
     included() {
+      const tops = new Set(leafReport.filter((l) => l.tier !== 'excluded').map((l) => l.global));
       return this.classification()
-        .filter((r) => this.includeAll || r.kind === 'game')
+        .filter((r) => this.includeAll || tops.has(r.name))
         .map((r) => r.name);
     },
     root: () => win,
     snapshot() {
-      const keys = this.included();
-      return buildLiveTree(win, { rootKeys: keys, maxNodes: 30000, maxDepth: 7, rootLabel: 'window' });
+      const cls = this.classification();
+      const kindOf = new Map(cls.map((r) => [r.name, r.kind]));
+      const keys = candidateKeys();
+      const t = buildLiveTree(win, { rootKeys: keys, maxNodes: 40000, maxDepth: 7, rootLabel: 'window' });
+      const screen = safe(() => screenNumbers(win)) || new Set();
+      const report = [];
+      // text inside game-state globals, or next to detected game variables (item names,
+      // dialogue), is kept for search and translation
+      const gameGlobals = new Set(cls.filter((r) => r.kind === 'game').map((r) => r.name));
+      // pass 1: score every primitive leaf on its own
+      const visit = (node, parents) => {
+        if (!node.children) return;
+        const big = node.type === 'array' && node.children.length > 20 && node.children.filter((c) => c.type === 'int' || c.type === 'float').length > 20;
+        for (const c of node.children) {
+          if (c.children) {
+            visit(c, [...parents, c.key]);
+            continue;
+          }
+          if (!['int', 'float', 'bool', 'string'].includes(c.type)) continue;
+          const global = parents[0] ?? c.key;
+          const d = scoreLeaf({
+            key: c.key,
+            type: c.type,
+            value: c.value,
+            parentKeys: parents,
+            globalKind: kindOf.get(global) || 'unknown',
+            inLargeArray: big && (c.type === 'int' || c.type === 'float'),
+            changed: changedIds.has(c.id),
+            onScreen: (c.type === 'int' || c.type === 'float') && Math.abs(c.value) >= 10 && screen.has(c.value),
+            verified: verifiedIds.has(c.id),
+            mark: markOf(c.id),
+          });
+          const leaf = { id: c.id, global, path: [...parents, c.key].join('.'), type: c.type, tier: d.tier, score: d.score, reasons: d.reasons, node: c };
+          report.push(leaf);
+        }
+      };
+      visit(t.root, []);
+      // pass 2: text next to real game variables (item names, quest text…) stays available
+      // for search and translation, but URLs and website fields do not
+      const gameBoxes = new Set(report.filter((l) => l.type !== 'string' && l.tier !== 'excluded').map((l) => l.id.slice(0, l.id.lastIndexOf('/'))));
+      for (const l of report) {
+        const box = l.id.slice(0, l.id.lastIndexOf('/'));
+        if (l.type === 'string' && l.tier === 'excluded' && l.score > -0.2 && (gameGlobals.has(l.global) || gameBoxes.has(box)) && box !== '$') l.tier = 'text';
+        l.node.meta.detect = { tier: l.tier, score: l.score, reasons: l.reasons };
+      }
+      leafReport = report.map(({ node, ...rest }) => rest);
+      if (this.includeAll) return t;
+      // pass 3: keep only detected variables (and the objects that hold them)
+      const keep = new Set(report.filter((l) => l.tier !== 'excluded').map((l) => l.id));
+      const prune = (node) => {
+        node.children = node.children.filter((c) => {
+          if (c.children) {
+            prune(c);
+            return c.children.length > 0;
+          }
+          return keep.has(c.id);
+        });
+      };
+      prune(t.root);
+      for (const id of [...t.refs.keys()]) if (!keep.has(id)) t.refs.delete(id);
+      t.count = keep.size;
+      return t;
     },
     sourceOf(id) {
       const top = (id.split('/')[1] || '').replace(/~1/g, '/').replace(/~0/g, '~');
       const r = this.classification().find((x) => x.name === top);
-      return r ? `window.${top} (game-state score ${r.score}${r.kind === 'game' ? '' : ', shown because “include website globals” is on'})` : `window.${top}`;
+      const d = this.detection(id);
+      const conf = d ? `${d.tier === 'game' ? 'game variable' : d.tier === 'potential' ? 'potential game variable' : d.tier === 'text' ? 'text next to game variables' : 'excluded'}, confidence ${d.score}` : r ? `object score ${r.score}` : '';
+      return `window.${top}${conf ? ` (${conf}${this.includeAll && d?.tier === 'excluded' ? ', shown because “include website globals” is on' : ''})` : ''}`;
     },
   };
   return engine;

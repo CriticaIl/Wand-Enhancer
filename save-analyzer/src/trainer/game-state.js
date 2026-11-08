@@ -39,7 +39,7 @@ const KNOWN_WEBSITE = [
   ['web framework or library', /^(jQuery|\$|_|Vue|React|ReactDOM|preact|Alpine|htmx|Livewire|Turbo|Stimulus|Swiper|lazySizes|lazySizesConfig|Swal|moment|dayjs|axios|Modernizr|Popper|bootstrap|Prism|hljs|marked|DOMPurify|Hammer|Zone|ng|AMP|regeneratorRuntime|webpackChunk.*|webpackJsonp.*|__webpack.*|__NEXT_DATA__|__NEXT_.*|next|__NUXT__|\$nuxt|__INITIAL_STATE__|__APOLLO_STATE__|__REDUX_DEVTOOLS.*|__VUE.*|__REACT.*|__core-js.*|wp|wpApiSettings|ajaxurl|_wpemojiSettings|grecaptcha|recaptcha.*|YT|onYouTubeIframeAPIReady|Intercom|intercomSettings|OneSignal|Crisp|\$crisp|Tawk_API|zE|zESettings|LiveChatWidget|i18n|i18next|Shopify|__st|ShopifyAnalytics|addthis.*|__sharethis.*|FB|twttr|Disqus|DISQUS|disqus_config)$/],
 ];
 
-const GAME_WORDS = /(^|[^a-z])(hp|health|life|lives|score|scores|highscore|best|level|lvl|xp|exp|experience|gold|coins?|money|cash|credits?|gems?|diamonds?|ammo|stamina|energy|mana|mp|inventory|items?|player|players|enemy|enemies|boss|wave|stage|round|combo|stars?|upgrades?|unlocked|achievements?|quest|chapter|day|days|turn|turns|speed|power|damage|attack|defen[cs]e|armou?r|shield|weapons?|skills?|perks?|potions?|keys?|resources?|wood|stone|food|ore|crystals?|tokens?|souls?|kills?|deaths?|lap|laps|fuel|hunger|thirst|affection|love|trust|story|flags?|switch(es)?|variables?|savegame|saveData|progress|world|map|room|zone|checkpoint|bank|distance|held|stamina|vitality|affection)([^a-z]|$)/i;
+const GAME_WORDS = /(^|[^a-z])(hp|health|life|lives|score|scores|highscore|best|level|lvl|xp|exp|experience|gold|coins?|money|cash|credits?|gems?|diamonds?|ammo|stamina|energy|mana|mp|inventory|items?|player|players|enemy|enemies|boss|wave|stage|round|combo|stars?|upgrades?|unlocked|achievements?|quest|chapter|day|days|turn|turns|speed|power|damage|attack|defen[cs]e|armou?r|shield|weapons?|skills?|perks?|potions?|keys?|resources?|wood|stone|food|ore|crystals?|tokens?|souls?|kills?|deaths?|lap|laps|fuel|hunger|thirst|affection|love|trust|story|flags?|switch(es)?|variables?|savegame|saveData|progress|world|map|room|zone|checkpoint|bank|distance|held|stamina|vitality|affection|customers?|clients?|stock|employees?|workers?|staff|profit|income|sales|revenue|factory|production|machines?|stats|statistics|counters?|clicks?|taps|multiplier|prestige|rebirth|population|happiness|reputation|fame|fans|followers|harvest|crops?|animals?|buildings?|houses?|prices?|costs?|cost|upkeep|wages?|salary|debt|loans?)([^a-z]|$)/i;
 const WEBSITE_WORDS = /(^|[^a-z])(title|description|desc|slug|url|uri|href|link|links|thumb|thumbnail|image|img|images|icon|banner|category|categories|tags?|rating|ratings|votes?|plays|views|likes|dislikes|author|developer|publisher|created|updated|published|date|lang|language|locale|embed|iframe|share|social|seo|canonical|ads?|adslot|analytics|consent|cookies?|tracking|useragent|is_?mobile|device|browser|os|platform|env|environment|api|endpoint|token|csrf|nonce|session|cdn|domain|host|hostname|path|route|router|menu|nav|footer|header|breadcrumbs?|related|recommended|comments?|cart|product|price|currency_code|email|login|logout|signup|account|profile_url|avatar)([^a-z]|$)/i;
 const WEBSITE_NAME = /(config|settings|options|env|site|page|seo|i18n|locale|translations|session|csrf|token|nonce|api|endpoint|cdn|theme|consent|cookie|tracking|analytics|banner|meta|schema|menu|nav|layout|route|router|portal|embed|share|social|related)/i;
 const GAME_CLASS = /(Game|Player|State|Save|World|Level|Scene|Inventory|Stats|Hero|Character|Store(?!front)|Engine)/;
@@ -54,7 +54,7 @@ export function classifyGlobal(name, value) {
   if (value === null || value === undefined) return { name, kind: 'website', score: 0, reasons: ['empty'] };
   if (typeof value !== 'object') {
     // top-level primitive, e.g. `var score = 0` in a simple game
-    if (GAME_WORDS.test(splitName(name)) && (typeof value === 'number' || typeof value === 'boolean')) {
+    if (GAME_WORDS.test(keyWords(name)) && (typeof value === 'number' || typeof value === 'boolean')) {
       return { name, kind: 'game', score: 0.55, reasons: [`top-level ${typeof value} with a game-like name`] };
     }
     if (WEBSITE_NAME.test(name) || WEBSITE_WORDS.test(splitName(name))) return { name, kind: 'website', score: 0.05, reasons: ['website-like name'] };
@@ -223,4 +223,134 @@ export function splitName(s) {
 
 function round(x) {
   return Math.round(x * 100) / 100;
+}
+
+
+// ---------------------------------------------------------------- per-variable scoring (1.6)
+// Whole objects often mix game state with configuration and assets
+// (app = {config:{lang,url}, assets:{…}, data:{money:1822}}), so variables are
+// judged one by one, with their parents as context, instead of excluding the
+// whole object.
+
+export const LEAF_GAME = 0.5;
+export const LEAF_POTENTIAL = 0.3;
+const SETTING_WORDS = /(^| )(volume|music|sound|sfx|bgm|theme|dark|mode|autoplay|fullscreen|quality|language|lang|locale|subtitles|vibration|muted?)( |$)/;
+const ID_WORDS = /(^| )(id|ids|uuid|guid|hash|token|nonce|seed|key|index|idx)( |$)/;
+const URLISH = /^(https?:)?\/\/|^\/[\w-]+(\/|\.|$)|^data:|\.(png|jpe?g|webp|gif|svg|mp3|ogg|wav|mp4|html?|json|js|css)(\?|$)/i;
+
+/**
+ * @param leaf {key, type, value, parentKeys: string[] (nearest last), globalKind,
+ *              inLargeArray, changed, onScreen, verified, mark}
+ * @returns {score, tier: 'game'|'potential'|'excluded', reasons}
+ */
+export function scoreLeaf(leaf) {
+  const reasons = [];
+  const own = keyWords(String(leaf.key));
+  const near = leaf.parentKeys.slice(-2).map((k) => keyWords(String(k))).join(' ');
+  let s = 0;
+  if (leaf.type === 'int' || leaf.type === 'float') {
+    s += 0.25;
+    reasons.push('number');
+  } else if (leaf.type === 'bool') {
+    s += 0.15;
+    reasons.push('on/off value');
+  } else if (leaf.type === 'string') {
+    const v = String(leaf.value ?? '');
+    if (URLISH.test(v)) {
+      s -= 0.35;
+      reasons.push('URL or file name');
+    } else if (v.length > 30 || v.trim().split(/\s+/).length > 3) {
+      s -= 0.3;
+      reasons.push('long text (dialogue/UI)');
+    }
+  }
+  const ownGame = GAME_WORDS.test(own);
+  if (ownGame) {
+    s += 0.35;
+    reasons.push(`game-like name “${leaf.key}”`);
+  } else if (GAME_WORDS.test(near)) {
+    s += 0.15;
+    reasons.push('inside a game-like object');
+  }
+  if (!ownGame && WEBSITE_WORDS.test(own)) {
+    s -= 0.45;
+    reasons.push(`website-like name “${leaf.key}”`);
+  }
+  if (!GAME_WORDS.test(near) && (WEBSITE_WORDS.test(near) || WEBSITE_NAME.test(leaf.parentKeys.slice(-2).join(' ')))) {
+    s -= 0.25;
+    reasons.push('inside website data (config, page, ads…)');
+  }
+  if (!ownGame && SETTING_WORDS.test(own)) {
+    s -= 0.1;
+    reasons.push('a setting, not progress');
+  }
+  if (!ownGame && ID_WORDS.test(own)) {
+    s -= 0.15;
+    reasons.push('identifier');
+  }
+  const n = Number(leaf.value);
+  if (typeof leaf.value === 'number' && ((n > 9.4e8 && n < 4.1e9) || (n > 9.4e11 && n < 4.1e12))) {
+    s -= 0.2;
+    reasons.push('looks like a timestamp');
+  }
+  if (leaf.inLargeArray) {
+    s -= 0.3;
+    reasons.push('entry of a large data table');
+  }
+  const nearGame = ownGame || GAME_WORDS.test(near);
+  if (leaf.globalKind === 'game') {
+    s += 0.15;
+    reasons.push('its object looks like game state');
+  } else if (leaf.globalKind === 'website' && !nearGame) {
+    // the whole-object verdict is weak evidence: it must not outweigh a game-like name
+    // (app = {config, assets, data: {money}} looks like website data as a whole)
+    s -= 0.15;
+    reasons.push('its object looks like website data');
+  }
+  if (leaf.changed) {
+    s += 0.4;
+    reasons.push('changed while the game was running');
+  }
+  if (leaf.onScreen) {
+    s += 0.25;
+    reasons.push('its value is shown on screen');
+  }
+  if (leaf.verified) {
+    s = Math.max(s, 1);
+    reasons.push('edited and verified in the game');
+  }
+  if (leaf.mark === 'game') {
+    s = Math.max(s, 0.9);
+    reasons.push('you marked it as a game variable');
+  } else if (leaf.mark === 'not') {
+    s = -1;
+    reasons.push('you marked it as not a game variable');
+  }
+  s = round(s);
+  return { score: s, tier: s >= LEAF_GAME ? 'game' : s >= LEAF_POTENTIAL ? 'potential' : 'excluded', reasons };
+}
+
+/** Numbers visible in the page's text (for “shown on screen” evidence). Reads text only. */
+export function screenNumbers(win, limit = 6000) {
+  const out = new Set();
+  const doc = win.document;
+  if (!doc || !doc.body || !doc.createTreeWalker) return out;
+  const walker = doc.createTreeWalker(doc.body, 4);
+  let node;
+  let i = 0;
+  while ((node = walker.nextNode()) && i++ < limit) {
+    const p = node.parentElement;
+    if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName) || p.closest('saveforge-trainer, saveforge-launcher')) continue;
+    const text = (node.nodeValue || '').replace(/[\u202f\u00a0]/g, ' ');
+    for (const m of text.matchAll(/-?\d{1,3}(?:[ ,.]\d{3})+(?:[.,]\d+)?|-?\d+(?:[.,]\d+)?/g)) {
+      const raw = m[0];
+      const grouped = /^-?\d{1,3}([ ,.])\d{3}/.exec(raw);
+      let v = raw;
+      if (grouped) v = raw.split(grouped[1]).join('').replace(',', '.');
+      else v = raw.replace(',', '.');
+      const num = Number(v);
+      if (Number.isFinite(num)) out.add(num);
+    }
+  }
+  return out;
 }

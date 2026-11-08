@@ -119,6 +119,9 @@ textarea.field { height: 90px; font-size: 15px; padding: 10px 12px; font-weight:
 .quick button { height: 40px; border-radius: 9px; background: #151926; font-weight: 800; font-size: 13px; }
 .note { font-size: 12px; color: #94a3b8; margin-top: 8px; }
 .warnbox { padding: 10px 12px; border-radius: 10px; background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.35); color: #fde68a; font-size: 13px; margin: 8px 0; }
+.btn.mini { min-height: 30px; padding: 4px 10px; font-size: 12px; margin: 4px 0 2px 6px; }
+.excluded-vars li { margin-bottom: 6px; }
+.field.report { min-height: 180px; font: 11px ui-monospace, monospace; }
 .okbox { padding: 10px 12px; border-radius: 10px; background: rgba(61,245,167,.1); border: 1px solid rgba(61,245,167,.35); color: #bbf7d0; font-size: 13px; margin: 8px 0; }
 .badbox { padding: 10px 12px; border-radius: 10px; background: rgba(251,113,133,.1); border: 1px solid rgba(251,113,133,.35); color: #fecdd3; font-size: 13px; margin: 8px 0; }
 .search { padding: 8px; background: #050608; }

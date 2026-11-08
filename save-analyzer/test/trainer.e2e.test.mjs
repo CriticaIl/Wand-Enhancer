@@ -623,3 +623,73 @@ test('Compact view: smaller rows, path hidden, setting remembered', { skip, time
   assert.equal(await page.locator('saveforge-trainer .row .sub2').first().evaluate((el) => getComputedStyle(el).display), 'none');
   await ctx.close();
 });
+
+// ---------------------------------------------------------------- regression 1.6: game state under a generic global
+// A custom game with no engine keeps everything under `app` (config, asset URLs,
+// UI settings and the real shop data) plus a French top-level `var argent`.
+// 1.5 showed "Game state: 0" there unless website globals were switched on.
+test('custom game under a generic global: variables found without website globals, explained, learned and remembered', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/test/fixtures/generic-app/?every=1200');
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+  await inject(page);
+  await page.waitForTimeout(900);
+  const state = () =>
+    page.evaluate(() => {
+      const p = window.__saveforgeTrainer.provider();
+      return { includeAll: p.engine.includeAll, entries: p.entries.map((e) => ({ path: e.path, section: e.section, tier: e.detect?.tier })) };
+    });
+  let s = await state();
+  assert.equal(s.includeAll, false, 'website globals stay off');
+  const paths = s.entries.map((e) => e.path).join('|');
+  for (const want of ['argent', 'donnees › jour', 'donnees › clients', 'donnees › employes', 'stock › croissant']) assert.ok(paths.includes(want), `${want} found: ${paths}`);
+  assert.doesNotMatch(paths, /config|assets|› ui ›|siteConfig|pageMeta|dataLayer|apiUrl|volume/, 'no website data');
+  assert.equal(s.entries.find((e) => e.path.endsWith('stock › croissant')).section, 'potential');
+  // home lists confirmed sections and the Potential category
+  await page.locator('saveforge-trainer .row .lbl', { hasText: 'Potential game variables' }).first().waitFor();
+  // live edit of the detected money still reaches the game
+  const t = T(page);
+  await t.search('argent');
+  await t.setNumber('Argent', 5000);
+  assert.equal(await page.evaluate(() => window.argent), 5000);
+  await page.waitForFunction(() => window.__saveforgeTrainer.provider().statusOf('$/argent')?.state === 'verified', null, { timeout: 4000 });
+  // ⓘ explains the detection and lets the player confirm a potential variable
+  await t.home();
+  await t.nav('Potential game variables');
+  const info = await t.info('Croissant');
+  assert.match(info, /Detection: Potential game variable/i);
+  assert.match(info, /inside a game-like object/);
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'This is a game variable' }).click();
+  await page.locator('saveforge-trainer .sheet h3', { hasText: 'Detection: Game variable' }).waitFor();
+  // session learning: a cryptic counter that changes while playing is promoted on its own
+  await page.waitForFunction(() => window.__saveforgeTrainer.provider().entries.some((e) => e.path.endsWith('donnees › cpt')), null, { timeout: 8000 });
+  // Diagnostics: counts, accessible state, excluded variables with reasons, report without values
+  await t.home();
+  await t.nav('Diagnostics');
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('h3', { hasText: 'Game variables:' }).waitFor();
+  const text = await sheet.innerText();
+  assert.match(text, /Game variables: [1-9]\d* confirmed, \d+ potential/i);
+  assert.match(text, /Game state accessible/i);
+  await sheet.locator('summary', { hasText: 'Why was this excluded?' }).click();
+  const excluded = await sheet.locator('details.excluded-vars').innerText();
+  assert.match(excluded, /app\.config\.apiUrl — excluded, confidence -?[\d.]+, source window\.app: .*website-like name/);
+  assert.match(excluded, /pageMeta\.plays/);
+  assert.ok(await sheet.locator('details.excluded-vars button', { hasText: 'Mark as game' }).first().isVisible());
+  await sheet.locator('button', { hasText: 'Copy detection report' }).click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'Detection report copied' }).waitFor();
+  const report = await page.evaluate(() => navigator.clipboard.readText());
+  assert.match(report, /app\.donnees\.stock\.croissant \[int\] game/);
+  assert.match(report, /app\.config\.apiUrl \[string\] excluded/);
+  assert.doesNotMatch(report, /api\.example\.net|Chez Lucie|Bienvenue/, 'no values in the report');
+  // the mark is remembered for this website
+  await page.waitForTimeout(300);
+  await page.locator('saveforge-trainer .hbtn[aria-label="Close trainer"]').click();
+  await inject(page);
+  await page.waitForTimeout(900);
+  s = await state();
+  const croissant = s.entries.find((e) => e.path.endsWith('stock › croissant'));
+  assert.equal(croissant.tier, 'game', 'still confirmed after reopening');
+  assert.notEqual(croissant.section, 'potential');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

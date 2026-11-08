@@ -268,6 +268,18 @@ export function mountTrainer(win, opts) {
     if (reason === 'rescan') {
       S.stack = [{ type: 'home' }];
     }
+    if (reason === 'learned') {
+      // new evidence while playing: update the lists in place, keep the current screen
+      const p = S.provider;
+      for (const v of S.stack) {
+        if (v.section) v.entries = p.entries.filter((e) => e.section === v.section && (v.section !== 'advanced' || e.category !== 'internal'));
+        else if (v.all) v.entries = p.entries;
+      }
+      if (['edit', 'search', 'findvalue', 'display', 'apply'].includes(top().type)) {
+        if (listRefresh) listRefresh();
+        return;
+      }
+    }
     if ((reason === 'edit' || reason === 'undo' || reason === 'redo') && top().type === 'edit' && S.provider?.kind === 'live') {
       // keep the edit sheet open so the verification result is visible
       if (listRefresh) listRefresh();
@@ -358,11 +370,12 @@ export function mountTrainer(win, opts) {
     if (p.locks?.size) items.push({ kind: 'nav', label: `Locked values`, icon: 'lock', count: p.locks.size, hint: 'Values SaveForge keeps re-applying. Open to unlock.', view: { type: 'locks' } });
     for (const sec of SECTIONS) {
       const entries = p.entries.filter((e) => e.section === sec.id && (sec.id !== 'advanced' || e.category !== 'internal'));
-      if (entries.length) items.push({ kind: 'nav', label: sec.name, icon: sec.icon, count: entries.length, view: { type: 'list', title: sec.name, entries } });
+      const hint = sec.id === 'potential' ? 'Probably game state, but SaveForge is not sure. Open ⓘ on one to see why and to mark it.' : undefined;
+      if (entries.length) items.push({ kind: 'nav', label: sec.name, icon: sec.icon, count: entries.length, hint, view: { type: 'list', title: sec.name, entries, section: sec.id } });
     }
     items.push({ kind: 'nav', label: 'Favorites', icon: 'star', count: S.favorites.size, view: { type: 'list', title: 'Favorites', dynamic: 'fav' } });
     items.push({ kind: 'nav', label: 'Recently modified', icon: 'clock', count: S.recent.length, view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
-    items.push({ kind: 'nav', label: 'All variables', icon: 'list', count: p.entries.length, view: { type: 'list', title: 'All variables', entries: p.entries } });
+    items.push({ kind: 'nav', label: 'All variables', icon: 'list', count: p.entries.length, view: { type: 'list', title: 'All variables', entries: p.entries, all: true } });
     items.push({ kind: 'nav', label: 'Backups & restore', icon: 'shield', count: '', view: { type: 'backups' } });
     if (opts.diagnostics) items.push({ kind: 'nav', label: 'Diagnostics', icon: 'info', count: '', hint: 'Detected engine, frame, and where each variable comes from.', view: { type: 'diagnostics' } });
     for (const a of p.actions || []) items.push({ kind: 'action', label: a.label, icon: 'refresh', hint: a.hint, run: a.run });
@@ -768,6 +781,7 @@ export function mountTrainer(win, opts) {
       h('div', { class: 'path' }, x.path || id),
       h('div', { class: 'chips' }, h('span', { class: `badge ${x.channel}` }, x.timing.label), h('span', { class: `badge ${x.confidence.level.toLowerCase()}` }, `${x.confidence.level} confidence`), h('span', { class: 'badge' }, x.type)),
       statusSection(id),
+      detectionSection(id),
       englishSection(id, x.title),
       h('h3', null, 'What it controls'),
       h('p', null, x.controls),
@@ -798,6 +812,43 @@ export function mountTrainer(win, opts) {
     );
     bodyEl.append(sheet);
     setDesc(x.summary, x.channel, x.confidence.level);
+  }
+
+  const TIER_TEXT = {
+    game: 'Game variable',
+    potential: 'Potential game variable',
+    text: 'Text next to game variables',
+    excluded: 'Excluded (looks like website data)',
+  };
+  /** Why the generic detector shows (or hid) this variable, with buttons to correct it. */
+  function detectionSection(id) {
+    const p = S.provider;
+    const d = p.detection ? p.detection(id) : null;
+    if (!d) return null;
+    const marked = p.engine?.marks ? p.engine.marks()[id] : null;
+    return h(
+      'div',
+      { class: 'detect' },
+      h('h3', null, `Detection: ${TIER_TEXT[d.tier] || d.tier}`),
+      h('div', { class: 'meter' }, h('i', { style: `width:${Math.max(0, Math.min(100, Math.round(d.score * 100)))}%` })),
+      h('p', { class: 'note' }, `Score ${d.score} (game ≥ 0.5, potential ≥ 0.3). Evidence:`),
+      h('ul', null, d.reasons.map((r) => h('li', null, r))),
+      p.canMark && p.canMark()
+        ? h(
+            'div',
+            { class: 'btns' },
+            h('button', { class: 'btn', onclick: () => markVar(id, 'game') }, marked === 'game' ? '✓ Marked as game variable' : 'This is a game variable'),
+            h('button', { class: 'btn', onclick: () => markVar(id, 'not') }, marked === 'not' ? '✓ Marked as not a game variable' : 'Not a game variable'),
+            marked ? h('button', { class: 'btn', onclick: () => markVar(id, null) }, 'Forget my choice') : null,
+          )
+        : null,
+      p.canMark && p.canMark() ? h('p', { class: 'note' }, 'Your choice is remembered for this website, in Safari’s storage for this site.') : null,
+    );
+  }
+  function markVar(id, tier) {
+    S.provider.mark(id, tier);
+    toast(tier === 'game' ? 'Marked as a game variable (remembered for this site)' : tier === 'not' ? 'Hidden from now on (remembered for this site)' : 'Choice forgotten');
+    renderAll();
   }
 
   function toggleFav(id) {
@@ -1252,14 +1303,126 @@ export function mountTrainer(win, opts) {
             ),
           )
         : h('p', null, 'No game-sized frames.'),
+      detectionBlock(d, generic),
       h('h3', null, `Page globals: ${included.length} game state, ${excluded.length} website/other`),
-      h('p', { class: 'note' }, 'Each global is scored from its contents (numbers, game-like names, values changing while the page runs) against website signals (analytics, ads, page data, URLs). Only game state is listed in the trainer.'),
+      h('p', { class: 'note' }, 'Whole objects are scored too, but they are only context: variables inside a website-looking object are still checked one by one above.'),
       included.length ? h('ul', null, included.slice(0, 40).map((g) => h('li', null, h('b', null, g.name), ` — score ${g.score}: ${g.reasons.join('; ')}`))) : null,
-      excluded.length ? h('details', null, h('summary', null, `Excluded (${excluded.length})`), h('ul', null, excluded.slice(0, 80).map((g) => h('li', null, h('b', null, g.name), ` — ${g.kind}, score ${g.score}: ${g.reasons.join('; ')}`)))) : null,
+      excluded.length ? h('details', { class: 'excluded-globals' }, h('summary', null, `Excluded objects (${excluded.length})`), h('ul', null, excluded.slice(0, 80).map((g) => h('li', null, h('b', null, g.name), ` — ${g.kind}, score ${g.score}: ${g.reasons.join('; ')}`)))) : null,
       generic
         ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
         : null,
     ));
+  }
+
+  /** Per-variable detection: what was found, why zero, and what was excluded (with a way to correct it). */
+  function detectionBlock(d, generic) {
+    const det = d.detection || { available: false, leaves: [], counts: {} };
+    const c = det.counts || {};
+    const found = det.leaves.filter((l) => l.tier === 'game' || l.tier === 'potential');
+    // array entries (asset lists, data tables) collapse into one row each so they do not bury the rest
+    const excluded = [];
+    const groups = new Map();
+    for (const l of det.leaves) {
+      if (l.tier !== 'excluded') continue;
+      const m = /^(.*)\.(\d+)$/.exec(l.path);
+      if (!m) {
+        excluded.push(l);
+        continue;
+      }
+      const g = groups.get(m[1]);
+      if (g) g.n++;
+      else {
+        const row = { ...l, path: `${m[1]}[…]`, n: 1, group: true };
+        groups.set(m[1], row);
+        excluded.push(row);
+      }
+    }
+    for (const g of groups.values()) if (g.n === 1) Object.assign(g, { path: g.path.replace('[…]', '[0]'), group: false });
+    excluded.sort((a, b) => b.score - a.score);
+    const others = d.engines.filter((e) => e.id !== 'generic');
+    const isolated = d.context && d.context.world === 'isolated';
+    let state;
+    if (isolated) state = ['badbox', 'Game state inaccessible', 'SaveForge cannot reach the game’s JavaScript from an isolated context (see Script context above), so nothing can be detected here. This is not the same as the game having no state.'];
+    else if (others.length) state = ['okbox', 'Game state accessible', `Connected to ${others.map((e) => e.name).join(', ')}.${found.length ? ` The generic detector also found ${found.length} variable(s).` : ''}`];
+    else if (found.length) state = ['okbox', 'Game state accessible', `${c.game || 0} game variable(s) and ${c.potential || 0} potential one(s) found in the page’s JavaScript.`];
+    else if (!det.available) state = ['warnbox', 'No game state detected', 'This page has no JavaScript globals of its own besides the browser’s. The game may keep its state privately (inside functions or modules), in WebAssembly, in a worker, in another frame (see Frames) or on a server. Try Find a value with a number you see on screen.'];
+    else if (!det.leaves.length) state = ['warnbox', 'No game state detected', 'The page’s own globals contain no numbers, switches or text that could be game state (only functions, libraries or known website tools). The state is probably private, in WebAssembly, in a frame or on a server. Try Find a value.'];
+    else state = ['warnbox', 'No game state detected', `${det.leaves.length} variable(s) were inspected, but none looked like game state. If one of the excluded variables below is really part of the game, open it and tap “Mark as game”: SaveForge remembers it for this website.`];
+    const why = (l) => l.reasons.join('; ') || 'no evidence either way';
+    const row = (l, btn) =>
+      h(
+        'li',
+        null,
+        h('b', null, l.path),
+        ` — ${l.group ? `${l.n} entries, ` : ''}${l.tier === 'game' ? 'game' : l.tier === 'potential' ? 'potential' : l.tier}, confidence ${l.score}, source window.${l.global}: ${why(l)}`,
+        btn,
+      );
+    const markBtn = (l) =>
+      generic && !l.group
+        ? h(
+            'button',
+            {
+              class: 'btn mini',
+              onclick: (ev) => {
+                S.provider.mark(l.id, 'game');
+                ev.target.textContent = '✓ Marked';
+                ev.target.disabled = true;
+                toast(`${l.path} marked as a game variable (remembered for this site)`);
+              },
+            },
+            'Mark as game',
+          )
+        : null;
+    return h(
+      'div',
+      null,
+      h('h3', null, `Game variables: ${c.game || 0} confirmed, ${c.potential || 0} potential${c.text ? `, ${c.text} text` : ''} (${c.excluded || 0} excluded)`),
+      h('div', { class: state[0] }, h('b', null, state[1]), ' — ', state[2]),
+      h('p', { class: 'note' }, 'Every variable is judged on its own: its type, its name (translated if needed), the object around it, whether it changes while you play, whether its value is on screen and whether your edits worked. Website data (analytics, ads, page and site settings, URLs) stays hidden.'),
+      found.length ? h('details', null, h('summary', null, `Detected (${found.length})`), h('ul', null, found.slice(0, 120).map((l) => row(l)))) : null,
+      excluded.length ? h('details', { class: 'excluded-vars' }, h('summary', null, `Why was this excluded? (${c.excluded || 0} variables)`), h('ul', null, excluded.slice(0, 150).map((l) => row(l, markBtn(l))))) : null,
+      det.leaves.length || d.globals.length
+        ? h(
+            'div',
+            { class: 'btns' },
+            h('button', { class: 'btn', onclick: () => copyReport(d) }, 'Copy detection report'),
+          )
+        : null,
+      h('p', { class: 'note' }, 'Wrongly excluded or included? Copy the report (names, types and reasons only — no text values) and paste it into a bug report.'),
+    );
+  }
+  function detectionReport(d) {
+    const det = d.detection || { leaves: [], counts: {} };
+    const lines = [
+      `SaveForge ${opts.version || ''} detection report`.trim(),
+      `Frame: ${d.frame || '?'}`,
+      `Context: ${d.context ? d.context.world : '?'}`,
+      `Engines: ${d.engines.map((e) => e.name).join(', ') || 'none'}`,
+      `Limitations: ${d.limitations.map((l) => l.name).join(', ') || 'none'}`,
+      `Counts: ${JSON.stringify(det.counts)}`,
+      '',
+      'Globals (object score):',
+      ...d.globals.slice(0, 80).map((g) => `  ${g.name}: ${g.kind} ${g.score} — ${g.reasons.join('; ')}`),
+      '',
+      'Variables (tier, score, type, reasons):',
+      ...det.leaves.slice(0, 400).map((l) => `  ${l.path} [${l.type}] ${l.tier} ${l.score} — ${l.reasons.join('; ')}`),
+    ];
+    // never include values: text could be personal, numbers are not needed to judge the detection
+    return lines.join('\n');
+  }
+  async function copyReport(d) {
+    const text = detectionReport(d);
+    try {
+      await win.navigator.clipboard.writeText(text);
+      toast('Detection report copied');
+    } catch {
+      // clipboard blocked (permissions, iframe): show it so it can be selected manually
+      const ta = h('textarea', { class: 'field report', readonly: 'readonly' });
+      ta.value = text;
+      bodyEl.append(h('div', { class: 'sheet' }, h('h3', null, 'Detection report'), h('p', { class: 'note' }, 'Select all and copy.'), ta));
+      ta.focus();
+      ta.select();
+    }
   }
 
   // ---------- about / limitations

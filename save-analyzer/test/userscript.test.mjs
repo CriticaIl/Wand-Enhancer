@@ -285,8 +285,15 @@ test('portal: opened on the portal page itself, website globals are not shown as
   assert.match(text, /localhost/, 'game frame origin shown');
   assert.match(text, /other site/i);
   assert.match(text, /not running in this frame/i);
-  await sheet.locator('summary', { hasText: 'Excluded' }).click();
-  const excluded = await sheet.locator('details').innerText();
+  // 1.6: per-variable detection says why nothing is listed, and lists what it excluded
+  assert.match(text, /Game variables: 0 confirmed, 0 potential/i);
+  assert.match(text, /No game state detected — \d+ variable\(s\) were inspected, but none looked like game state/);
+  await sheet.locator('summary', { hasText: 'Why was this excluded?' }).click();
+  const vars = await sheet.locator('details.excluded-vars').innerText();
+  assert.match(vars, /game\.plays — excluded.*website-like name “plays”/);
+  assert.match(vars, /siteConfig\.ads\.refresh — excluded/);
+  await sheet.locator('summary', { hasText: 'Excluded objects' }).click();
+  const excluded = await sheet.locator('details.excluded-globals').innerText();
   for (const name of ['dataLayer', 'adsbygoogle', 'Cookiebot', 'siteConfig', 'game', 'relatedGames']) assert.match(excluded, new RegExp(`\\b${name}\\b`), `${name} listed as excluded`);
   assert.match(excluded, /website-like keys: title, slug/);
   assert.ok(await sheet.locator('button', { hasText: 'Open game frame directly' }).isVisible());

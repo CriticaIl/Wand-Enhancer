@@ -57,8 +57,10 @@ export function openTrainer(win, extra = {}) {
     label: e.name,
     channel: e.channel,
     create: async () => {
+      const store = createStore(win, `${origin}|${e.id}`);
+      if (e.useStore) await e.useStore(store);
       if (e.prepare) await e.prepare();
-      return new LiveProvider(win, e, createStore(win, `${origin}|${e.id}`));
+      return new LiveProvider(win, e, store);
     },
   });
   const sources = engines.map(sourceFor);
@@ -88,6 +90,7 @@ export function openTrainer(win, extra = {}) {
       engines: engines.map((e) => ({ id: e.id, name: e.name, channel: e.channel, evidence: e.evidence || (e.id === 'generic' ? 'page globals scored as game state' : '') })),
       limitations,
       globals: generic ? generic.classification() : [],
+      detection: detectionSummary(generic),
       frames: frames.map((f) => ({
         href: f.href,
         origin: f.origin,
@@ -123,6 +126,15 @@ export function openTrainer(win, extra = {}) {
   });
   win.__saveforgeTrainer = ctl;
   return ctl;
+}
+
+/** Why the generic detector found what it found (or nothing), for Diagnostics. */
+function detectionSummary(generic) {
+  if (!generic) return { available: false, leaves: [], counts: { game: 0, potential: 0, text: 0, excluded: 0 } };
+  const leaves = generic.leaves();
+  const counts = { game: 0, potential: 0, text: 0, excluded: 0 };
+  for (const l of leaves) counts[l.tier] = (counts[l.tier] || 0) + 1;
+  return { available: true, scanned: leaves.length > 0, leaves, counts, marks: generic.marks() };
 }
 
 function safe(fn) {
