@@ -174,6 +174,38 @@ Every panel shows:
 
 If nothing matches, the panel says the purpose isn't recognised and confidence is *Unknown*.
 
+## Save variables in the trainer (shared with the Save Editor)
+
+**How the Save Editor finds variables:** a save (an imported file, or a Storage Bridge dump of the game's localStorage and IndexedDB) goes through `analyzeFile()` (`src/core/document.js`):
+- format detection and the decode chain (`src/core/pipeline.js`: JSON, Base64, LZString, zlib, pickle, INI, ZIP…)
+- the variable tree, engine profiles (`src/adapters/profiles.js`), and friendly names and categories (`generateModMenu`)
+- edits through an `EditSession`, with undo, a verified rebuild and validation
+
+**The trainer runs that same pipeline on the game page** (`src/trainer/save-hub.js`). One shared save model per trainer is used by every view. The *Saves in storage* source and the save variables listed next to live ones are the same objects, with the same pending edits, undo, validation and backups.
+
+| Label | Meaning | Editing |
+| --- | --- | --- |
+| **LIVE** | Running-game variable | Applied immediately, read back and verified |
+| **SAVE** | Field in the game's save, not linked to a live variable | Pending → **Write saves** (kept for the next load, no reload), **Apply & Reload** (the game reloads and reads it), or **Export edited saves** (a SaveForge storage export for the Save Editor or the Storage Bridge) |
+| **LIVE+SAVE** | A live variable and its save field, linked by a verified mapping (listed once) | Applied live immediately. **Also write to save** puts the value into the save as well (pending until written) |
+
+**Linking never guesses from names or equal values.** A save field is merged into a live entry only when:
+- **The engine documents the layout:**
+  - RPG Maker MV/MZ: a save is `DataManager.makeSaveContents()`, the object the live source walks, so `party/_gold` ↔ `<slot>/party/_gold`. The slot is the newest one from `RPG Global`, or the longest play time.
+  - SugarCube 2: `state.history[index].variables` ↔ the live active moment.
+- **Or SaveForge observed it:** the save changed `old → new` right after exactly one live value changed `old → new`.
+  - Twice, or once if the new value is distinctive (≥ 10 and unique on both sides).
+  - Several live values changing the same way stay unlinked; ⓘ lists them as *possibly the same*.
+  - A link the save stops following is dropped.
+  - Observed links are remembered per site. ⓘ shows how each link was made and can remove an observed one.
+
+**Sync:**
+- **Sync save variables** re-reads the saves.
+- While the trainer is open, the saves are re-read automatically when localStorage changes (checked every 2.5 s, IndexedDB every 10 s). This can be turned off in Settings.
+- **Pending save edits are never overwritten.** If the game saves newer progress meanwhile, the trainer says so, writing is refused (the existing conflict check), and *Re-read storage* discards the pending edits and reads the new save.
+
+**Backups:** a snapshot of the saves is stored before every write, whether Write saves or Apply & Reload. *Backups & restore* puts it back.
+
 ## Button & Textbox Linker
 
 Main menu → **Button & Textbox Linker** (advanced, optional; `src/trainer/linker.js`, `src/trainer/linker-ui.js`).

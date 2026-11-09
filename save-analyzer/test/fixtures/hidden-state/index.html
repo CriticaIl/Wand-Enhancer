@@ -24,6 +24,8 @@
       setup: { shop: { prices: { laptop: 900, desktop: 1500 } }, npcs: { olivia: { maxAffection: 100 } } },
       Engine: { show: function () {} },
     };
+    // a SugarCube-format autosave of the current moment (state.history[index].variables)
+    if (!/nosave/.test(location.search)) localStorage.setItem('(Saved Games)hidden.autosave', JSON.stringify({ id: 'hidden', state: { history: [{ title: 'Start', variables: vars }], index: 0 }, title: 'Start', date: 1731000000000, version: 2 }));
   })();
   function start() {
     window.lateState = { computerStore: { money: 4321, customers: 2 } };

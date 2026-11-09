@@ -49,6 +49,20 @@ So it doesn't depend on anything one particular manager offers.
     - **It then reloads the page.** Unsaved in-game progress is lost on reload, so save in-game first.
 - **Undo / redo** are in the toolbar. **Main menu → Backups & restore** puts original values back (live) or restores a storage snapshot.
 
+### Save variables (same as the online Save Editor)
+
+When the game keeps saves in the browser, the trainer reads them with the same detection as the SaveForge Save Editor. It lists them next to the live values, tagged:
+- **LIVE:** changes the running game now
+- **SAVE:** the game's save
+- **LIVE+SAVE:** both, linked; listed once
+
+Editing a SAVE value is pending until you tap **Write saves** at the bottom:
+- **Write saves:** kept for the next load, no reload
+- **Apply & Reload:** the game reloads with it
+- **Export edited saves:** a file for the Save Editor
+
+Values are linked as LIVE+SAVE only by the engine's save layout (RPG Maker, SugarCube) or after SaveForge sees the save follow a live change. To link one yourself: change it in the trainer, then save in-game. **Sync save variables** re-reads the saves, and they also sync by themselves while the trainer is open.
+
 ### Button & Textbox Linker (advanced)
 
 Main menu → **Button & Textbox Linker**:

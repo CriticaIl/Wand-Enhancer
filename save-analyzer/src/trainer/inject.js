@@ -4,8 +4,9 @@
 //   - the SaveForge app, for games loaded same-origin in its Game tab
 
 import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
-import { frameLabel, LiveProvider, StorageProvider } from './providers.js';
+import { frameLabel, LiveProvider } from './providers.js';
 import { createStore } from './store.js';
+import { SaveHub } from './save-hub.js';
 import { mountTrainer } from './ui.js';
 
 /** Iframes on this page that are big enough to be a game, with what we can know about them. */
@@ -49,9 +50,11 @@ export function openTrainer(win, extra = {}) {
       return 'page';
     }
   })();
-  const { frameReports, openInFrame, contextInfo, ...rest } = extra;
+  const { frameReports, openInFrame, contextInfo, saveSyncMs, ...rest } = extra;
   let engines = detectLiveEngines(win);
   let limitations = liveLimitations(win);
+  // one shared set of save variables (the Save Editor's pipeline) for every view
+  const hub = new SaveHub(win, createStore(win, `${origin}|storage`), extra.saveSyncMs ? { autoMs: extra.saveSyncMs } : undefined);
   const sourceFor = (e) => ({
     id: e.id,
     label: e.name,
@@ -60,7 +63,10 @@ export function openTrainer(win, extra = {}) {
       const store = createStore(win, `${origin}|${e.id}`);
       if (e.useStore) await e.useStore(store);
       if (e.prepare) await e.prepare();
-      return new LiveProvider(win, e, store);
+      const p = new LiveProvider(win, e, store);
+      // save variables appear as soon as the saves are read (never blocks the live list)
+      hub.ensure().then(() => p.attachSaves(hub));
+      return p;
     },
   });
   const sources = engines.map(sourceFor);
@@ -92,7 +98,11 @@ export function openTrainer(win, extra = {}) {
     id: 'storage',
     label: 'Saves in storage',
     channel: 'reload',
-    create: () => StorageProvider.create(win, createStore(win, `${origin}|storage`)),
+    create: async () => {
+      const p = await hub.ensure();
+      if (!p) throw new Error(hub.error || 'Browser storage could not be decoded.');
+      return p;
+    },
   });
 
   const diagnostics = async () => {
@@ -159,8 +169,10 @@ export function openTrainer(win, extra = {}) {
     engineInfo: engineInfo(),
     engineInfoRefresh: engineInfo,
     rescanSources,
+    saveHub: hub,
     store: createStore(win, `${origin}|ui`),
     onClose: () => {
+      hub.dispose();
       delete win.__saveforgeTrainer;
     },
     ...rest,

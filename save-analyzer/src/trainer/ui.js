@@ -196,6 +196,9 @@ export function mountTrainer(win, opts) {
 
   // ---------- Button & Textbox Linker (created lazily; saved mappings load at mount)
   let linkerUI = null;
+  /** The shared save variables behind the current view (the storage chip, or saves merged into a live source). */
+  const savesOf = (p = S.provider) => (p?.kind === 'storage' ? p : p?.saveProvider?.() || null);
+  const hub = opts.saveHub || null;
   const liveProvider = () => (S.provider?.kind === 'live' ? S.provider : [...S.providers.values()].find((p) => p.kind === 'live') || null);
   function getLinkerUI() {
     if (!linkerUI) {
@@ -238,7 +241,7 @@ export function mountTrainer(win, opts) {
       try {
         const p = await src.create();
         S.providers.set(id, p);
-        p.on((reason, ids) => onProviderChange(reason, ids));
+        p.on((reason, ids) => onProviderChange(reason, ids, p));
       } catch (e) {
         S.status = { error: e.message || String(e) };
         renderAll();
@@ -259,6 +262,7 @@ export function mountTrainer(win, opts) {
     S.englishLabels = !!(await store.get('englishLabels', false));
     S.enInResults = await store.get('enInResults', true);
     S.compact = !!(await store.get('compact', false));
+    if (hub) hub.setAuto((await store.get('saveAutoSync', true)) !== false);
     ROW_H = S.compact ? 44 : 56;
     panel.classList.toggle('compact', S.compact);
     const last = await store.get('search', null);
@@ -278,7 +282,8 @@ export function mountTrainer(win, opts) {
     store?.set(`recent:${S.sourceId}`, S.recent);
   }
 
-  function onProviderChange(reason, ids) {
+  function onProviderChange(reason, ids, from) {
+    if (from && from !== S.provider) return; // another source (e.g. the shared saves): its view is rebuilt when selected
     if (reason === 'status') {
       // verification results arrive later: update rows / open status boxes in place
       if (listRefresh) listRefresh();
@@ -286,7 +291,10 @@ export function mountTrainer(win, opts) {
       updateOrb();
       return;
     }
-    if (reason === 'edit' || reason === 'undo' || reason === 'redo') pushRecent(ids);
+    if (reason === 'edit' || reason === 'undo' || reason === 'redo') {
+      pushRecent(ids);
+      for (const id of ids) if (statusBoxes.has(id)) fillStatus(statusBoxes.get(id), id);
+    }
     if (reason === 'rescan') {
       S.stack = [{ type: 'home' }];
     }
@@ -320,7 +328,7 @@ export function mountTrainer(win, opts) {
     const st = statusOf(id);
     if (!st) {
       el.className = 'statusbox';
-      el.append(S.provider.kind === 'live' ? 'Not changed by SaveForge yet. After an edit SaveForge reads the value back from the game and watches whether the game keeps it.' : '');
+      el.append(S.provider.isSave?.(id) ? 'Save value, not changed. Edits stay pending until you write the saves; the running game uses them after it loads the save.' : S.provider.kind === 'live' ? 'Not changed by SaveForge yet. After an edit SaveForge reads the value back from the game and watches whether the game keeps it.' : '');
       return;
     }
     el.className = `statusbox st-${st.state}`;
@@ -404,6 +412,10 @@ export function mountTrainer(win, opts) {
     if (p.kind === 'live') items.push({ kind: 'nav', label: 'Update game display', icon: 'refresh', count: '', hint: 'Make the game redraw its screen after an edit, and see how this game draws.', view: { type: 'display', id: S.recent[0] || null } });
     items.push({ kind: 'nav', label: 'Find a value', icon: 'search', count: '', hint: 'Unknown game? Type a number you see on screen, change it in the game, scan again: SaveForge finds the real variable.', view: { type: 'findvalue' } });
     items.push({ kind: 'action', label: 'Rescan game', icon: 'refresh', hint: 'Look for the game again: engines that finished loading, new variables, new saves.', run: () => rescanGame() });
+    if (hub && (p.kind === 'live' || p.kind === 'storage')) {
+      if (hub.stale) items.push({ kind: 'nav', label: 'The game saved new progress', icon: 'info', count: '', hint: 'Your pending save edits were made on older save data. Open to write them anyway is refused; sync to discard them and read the new save.', view: { type: 'apply' } });
+      items.push({ kind: 'action', label: 'Sync save variables', icon: 'refresh', hint: `Read the game’s saves again with the Save Editor’s detection (${savesOf(p)?.entries.length || 0} save variables now${hub.auto ? ', synced automatically while the trainer is open' : ''}).`, run: () => (syncSaves(), undefined) });
+    }
     items.push({ kind: 'nav', label: 'Button & Textbox Linker', icon: 'link', count: linkerUI ? linkerUI.linker.list().length || '' : '', hint: 'Advanced: inspect what a game button or field is connected to, and link it to another action (only after you confirm).', view: { type: 'linker' } });
     items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
     return items;
@@ -452,6 +464,7 @@ export function mountTrainer(win, opts) {
 
   function renderBody() {
     clear(bodyEl);
+    listRefresh = null; // the previous list is gone; renderList installs a new one
     if (S.status?.loading) return bodyEl.append(h('div', { class: 'empty' }, S.status.loading)), setDesc('');
     if (S.status?.error) {
       bodyEl.append(h('div', { class: 'sheet' }, h('div', { class: 'badbox' }, S.status.error), limitationsBlock()));
@@ -621,7 +634,7 @@ export function mountTrainer(win, opts) {
     } catch {
       v = undefined;
     }
-    return `${i === S.selected}|${String(v)}|${p.isEdited(it.nodeId)}|${S.favorites.has(it.nodeId)}|${statusOf(it.nodeId)?.state || ''}|${S.englishLabels}`;
+    return `${i === S.selected}|${String(v)}|${p.originOf ? p.originOf(it.nodeId) : ''}|${p.isEdited(it.nodeId)}|${S.favorites.has(it.nodeId)}|${statusOf(it.nodeId)?.state || ''}|${S.englishLabels}`;
   }
 
   function rowEl(it, i) {
@@ -645,6 +658,7 @@ export function mountTrainer(win, opts) {
     }
     const e = it;
     const node = p.node(e.nodeId);
+    if (!node) return row; // the entry vanished (re-read saves, rescan): repainted on the next refresh
     const value = p.value(e.nodeId);
     if (p.isEdited(e.nodeId)) row.classList.add('edited');
     const { text: label, original } = labelOf(e);
@@ -654,12 +668,20 @@ export function mountTrainer(win, opts) {
         'div',
         { class: 'lbl', onclick: () => (S.selected === i ? openEdit(e.nodeId) : choose()) },
         h('span', { class: 'name' }, st && STATUS_MARK[st.state] ? h('span', { class: `st st-${st.state}`, title: STATUS[st.state] }, STATUS_MARK[st.state]) : null, S.favorites.has(e.nodeId) ? h('span', { class: 'star' }, '★') : null, label),
-        h('span', { class: 'sub2' }, subLine(e, node, original, st)),
+        h('span', { class: 'sub2' }, originTag(e), subLine(e, node, original, st)),
       ),
       valueWidget(node, value, e, choose),
       h('button', { class: 'info', 'aria-label': `About ${label}`, onclick: () => (choose(), push({ type: 'info', id: e.nodeId })) }, 'ⓘ'),
     );
     return row;
+  }
+
+  /** LIVE / SAVE / LIVE+SAVE, shown once save variables are part of the list. */
+  function originTag(e) {
+    const p = S.provider;
+    if (!p?.hasSaves?.()) return null;
+    const o = p.originOf(e.nodeId);
+    return h('span', { class: `otag o-${o.replace('+', '')}`, title: o === 'live' ? 'Live: changes the running game' : o === 'save' ? 'Save: written to the game’s save (needs a reload or export)' : 'Live + Save: the running game and its save, linked by a verified mapping' }, o === 'live+save' ? 'LIVE+SAVE' : o.toUpperCase());
   }
 
   function valueWidget(node, value, e, choose) {
@@ -695,7 +717,8 @@ export function mountTrainer(win, opts) {
       const beforeValue = S.provider.value(id);
       const res = S.provider.set({ id, value: typeof value === 'number' ? String(value) : value }, label);
       if (res.changed) {
-        if (S.provider.channel === 'reload') toast('⟳ Requires reload: tap Apply & Reload to write it');
+        const ch = S.provider.channelOf ? S.provider.channelOf(id) : S.provider.channel;
+        if (ch === 'reload') toast(S.provider.kind === 'live' ? '⟳ Save edit pending: Write saves (kept for the next load) or Apply & Reload — the running game does not change yet' : '⟳ Requires reload: tap Apply & Reload to write it');
         else if (S.provider.channel === 'file') toast('Saved into the edit: Export to download');
         else if (res.verified) {
           const name = S.provider.entryById.get(id)?.label || 'Value';
@@ -817,6 +840,7 @@ export function mountTrainer(win, opts) {
       h('div', { class: 'path' }, x.path || id),
       h('div', { class: 'chips' }, h('span', { class: `badge ${x.channel}` }, x.timing.label), h('span', { class: `badge ${x.confidence.level.toLowerCase()}` }, `${x.confidence.level} confidence`), h('span', { class: 'badge' }, x.type)),
       statusSection(id),
+      saveLinkSection(id),
       detectionSection(id),
       englishSection(id, x.title),
       h('h3', null, 'What it controls'),
@@ -848,6 +872,27 @@ export function mountTrainer(win, opts) {
     );
     bodyEl.append(sheet);
     setDesc(x.summary, x.channel, x.confidence.level);
+  }
+
+  /** Live / Save / Live + Save, and how a link was established (never from names alone). */
+  function saveLinkSection(id) {
+    const p = S.provider;
+    if (!p?.hasSaves?.()) return null;
+    const o = p.originOf(id);
+    const link = p.saveLinkOf(id);
+    const sp = p.saveProvider();
+    const rows = [];
+    if (o === 'live+save') {
+      rows.push(h('p', null, `Linked to the save field ${sp.sourceOf(link.saveId)}.`), h('p', { class: 'note' }, `How: ${link.how === 'engine' ? 'the engine’s documented save layout' : 'verified observation'} — ${link.detail}.`), h('p', { class: 'note' }, 'Editing changes the running game right away (verified). The save keeps the old value until the game saves, or until you tap “Also write to save” and Write saves.'));
+      if (link.how === 'observed') rows.push(h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { hub.unlink(p.engine.id, id); toast('Link removed'); back(); } }, 'Remove this link')));
+    } else if (o === 'save') {
+      const possible = hub ? hub.possibleFor(p.isSave(id) ? id.slice(5) : id) : [];
+      rows.push(h('p', null, `Only in the save: ${sp.sourceOf(id.slice(5))}.`), h('p', { class: 'note' }, 'Not linked to a running-game variable. Edits are written to the save (Write saves) and used when the game loads it, or exported.'));
+      if (possible.length) rows.push(h('p', { class: 'note' }, `Possibly the same as: ${possible.map((x) => p.entryById.get(x)?.path || x).join(', ')} — not verified (several live values changed the same way), so not merged.`));
+    } else {
+      rows.push(h('p', { class: 'note' }, 'Live only: no save field is linked. A link is made only by the engine’s save layout or after SaveForge sees the save follow this value (e.g. change it, then save in-game).'));
+    }
+    return h('div', null, h('h3', null, `Source: ${o === 'live+save' ? 'Live + Save' : o === 'save' ? 'Save' : 'Live'}`), rows);
   }
 
   const TIER_TEXT = {
@@ -939,14 +984,15 @@ export function mountTrainer(win, opts) {
       : e?.suggestions
         ? h('div', { class: 'quick' }, e.suggestions.slice(0, 8).map((s) => h('button', { onclick: () => (input.value = s) }, short(s))))
         : null;
-    const timing = p.channel === 'live' || p.channel === 'live-generic' ? 'Applies to the running game immediately.' : p.channel === 'reload' ? 'Kept pending until you tap Apply & Reload.' : 'Goes into the exported save file.';
+    const ch = p.channelOf ? p.channelOf(id) : p.channel;
+    const timing = ch === 'live' || ch === 'live-generic' ? 'Applies to the running game immediately.' : ch === 'reload' ? 'Kept pending until you write the saves (Write saves or Apply & Reload). The running game only sees it after it loads the save.' : 'Goes into the exported save file.';
     bodyEl.append(
       h(
         'div',
         { class: 'sheet' },
         h('h2', null, p.displayLabel(e || { label: node.key, nodeId: id })),
         h('div', { class: 'path' }, e?.path || id),
-        h('div', { class: 'chips' }, h('span', { class: `badge ${p.channel}` }, CHANNEL_LABEL[p.channel]), h('span', { class: 'badge' }, node.type)),
+        h('div', { class: 'chips' }, h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]), p.originOf && p.hasSaves?.() ? h('span', { class: 'badge' }, p.originOf(id).toUpperCase()) : null, h('span', { class: 'badge' }, node.type)),
         h('div', { style: 'height:8px' }),
         input,
         h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn go', onclick: commit }, 'Apply'), h('button', { class: 'btn', onclick: back }, p.kind === 'live' ? 'Done' : 'Cancel'), h('button', { class: 'btn', onclick: () => push({ type: 'info', id }) }, 'ⓘ Info')),
@@ -971,7 +1017,12 @@ export function mountTrainer(win, opts) {
       const locked = p.locks.has(id);
       btns.append(h('button', { class: `btn${locked ? ' warn' : ''}`, onclick: () => { try { locked ? p.unlock(id) : p.lock(id); toast(locked ? 'Unlocked' : `Locked at ${short(p.value(id))}: SaveForge re-applies it if the game changes it`); renderAll(); } catch (e) { toast(e.message, true); } } }, ic('lock'), locked ? 'Unlock' : 'Lock value'));
     }
-    if (p.kind === 'live') btns.append(h('button', { class: 'btn', onclick: () => push({ type: 'display', id }) }, ic('refresh'), 'Update game display'));
+    const isSave = p.isSave?.(id);
+    if (p.kind === 'live' && !isSave) btns.append(h('button', { class: 'btn', onclick: () => push({ type: 'display', id }) }, ic('refresh'), 'Update game display'));
+    if (p.saveLinkOf?.(id)) {
+      btns.append(h('button', { class: 'btn', onclick: () => { try { const r = p.setSaveFor(id, p.value(id)); toast(r.changed ? `Save field set to ${short(p.value(id))}: tap Write saves to keep it for the next load` : 'The save already has this value'); renderAll(); } catch (e) { toast(e.message, true); } } }, '⤓ Also write to save'));
+    }
+    if ((isSave || p.saveLinkOf?.(id)) && p.savePending?.()) btns.append(h('button', { class: 'btn go', onclick: () => push({ type: 'apply' }) }, `Write saves (${p.savePending()})…`));
     if (p.isEdited(id) && p.restoreOriginal) {
       btns.append(h('button', { class: 'btn', onclick: () => { p.restoreOriginal(id); toast(`Restoring original value ${short(p.original(id))}`); renderAll(); } }, '↺ Restore original'));
     }
@@ -1155,6 +1206,13 @@ export function mountTrainer(win, opts) {
         await store?.set('compact', S.compact);
         renderAll();
       }, 'Smaller rows so more variables fit on the iPhone screen.'),
+      hub
+        ? toggleRow('Sync save variables automatically', hub.auto, async () => {
+            hub.setAuto(!hub.auto);
+            await store?.set('saveAutoSync', hub.auto);
+            renderAll();
+          }, 'While the trainer is open, SaveForge re-reads the game’s saves when they change (the same detection as the Save Editor). Pending save edits are never overwritten.')
+        : null,
     );
     if (opts.siteMode) {
       const mode = await opts.siteMode.get();
@@ -1190,46 +1248,108 @@ export function mountTrainer(win, opts) {
   // ---------- Apply & Reload (storage)
   function renderApply() {
     const p = S.provider;
-    const diff = p.diff ? p.diff() : [];
+    const sp = savesOf(p);
+    const diff = sp?.diff ? sp.diff() : [];
+    const label = (d) => sp.entryById.get(d.id)?.label || d.node.key;
     const sheet = h(
       'div',
       { class: 'sheet' },
-      h('h2', null, `Write ${diff.length} change(s) and reload`),
-      h('div', { class: 'warnbox' }, 'The page will reload. Anything you did in the game since its last save will be lost — save in-game first if needed.'),
-      h('div', { class: 'okbox' }, 'Before writing, SaveForge checks that the game has not saved meanwhile, verifies the rebuilt data, and stores a backup you can restore from “Backups & restore”.'),
-      h('ul', null, diff.slice(0, 50).map((d) => h('li', null, `${p.entryById.get(d.id)?.label || d.node.key}: ${show(d.before)} → ${show(d.after)}`))),
-      h(
-        'div',
-        { class: 'btns' },
-        h('button', { class: 'btn warn', onclick: doApply }, 'Apply & Reload'),
-        h('button', { class: 'btn', onclick: back }, 'Cancel'),
-      ),
+      h('h2', null, `Write ${diff.length} save change(s)`),
+      hub?.stale ? h('div', { class: 'badbox' }, 'The game saved new progress after these edits were made. Writing is refused so that progress is not overwritten: Sync save variables (discards the pending save edits) and edit again.') : null,
+      h('ul', null, diff.slice(0, 50).map((d) => h('li', null, `${label(d)}: ${show(d.before)} → ${show(d.after)}`))),
+      h('div', { class: 'okbox' }, 'Before writing, SaveForge checks that the game has not saved meanwhile, re-decodes the rebuilt save to verify every value, and stores a backup you can restore from “Backups & restore”.'),
+      h('h3', null, 'Write saves (no reload)'),
+      h('p', { class: 'note' }, 'The save is changed in place. The running game is not changed: it uses the new values when it next loads this save. If the game saves before that, its in-memory values replace yours.'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: doWriteNow }, 'Write saves')),
+      h('h3', null, 'Apply & Reload'),
+      h('div', { class: 'warnbox' }, 'Writes the saves, then reloads the page so the game reads them. Anything you did in the game since its last save is lost — save in-game first if needed.'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn warn', onclick: doApply }, 'Apply & Reload')),
+      h('h3', null, 'Export edited saves'),
+      h('p', { class: 'note' }, 'Downloads the edited saves as a SaveForge storage export (verified). Open it in the SaveForge Save Editor, or import it with the Storage Bridge.'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: doExport }, 'Export edited saves'), h('button', { class: 'btn', onclick: back }, 'Cancel')),
     );
     bodyEl.append(sheet);
-    setDesc('Saved edits are written to browser storage, then the game reloads and reads them.', 'reload');
+    setDesc('Save edits are written to the game’s storage. The running game sees them after it loads the save.', 'reload');
+  }
+
+  async function doWriteNow() {
+    try {
+      toast('Verifying and writing…');
+      const r = hub && savesOf() === hub.provider ? await hub.writeNow() : await savesOf().applyAndReload({ reload: false });
+      toast(`✓ Saves written (${r.written} item(s)) and verified. The game uses them the next time it loads.`);
+      back();
+    } catch (e) {
+      applyFailed(e);
+    }
+  }
+  async function doExport() {
+    try {
+      const bytes = hub && savesOf() === hub.provider ? await hub.exportEdited() : (await savesOf().session.export()).bytes;
+      const host = (() => {
+        try {
+          return win.location.hostname || 'game';
+        } catch {
+          return 'game';
+        }
+      })();
+      downloadBytes(bytes, `${host}-saves-edited.json`);
+      toast('Edited saves exported (verified)');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+  function downloadBytes(bytes, name) {
+    const url = win.URL.createObjectURL(new win.Blob([bytes], { type: 'application/json' }));
+    const a = doc.createElement('a');
+    a.href = url;
+    a.download = name;
+    doc.body.append(a);
+    a.click();
+    win.setTimeout(() => (win.URL.revokeObjectURL(url), a.remove()), 4000);
   }
 
   async function doApply() {
-    const p = S.provider;
     try {
       toast('Verifying and writing…');
-      await p.applyAndReload({ reload: true });
+      await savesOf().applyAndReload({ reload: true });
     } catch (e) {
-      clear(bodyEl).append(
-        h(
-          'div',
-          { class: 'sheet' },
-          h('h2', null, 'Nothing was written'),
-          h('div', { class: 'badbox' }, e.message),
-          h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => reread() }, 'Re-read storage'), h('button', { class: 'btn', onclick: back }, 'Back')),
-        ),
-      );
+      applyFailed(e);
     }
+  }
+  function applyFailed(e) {
+    clear(bodyEl).append(
+      h(
+        'div',
+        { class: 'sheet' },
+        h('h2', null, 'Nothing was written'),
+        h('div', { class: 'badbox' }, e.message),
+        h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => reread() }, 'Re-read storage'), h('button', { class: 'btn', onclick: back }, 'Back')),
+      ),
+    );
   }
 
   async function reread() {
+    if (hub) {
+      await hub.sync({ force: true, discard: true });
+      S.stack = [{ type: 'home' }];
+      renderAll();
+      toast('Saves re-read');
+      return;
+    }
     S.providers.delete(S.sourceId);
     await selectSource(S.sourceId);
+  }
+  /** Sync save variables: re-run the Save Editor's discovery on the game's saves. */
+  async function syncSaves() {
+    if (!hub) return;
+    toast('Reading the game’s saves…');
+    const r = await hub.sync({ force: true });
+    const p = S.provider;
+    const n = savesOf(p)?.entries.length || 0;
+    const linked = p?.saveLinks ? p.saveLinks.size : 0;
+    if (r.stale) toast('The game saved new progress, but save edits are pending: write or discard them first (Write saves screen)', true);
+    else toast(`Save variables synced: ${n} from the saves${p?.kind === 'live' ? `, ${linked} linked to live variables` : ''}`);
+    renderAll();
   }
 
   // ---------- backups
@@ -1247,12 +1367,13 @@ export function mountTrainer(win, opts) {
     } else if (p.kind === 'file') {
       sheet.append(h('p', null, 'The original file is backed up automatically in SaveForge (Analyze tab) and can be downloaded from the Export screen. Use Undo, Revert or Reset to go back.'));
     }
-    const bstore = p.store || store;
+    const sp = savesOf(p);
+    const bstore = sp?.store || p.store || store;
     if (bstore) {
       const list = (await bstore.backups()).filter((b) => b.kind === 'storage');
-      if (p.kind === 'storage') sheet.append(h('h3', null, 'Storage snapshots (taken before each Apply & Reload)'));
-      if (p.kind === 'storage' && !list.length) sheet.append(h('p', { class: 'note' }, 'None yet. A snapshot is stored automatically before anything is written.'));
-      if (p.kind === 'storage') {
+      if (sp) sheet.append(h('h3', null, 'Save snapshots (taken before every save write)'));
+      if (sp && !list.length) sheet.append(h('p', { class: 'note' }, 'None yet. A snapshot is stored automatically before anything is written.'));
+      if (sp) {
         for (const b of list.slice(0, 10)) {
           sheet.append(
             h(
@@ -1286,7 +1407,7 @@ export function mountTrainer(win, opts) {
 
   function confirmRestoreStorage(b) {
     if (!win.confirm('Overwrite the game’s current storage with this snapshot and reload? Progress saved after it will be replaced.')) return;
-    S.provider.restore(b).catch((e) => toast(e.message, true));
+    savesOf().restore(b).catch((e) => toast(e.message, true));
   }
 
   function downloadJson(obj, name) {
@@ -1613,8 +1734,9 @@ export function mountTrainer(win, opts) {
       tool('search', 'Search', () => (top().type === 'search' ? null : push({ type: 'search' })), !p),
       tool('refresh', 'Refresh values', () => refreshValues(), !p),
     );
-    if (p && p.kind === 'storage' && p.pendingCount()) {
-      toolsEl.append(h('button', { class: 'tool primary', onclick: () => push({ type: 'apply' }) }, 'Apply & Reload ', h('span', { class: 'n' }, p.pendingCount())));
+    const sp = savesOf(p);
+    if (sp && sp.pendingCount()) {
+      toolsEl.append(h('button', { class: 'tool primary', onclick: () => push({ type: 'apply' }) }, p.kind === 'storage' ? 'Apply & Reload ' : 'Write saves ', h('span', { class: 'n' }, sp.pendingCount())));
     } else if (p && p.kind === 'file' && opts.onExport) {
       toolsEl.append(h('button', { class: 'tool', style: 'flex:2', onclick: opts.onExport }, `Export${p.pendingCount() ? ` (${p.pendingCount()})` : ''}`));
     }

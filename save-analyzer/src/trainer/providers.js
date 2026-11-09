@@ -14,6 +14,9 @@ import { indexTree, pathOf, sameValue } from '../core/model.js';
 import { generateModMenu } from '../core/modmenu.js';
 import { coerceLive } from './live-tree.js';
 
+/** Ids of save variables listed inside a live source. */
+export const SAVE_PREFIX = 'save:';
+
 // Trainer sections → existing mod-menu categories
 export const SECTIONS = [
   { id: 'player', name: 'Player', icon: 'heart', cats: ['stats', 'progression', 'text'] },
@@ -176,6 +179,7 @@ export class LiveProvider extends BaseProvider {
     this.emit('learned');
   }
   detection(id) {
+    if (this.isSave(id)) return null;
     return this.engine.detection ? this.engine.detection(id) : null;
   }
   canMark() {
@@ -186,6 +190,123 @@ export class LiveProvider extends BaseProvider {
     if (!this.canMark()) return;
     this.engine.mark(id, tier);
     this.relearn();
+  }
+
+  // ---------------------------------------------------------------- shared save variables
+  // Save variables come from the SaveHub (the Save Editor's pipeline). They are listed
+  // next to live variables with ids prefixed "save:"; a save field linked to a live
+  // variable (engine mapping or verified observation) is shown once, on the live entry.
+
+  load(root) {
+    super.load(root);
+    this.liveEntries = this.entries;
+    if (this.saves) this.mergeSaves();
+  }
+
+  attachSaves(hub) {
+    if (this.saves) return;
+    this.saves = hub;
+    this.saveOrder = [];
+    this.saveRedo = [];
+    this.unsubHub = hub.on((r) => {
+      if (r !== 'synced' && r !== 'stale') return;
+      this.mergeSaves();
+      this.emit('learned');
+    });
+    hub.attach(this);
+    this.mergeSaves();
+    this.emit('learned');
+  }
+  wireSaves() {
+    const sp = this.saves?.provider;
+    if (!sp || this.wiredSp === sp) return;
+    this.unsubSp?.();
+    this.wiredSp = sp;
+    this.unsubSp = sp.on((reason, ids) => {
+      if (reason === 'learned' || reason === 'rescan') return;
+      this.emit(reason === 'reset' ? 'status' : reason, ids.map((i) => this.fromSaveId(i)));
+    });
+  }
+  mergeSaves() {
+    const sp = this.saves?.provider;
+    this.saveLinks = sp ? this.saves.linksFor(this) : new Map();
+    this.saveToLive = new Map([...this.saveLinks.values()].map((l) => [l.saveId, l.liveId]));
+    for (const e of this.liveEntries) {
+      const l = this.saveLinks.get(e.nodeId);
+      e.origin = l ? 'live+save' : 'live';
+      e.saveLink = l || null;
+    }
+    const extra = [];
+    if (sp) {
+      for (const se of sp.entries) {
+        if (this.saveToLive.has(se.nodeId)) continue;
+        extra.push({ ...se, nodeId: SAVE_PREFIX + se.nodeId, origin: 'save', saveId: se.nodeId, en: undefined });
+      }
+    }
+    this.entries = extra.length ? [...this.liveEntries, ...extra] : this.liveEntries;
+    this.entryById = new Map(this.entries.map((e) => [e.nodeId, e]));
+    this.refCounts = null;
+    this.wireSaves();
+  }
+  isSave(id) {
+    return typeof id === 'string' && id.startsWith(SAVE_PREFIX);
+  }
+  saveProvider() {
+    return this.saves?.provider || null;
+  }
+  fromSaveId(saveId) {
+    return this.saveToLive?.get(saveId) || SAVE_PREFIX + saveId;
+  }
+  hasSaves() {
+    return !!this.saveProvider()?.entries.length;
+  }
+  /** 'live', 'save' or 'live+save' */
+  originOf(id) {
+    return this.isSave(id) ? 'save' : this.saveLinks?.has(id) ? 'live+save' : 'live';
+  }
+  saveLinkOf(id) {
+    return this.saveLinks?.get(id) || null;
+  }
+  channelOf(id) {
+    return this.isSave(id) ? 'reload' : this.channel;
+  }
+  savePending() {
+    return this.saveProvider()?.pendingCount() || 0;
+  }
+  /** Linked variable: also put the value into its save field (pending until written). */
+  setSaveFor(id, value, label = 'Also save') {
+    const l = this.saveLinkOf(id);
+    const sp = this.saveProvider();
+    if (!l || !sp) throw new Error('This variable has no verified save link.');
+    const r = sp.set({ id: l.saveId, value: typeof value === 'number' ? String(value) : value }, label);
+    if (r.changed) {
+      this.saveOrder.push('save');
+      this.saveRedo = [];
+    }
+    return r;
+  }
+  set(changes, label = 'Edit') {
+    const list = Array.isArray(changes) ? changes : [changes];
+    const saveCh = list.filter((c) => this.isSave(c.id));
+    const liveCh = list.filter((c) => !this.isSave(c.id));
+    let res = { ok: true, changed: 0 };
+    if (saveCh.length) {
+      const sp = this.saveProvider();
+      if (!sp) throw new Error('The saves are no longer available. Tap Sync save variables.');
+      res = sp.set(saveCh.map((c) => ({ id: c.id.slice(SAVE_PREFIX.length), value: c.value })), label);
+      if (res.changed && this.saves) {
+        this.saveOrder.push('save');
+        this.saveRedo = [];
+      }
+    }
+    if (liveCh.length) {
+      res = this.setLive(liveCh, label);
+      if (res.changed && this.saves) {
+        this.saveOrder.push('live');
+        this.saveRedo = [];
+      }
+    }
+    return res;
   }
 
   rescan() {
@@ -205,11 +326,30 @@ export class LiveProvider extends BaseProvider {
     this.emit('rescan');
   }
 
+  node(id) {
+    if (this.isSave(id)) return this.saveProvider()?.node(id.slice(SAVE_PREFIX.length));
+    return super.node(id);
+  }
+  parents(id) {
+    if (this.isSave(id)) return this.saveProvider()?.parents(id.slice(SAVE_PREFIX.length)) || [];
+    return super.parents(id);
+  }
+  explain(id) {
+    if (this.isSave(id)) return this.saveProvider().explain(id.slice(SAVE_PREFIX.length));
+    return super.explain(id);
+  }
   liveName(id) {
+    if (this.isSave(id)) return null;
     return this.engine.liveName ? this.engine.liveName(id, this.refs.get(id)) : null;
   }
 
   sourceOf(id) {
+    if (this.isSave(id)) return `Save: ${this.saveProvider()?.sourceOf(id.slice(SAVE_PREFIX.length)) || 'browser storage'}`;
+    const link = this.saveLinkOf(id);
+    if (link) return `${this.liveSourceOf(id)} · Save: ${this.saveProvider().sourceOf(link.saveId)} (${link.how === 'engine' ? 'engine save layout' : 'verified by observation'})`;
+    return this.liveSourceOf(id);
+  }
+  liveSourceOf(id) {
     if (this.engine.sourceOf) return `${this.engine.name}: ${this.engine.sourceOf(id)}`;
     const path = this.entryById.get(id)?.path;
     return `${this.engine.name}${path ? `: ${path}` : ''}`;
@@ -236,6 +376,7 @@ export class LiveProvider extends BaseProvider {
   }
 
   value(id) {
+    if (this.isSave(id)) return this.saveProvider()?.value(id.slice(SAVE_PREFIX.length));
     const r = this.resolve(id);
     if (!r) return undefined;
     try {
@@ -245,15 +386,21 @@ export class LiveProvider extends BaseProvider {
     }
   }
   original(id) {
+    if (this.isSave(id)) return this.saveProvider()?.original(id.slice(SAVE_PREFIX.length));
     return this.touched.has(id) ? this.touched.get(id) : this.value(id);
   }
   isEdited(id) {
+    if (this.isSave(id)) return !!this.saveProvider()?.isEdited(id.slice(SAVE_PREFIX.length));
     return this.touched.has(id) && !sameValue(this.touched.get(id), this.value(id));
   }
   pendingCount() {
-    return 0;
+    return this.savePending();
   }
   statusOf(id) {
+    if (this.isSave(id)) {
+      const st = this.saveProvider()?.statusOf(id.slice(SAVE_PREFIX.length));
+      return st && st.state === 'reload' ? { ...st, detail: 'Save edit pending. It is written to the game’s save when you tap Write saves (kept for the next load) or Apply & Reload (the game reloads and reads it). The running game does not see it before that.' } : st;
+    }
     if (this.locks.has(id)) {
       const l = this.locks.get(id);
       return { state: 'locked', detail: l.reapplied ? `Locked at ${l.value}: the game changed it ${l.reapplied} time(s), SaveForge put it back each time.` : `Locked at ${l.value}.` };
@@ -277,7 +424,7 @@ export class LiveProvider extends BaseProvider {
     return how;
   }
 
-  set(changes, label = 'Edit') {
+  setLive(changes, label = 'Edit') {
     const list = Array.isArray(changes) ? changes : [changes];
     const step = [];
     for (const { id, value } of list) {
@@ -294,6 +441,7 @@ export class LiveProvider extends BaseProvider {
     for (const s of step) {
       if (!this.touched.has(s.id)) this.touched.set(s.id, s.before);
       results.push(this.applyAndVerify(s.id, s.after, s.before));
+      if (this.saves) this.saves.noteLive(this, s.id, s.before, s.after); // evidence for save links
     }
     this.undoStack.push({ label, step });
     this.redoStack = [];
@@ -357,6 +505,7 @@ export class LiveProvider extends BaseProvider {
 
   // ---------------------------------------------------------------- locking / freezing
   canLock(id) {
+    if (this.isSave(id)) return false;
     const node = this.node(id);
     if (!node || !node.editable || !(node.type === 'int' || node.type === 'float' || node.type === 'bool' || node.type === 'string')) return false;
     const st = this.status.get(id);
@@ -396,6 +545,11 @@ export class LiveProvider extends BaseProvider {
     }
   }
   dispose() {
+    if (this.saves) {
+      this.saves.detach(this);
+      this.unsubHub?.();
+      this.unsubSp?.();
+    }
     this.unlockAll();
     if (this.unlearn) this.unlearn();
     if (this.engine.stopLearning) this.engine.stopLearning();
@@ -414,6 +568,11 @@ export class LiveProvider extends BaseProvider {
   }
 
   undo() {
+    if (this.saves && this.saveOrder.length) {
+      const which = this.saveOrder.pop();
+      this.saveRedo.push(which);
+      if (which === 'save') return this.saveProvider()?.undo();
+    }
     const e = this.undoStack.pop();
     if (!e) return false;
     for (const s of [...e.step].reverse()) this.applyAndVerify(s.id, s.before, s.after);
@@ -422,6 +581,11 @@ export class LiveProvider extends BaseProvider {
     return true;
   }
   redo() {
+    if (this.saves && this.saveRedo.length) {
+      const which = this.saveRedo.pop();
+      this.saveOrder.push(which);
+      if (which === 'save') return this.saveProvider()?.redo();
+    }
     const e = this.redoStack.pop();
     if (!e) return false;
     for (const s of e.step) this.applyAndVerify(s.id, s.after, s.before);
@@ -430,14 +594,17 @@ export class LiveProvider extends BaseProvider {
     return true;
   }
   canUndo() {
+    if (this.saves && this.saveOrder.length && this.saveOrder[this.saveOrder.length - 1] === 'save') return !!this.saveProvider()?.canUndo();
     return this.undoStack.length > 0;
   }
   canRedo() {
+    if (this.saves && this.saveRedo.length && this.saveRedo[this.saveRedo.length - 1] === 'save') return !!this.saveProvider()?.canRedo();
     return this.redoStack.length > 0;
   }
 
   /** One tap: put a single value back to what it was before SaveForge changed it. */
   restoreOriginal(id) {
+    if (this.isSave(id)) return this.saveProvider()?.restoreOriginal(id.slice(SAVE_PREFIX.length));
     if (!this.touched.has(id)) return { ok: true, changed: 0 };
     if (this.locks.has(id)) this.unlock(id);
     return this.set({ id, value: this.touched.get(id) }, 'Restore original');
@@ -495,6 +662,24 @@ export class StorageProvider extends BaseProvider {
     return this.session.revert(id) ? { ok: true, changed: 1 } : { ok: true, changed: 0 };
   }
 
+  /** Same pipeline as the SaveForge Save Editor: Storage Bridge dump → analyzeFile. */
+  static async read(win) {
+    const dump = await storageBridge(win, 'collect');
+    const res = await analyzeFile('browser-storage.json', new TextEncoder().encode(JSON.stringify(dump, null, 1)));
+    return { dump, doc: res.ok ? res.doc : null };
+  }
+
+  /** Re-read in place (Sync save variables): the same provider object stays shared by every view. */
+  replaceData(dump, doc) {
+    this.dump = dump;
+    this.doc = doc;
+    this.unsubSession?.();
+    this.session = new EditSession(doc);
+    this.unsubSession = this.session.on((reason, ids) => this.emit(reason, ids));
+    this.load(doc.root);
+    this.emit('learned');
+  }
+
   constructor(win, store, dump, doc) {
     super();
     this.win = win;
@@ -502,7 +687,7 @@ export class StorageProvider extends BaseProvider {
     this.dump = dump;
     this.doc = doc;
     this.session = new EditSession(doc);
-    this.session.on((reason, ids) => this.emit(reason, ids));
+    this.unsubSession = this.session.on((reason, ids) => this.emit(reason, ids));
     this.kind = 'storage';
     this.channel = 'reload';
     this.title = 'Browser storage';

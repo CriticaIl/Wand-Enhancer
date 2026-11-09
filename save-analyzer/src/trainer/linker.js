@@ -362,6 +362,7 @@ export function inspectElement(el, ctx) {
     const v = info.value;
     const keyHint = [el.id, el.name, el.getAttribute('placeholder'), labelOf(el)].filter(Boolean).join(' ').toLowerCase();
     for (const e of ctx.provider.entries || []) {
+      if (e.nodeId.startsWith('save:')) continue; // save variables are not live inputs
       const node = ctx.provider.node(e.nodeId);
       if (!node || !compatibleType(node.type, want)) continue;
       const cur = safe(() => ctx.provider.value(e.nodeId));
@@ -426,6 +427,7 @@ function variableIndex(p) {
   const exact = new Map();
   const tail = new Map();
   for (const e of p?.entries || []) {
+    if (e.nodeId.startsWith('save:')) continue;
     const segs = e.nodeId.split('/').slice(1).map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
     if (p.engine && p.engine.id === 'generic') exact.set(segs.join('.'), e.nodeId);
     if (segs.length >= 2) {
@@ -475,6 +477,7 @@ export function candidatesFor(info, ctx) {
     const want = info.kind === 'checkbox' ? 'bool' : info.kind === 'range' ? 'number' : 'any';
     const ranked = [...info.binding.likely, ...info.binding.possible].map((b) => b.id).filter(Boolean);
     const entries = (ctx.provider.entries || []).filter((e) => {
+      if (e.nodeId.startsWith('save:')) return false;
       const n = ctx.provider.node(e.nodeId);
       return n && n.editable && compatibleType(n.type, want);
     });
@@ -834,6 +837,7 @@ function snapshotValues(p) {
   const m = new Map();
   if (!p || !p.entries) return m;
   for (const e of p.entries.slice(0, 20000)) {
+    if (e.nodeId.startsWith('save:')) continue;
     const n = p.node(e.nodeId);
     if (!n || !['int', 'float', 'bool', 'string'].includes(n.type)) continue;
     m.set(e.nodeId, safe(() => p.value(e.nodeId)));

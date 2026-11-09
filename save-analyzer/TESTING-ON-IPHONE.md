@@ -1,6 +1,15 @@
-# SaveForge 1.8 on iPhone: install, test and what to expect
+# SaveForge 1.9 on iPhone: install, test and what to expect
 
-## What's new in 1.8
+## What's new in 1.9
+- **Save variables in the trainer.** The trainer runs the Save Editor's own save detection on the game's browser saves (localStorage, IndexedDB) and lists those variables next to the live ones, with the same friendly names, categories and search.
+- **Labels:**
+  - **LIVE:** applied now and verified.
+  - **SAVE:** pending → *Write saves* (next load), *Apply & Reload* or *Export edited saves*.
+  - **LIVE+SAVE:** applied now, plus *Also write to save*.
+- **No guessing:** a save field is merged with a live variable only via the engine's save layout (RPG Maker, SugarCube) or after SaveForge sees the save follow a live change. To link one yourself, change it in the trainer, then save in-game.
+- **Sync save variables** re-reads the saves, and they also sync automatically while the trainer is open. If the game saves while you have pending save edits, nothing is overwritten.
+
+## What was new in 1.8
 - **Fixed: values hidden by large dialogue tables.** Since 1.6, one shared scan budget could be used up by a big dialogue/translation table before deeper game values (such as money) were reached. Each global now has its own budget and text is capped separately.
 - **Rescan finds state created later** (after a title screen or "Start").
 - **Script-level `let`/`const` variables** and **SugarCube `setup` objects** are found.
@@ -59,7 +68,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **1.8.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **1.9.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -110,7 +119,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 159 tests)
+### Verified by the automated tests (Chromium, 163 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -118,6 +127,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**Save variables (1.9):**
+- A generic game's save shows up as SAVE entries next to the LIVE ones. Fields with the same name and value are *not* merged. After a live edit and an in-game save they become one LIVE+SAVE entry, linked by observation.
+- *Also write to save* + *Write saves* changes the save without a reload. A SAVE-only edit stays pending, explained as such, with the running game untouched. Undo/redo cover it, Apply & Reload loads it, and the save snapshot restores the old save.
+- RPG Maker gold/HP/level and SugarCube variables are linked through their engine save layouts, and the edited RPG File1 decodes with the new gold.
+- Saves appear automatically after the game saves. Sync save variables works, and a pending save edit is never written over newer progress.
+- The linking rules are unit-tested: equal values never link, ambiguous changes never link, small values need two changes, and contradicted links are dropped.
 
 **Discoverability (1.8):**
 - The 1.6/1.7 regression is reproduced and fixed. A money value 5 levels deep next to a 12,000-line multilingual dialogue table:
@@ -163,7 +179,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 1.8.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 1.9.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

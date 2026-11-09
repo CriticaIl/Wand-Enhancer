@@ -280,6 +280,44 @@ test('scan budgets: one huge global cannot hide values in another; skipped text 
   assert.equal(g.root.children[0].children[0].value, 5);
 });
 
+test('save links: only engine layouts or verified observations link a save field to a live variable', async () => {
+  const { SaveHub } = await import('../src/trainer/save-hub.js');
+  const hub = new SaveHub({ setInterval: () => 1, clearInterval: () => {} }, memStore());
+  const vals = { '$/a': 5, '$/b': 5, '$/d': 2, '$/c': 300 };
+  const p = { engine: { id: 'generic' }, liveEntries: Object.keys(vals).map((nodeId) => ({ nodeId })), node: () => ({ type: 'int' }), value: (id) => vals[id] };
+  hub.attached.add(p);
+  hub.observeLive(p);
+  const step = (before, after) => hub.matchObservations(new Map(Object.entries(before)), new Map(Object.entries(after)));
+  // same value, nothing changed: never a link
+  step({ S1: 5, S2: 300, S3: 2 }, { S1: 5, S2: 300, S3: 2 });
+  assert.equal(hub.observed.size, 0);
+  // two live values changed the same way: ambiguous, not merged
+  vals['$/a'] = 6;
+  vals['$/b'] = 6;
+  hub.observeLive(p);
+  step({ S1: 5 }, { S1: 6 });
+  assert.equal(hub.observed.size, 0);
+  assert.deepEqual(hub.possibleFor('S1').sort(), ['$/a', '$/b']);
+  // a small, common value needs two matching changes
+  vals['$/d'] = 3;
+  hub.observeLive(p);
+  step({ S3: 2 }, { S3: 3 });
+  assert.equal(hub.observed.size, 0, 'one small change is not enough');
+  vals['$/d'] = 4;
+  hub.observeLive(p);
+  step({ S3: 3 }, { S3: 4 });
+  assert.equal(hub.observed.get('generic|$/d')?.saveId, 'S3');
+  // a distinctive value (≥ 10, unique on both sides) links after one change
+  vals['$/c'] = 4242;
+  hub.observeLive(p);
+  step({ S2: 300 }, { S2: 4242, S3: 4 });
+  assert.equal(hub.observed.get('generic|$/c')?.saveId, 'S2');
+  // a link the save stops following is dropped after two contradictions
+  step({ S2: 4242 }, { S2: 17 });
+  step({ S2: 17 }, { S2: 18 });
+  assert.equal(hub.observed.has('generic|$/c'), false);
+});
+
 // ---------------------------------------------------------------- translation (offline)
 test('translation: dictionary words are translations, abbreviations are guesses, unknown text is not invented', async () => {
   const { toEnglish, englishLabel } = await import('../src/core/translate.js');

@@ -134,6 +134,9 @@ textarea.field { height: 90px; font-size: 15px; padding: 10px 12px; font-weight:
 .lk-likely b { color: #fbbf24; }
 pre.code { white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-monospace, monospace; background: #0b0f18; padding: 8px; border-radius: 8px; max-height: 180px; overflow: auto; }
 .set { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; font-size: 14px; }
+.otag { display: inline-block; font-size: 9px; font-weight: 900; letter-spacing: .06em; padding: 1px 5px; border-radius: 5px; margin-right: 6px; vertical-align: 1px; background: #1e293b; color: #93c5fd; }
+.otag.o-save { background: rgba(251,191,36,.16); color: #fbbf24; }
+.otag.o-livesave { background: rgba(61,245,167,.16); color: #3df5a7; }
 .okbox { padding: 10px 12px; border-radius: 10px; background: rgba(61,245,167,.1); border: 1px solid rgba(61,245,167,.35); color: #bbf7d0; font-size: 13px; margin: 8px 0; }
 .badbox { padding: 10px 12px; border-radius: 10px; background: rgba(251,113,133,.1); border: 1px solid rgba(251,113,133,.35); color: #fecdd3; font-size: 13px; margin: 8px 0; }
 .search { padding: 8px; background: #050608; }

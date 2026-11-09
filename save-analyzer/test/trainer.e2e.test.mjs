@@ -1002,3 +1002,169 @@ test('regression: variables that were editable in earlier versions are still dis
     await ctx.close();
   }
 });
+
+// ---------------------------------------------------------------- 1.9: shared save variables (Save Editor ⇄ trainer)
+const S9 = (page) => ({
+  entries: (re) =>
+    page.evaluate((src) => {
+      const p = window.__saveforgeTrainer.provider();
+      return p.entries.filter((e) => new RegExp(src).test(e.path)).map((e) => ({ id: e.nodeId, path: e.path, origin: p.originOf ? p.originOf(e.nodeId) : 'live', value: p.value(e.nodeId), how: e.saveLink?.how || null }));
+    }, re.source),
+  waitOrigin: (re, origin, timeout = 8000) =>
+    page.waitForFunction(([src, o]) => {
+      const p = window.__saveforgeTrainer?.provider();
+      return !!p?.originOf && p.entries.some((e) => new RegExp(src).test(e.path) && p.originOf(e.nodeId) === o);
+    }, [re.source, origin], { timeout }),
+  rowWithTag: (name, tag) => page.locator('saveforge-trainer .row').filter({ has: page.locator('.name', { hasText: name }) }).filter({ has: page.locator(`.otag.o-${tag}`) }).first(),
+});
+
+test('shared save variables: discovered like the Save Editor, never linked by name, linked by observation, edited live and in the save, restored', { skip, timeout: 90000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/neon-courier/');
+  await page.locator('#save').click();
+  await inject(page);
+  const t = T(page);
+  const s = S9(page);
+  await s.waitOrigin(/neoncourier\.save › credits$/, 'save');
+  // same variables as the Save Editor (same pipeline), next to the live ones — not merged by name or value
+  let credits = await s.entries(/credits$/);
+  assert.deepEqual(credits.map((c) => c.origin).sort(), ['live', 'save']);
+  assert.ok(credits.every((c) => c.value === 250));
+  // the "Saves in storage" source is the very same shared save model
+  assert.equal(await page.evaluate(async () => {
+    const p = window.__saveforgeTrainer.provider();
+    return p.saveProvider().entries.length === p.entries.filter((e) => e.nodeId.startsWith('save:')).length;
+  }), true);
+  // edit the live value; the game saves; the save follows → verified link, one entry
+  await t.search('credits');
+  assert.equal(await page.locator('saveforge-trainer .row .otag.o-save').count(), 1);
+  await t.setNumber('Credits', 4242);
+  assert.equal(await page.evaluate(() => window.game.credits), 4242);
+  await page.waitForFunction(() => window.__saveforgeTrainer.provider().statusOf('$/game/credits')?.state === 'verified', null, { timeout: 4000 });
+  await page.evaluate(() => document.getElementById('save').click());
+  await s.waitOrigin(/game › credits$/, 'live+save');
+  credits = await s.entries(/credits$/);
+  assert.equal(credits.length, 1, 'no duplicate once linked');
+  assert.equal(credits[0].how, 'observed');
+  // other same-named fields stay separate (no guessing)
+  assert.deepEqual((await s.entries(/› day$/)).map((x) => x.origin).sort(), ['live', 'save']);
+  // ⓘ explains the link
+  await t.home();
+  await t.search('credits');
+  await page.locator('saveforge-trainer .row .info').first().click();
+  const info = await t.sheetText();
+  assert.match(info, /Source: Live \+ Save/i);
+  assert.match(info, /verified observation — observed: the save changed 250 → 4242/);
+  // live edit + "Also write to save" + Write saves (no reload)
+  await page.evaluate(() => (window.__noReload = 1));
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: /^(Edit|Toggle)$/ }).click();
+  await page.locator('saveforge-trainer .sheet .field').fill('5000');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  assert.equal(await page.evaluate(() => window.game.credits), 5000);
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Also write to save' }).click();
+  assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('neoncourier.save'))).credits, 4242, 'pending until written');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: /Write saves \(1\)/ }).click();
+  assert.match(await t.sheetText(), /The running game is not changed/);
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Write saves' }).click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'Saves written' }).waitFor();
+  assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('neoncourier.save'))).credits, 5000);
+  assert.equal(await page.evaluate(() => window.__noReload), 1, 'no reload');
+  // a save-only edit is pending and explained, the running game is untouched
+  await t.home();
+  await t.search('day');
+  await s.rowWithTag('Day', 'save').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('9');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  assert.match(await t.sheetText(), /Save edit pending.*does not see it before that/s);
+  assert.equal(await page.evaluate(() => window.game.day), 1);
+  // undo/redo cover save edits too
+  await t.tool('Undo');
+  assert.equal(await page.evaluate(() => window.__saveforgeTrainer.provider().savePending()), 0);
+  await t.tool('Redo');
+  assert.equal(await page.evaluate(() => window.__saveforgeTrainer.provider().savePending()), 1);
+  // Apply & Reload: the game loads the edited save
+  await page.locator('saveforge-trainer .tool.primary', { hasText: 'Write saves' }).click();
+  await Promise.all([page.waitForEvent('load'), page.locator('saveforge-trainer .btn.warn', { hasText: 'Apply & Reload' }).click()]);
+  await page.waitForFunction(() => window.game && window.game.day === 9);
+  // restore: the snapshot taken before the write puts the old save back
+  await inject(page);
+  await t.nav('Backups & restore');
+  await page.locator('saveforge-trainer .sheet h3', { hasText: 'Save snapshots' }).waitFor();
+  await Promise.all([page.waitForEvent('load'), page.locator('saveforge-trainer .btn.warn', { hasText: 'Restore & reload' }).first().click()]);
+  await page.waitForFunction(() => window.game && window.game.day === 1);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('shared save variables: engine save layouts link RPG Maker and SugarCube variables without guessing', { skip, timeout: 60000 }, async () => {
+  let { page, ctx, errors } = await openGame('/demo-games/crystal-quest/');
+  await page.locator('#save').click();
+  await inject(page);
+  let s = S9(page);
+  await s.waitOrigin(/party › _gold$/, 'live+save');
+  const gold = await s.entries(/_gold$/);
+  assert.equal(gold.length, 1, 'save gold merged into the live entry');
+  assert.equal(gold[0].how, 'engine');
+  // edit live (engine setter, verified), then also write it to RPG File1
+  const t = T(page);
+  await t.search('gold');
+  await t.setNumber('Gold', 777);
+  assert.equal(await page.evaluate(() => window.$gameParty._gold), 777);
+  await page.locator('saveforge-trainer .row .info').first().click();
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Also write to save' }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: /Write saves \(1\)/ }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Write saves' }).click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'Saves written' }).waitFor();
+  assert.equal(await page.evaluate(() => JSON.parse(LZString.decompressFromBase64(localStorage.getItem('RPG File1'))).party._gold), 777);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+
+  ({ page, ctx, errors } = await openGame('/test/fixtures/hidden-state/'));
+  await inject(page);
+  s = S9(page);
+  await s.waitOrigin(/State\.variables\.money$/, 'live+save');
+  assert.deepEqual((await s.entries(/maxAffection$/)).map((x) => x.origin), ['live'], 'setup is not in the save');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('shared save variables: automatic sync, Sync save variables, and pending save edits are never overwritten', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/neon-courier/');
+  await inject(page);
+  const t = T(page);
+  const s = S9(page);
+  await page.waitForTimeout(800);
+  assert.equal((await s.entries(/neoncourier\.save/)).length, 0, 'no save yet');
+  // the game saves → its variables appear without any button
+  await page.evaluate(() => document.getElementById('save').click());
+  await s.waitOrigin(/neoncourier\.save › credits$/, 'save');
+  // manual sync
+  await t.home();
+  await t.nav('Sync save variables');
+  await page.locator('saveforge-trainer .toast', { hasText: 'Save variables synced' }).waitFor();
+  // a pending save edit, then the game saves newer progress
+  await t.search('credits');
+  await s.rowWithTag('Credits', 'save').locator('.num').click();
+  await page.locator('saveforge-trainer .sheet .field').fill('1');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Apply' }).click();
+  await page.evaluate(() => {
+    window.game.credits = 9999;
+    document.getElementById('save').click();
+  });
+  await page.waitForFunction(() => window.__saveforgeTrainer.provider().saves.stale === true, null, { timeout: 8000 });
+  assert.equal(await page.evaluate(() => window.__saveforgeTrainer.provider().savePending()), 1, 'pending edit kept');
+  await t.home();
+  await page.locator('saveforge-trainer .row .lbl', { hasText: 'The game saved new progress' }).waitFor();
+  await page.locator('saveforge-trainer .tool.primary', { hasText: 'Write saves' }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Write saves' }).click();
+  await page.locator('saveforge-trainer .sheet h2', { hasText: 'Nothing was written' }).waitFor();
+  assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('neoncourier.save'))).credits, 9999, 'newer progress kept');
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Re-read storage' }).click();
+  // the pending edit is discarded on request, the newer save is read, and because the save
+  // followed the game's own 250 → 9999 change, credits are now linked (one entry)
+  await page.waitForFunction(() => {
+    const p = window.__saveforgeTrainer.provider();
+    return p.savePending() === 0 && !p.saves.stale && p.originOf('$/game/credits') === 'live+save' && p.value('$/game/credits') === 9999 && !p.entries.some((x) => /neoncourier\.save › credits$/.test(x.path));
+  }, null, { timeout: 5000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
