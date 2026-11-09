@@ -4,11 +4,13 @@ import { build } from 'esbuild';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const root = new URL('..', import.meta.url);
+const VERSION = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).version;
 // Pure-ASCII output: some loaders (e.g. browser extension script loading) reject
 // Unicode noncharacters such as U+FFFF that minifiers leave in regex literals.
 const ascii = (code) => code.replace(/[^\x00-\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const js = await build({
   entryPoints: [new URL('src/main.js', root).pathname],
+  define: { __SAVEFORGE_VERSION__: JSON.stringify(VERSION) },
   bundle: true,
   minify: true,
   format: 'iife',
@@ -28,6 +30,7 @@ console.log(`standalone/SaveForge.html ${(html.length / 1024).toFixed(1)} KB`);
 // Trainer overlay for game pages (loaded by the trainer bookmarklet or injected same-origin).
 const trainer = await build({
   entryPoints: [new URL('src/trainer/bookmarklet-entry.js', root).pathname],
+  define: { __SAVEFORGE_VERSION__: JSON.stringify(VERSION) },
   bundle: true,
   minify: true,
   format: 'iife',

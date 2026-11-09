@@ -196,6 +196,12 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
   // ---------------------------------------------------------------- launcher (Shadow DOM, only when wanted)
   function showLauncher() {
     if (win.__saveforgeTrainer) return;
+    // another SaveForge copy (other JS world, older version) already shows a launcher or the panel here
+    try {
+      if (!launcher && (doc.querySelector('saveforge-launcher') || doc.querySelector('saveforge-trainer'))) return;
+    } catch {
+      /* no DOM */
+    }
     if (!launcher) launcher = buildLauncher();
     launcher.host.style.display = '';
   }

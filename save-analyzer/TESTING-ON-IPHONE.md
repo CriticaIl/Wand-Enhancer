@@ -1,5 +1,13 @@
 # SaveForge 2.2 on iPhone: install, test and what to expect
 
+## Fixed in 2.2.1
+- **Timers left running after closing.** When the trainer was opened by the userscript, closing it skipped SaveForge's own cleanup: the userscript's close handler replaced it instead of running alongside. Each close left a timer behind (on SugarCube games, a check every second), and they added up with every reopen. Fixed; a test opens and closes SaveForge three times and checks nothing keeps running.
+- **No more second menu.** If two SaveForge copies run on a page (two installed scripts, an old and a new copy, or the userscript plus the Safari extension), each used to open its own panel. Now the second copy shows the existing panel, and **Diagnostics** says how many copies are running.
+- **No pointless polling on games like yours:** on a SugarCube story that is already running and keeps its State private, SaveForge no longer polls for it.
+- **The version is shown** next to TRAINER in the header.
+
+**If you still see two menus:** check the version next to TRAINER and Diagnostics → *SaveForge copies*. In the Userscripts app, keep only one SaveForge script (delete the "always visible" one if you installed both, and any old copy), and turn off the SaveForge Safari extension if you installed it too.
+
 ## What's new in 2.2: performance and stability
 - **Big games stay playable while SaveForge works:** it scans in small steps (the game keeps rendering between them), and **Stop scanning** keeps what was read.
 - **Memory:** game files in IndexedDB (Unity/Godot) are no longer read when SaveForge opens or in the background. In tests, 60 MB of such files had frozen the game for 44 s and used about 335 MB; now the freeze is under a second and the memory about 10 MB. Large binary values are never decoded or written back.
@@ -109,7 +117,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.2.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.2.1** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -160,7 +168,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 180 tests)
+### Verified by the automated tests (Chromium, 182 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -249,7 +257,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.2.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.2.1 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

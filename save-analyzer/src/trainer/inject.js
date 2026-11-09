@@ -41,10 +41,43 @@ export function listGameFrames(win, reports = []) {
   return out.sort((a, b) => b.width * b.height - a.width * a.height);
 }
 
+/** This copy of SaveForge (userscript, bookmarklet, extension…): version + an id per JS world. */
+export const SF_VERSION = typeof __SAVEFORGE_VERSION__ === 'string' ? __SAVEFORGE_VERSION__ : 'dev';
+const SF_ID = Math.random().toString(36).slice(2, 8);
+
+/** Every SaveForge copy that opened a trainer on this page (shared through the DOM). */
+export function saveforgeCopies(win) {
+  try {
+    return (win.document.documentElement.getAttribute('data-saveforge-copies') || '').split(' ').filter(Boolean).map((x) => {
+      const [version, id] = x.split('@');
+      return { version, id, self: id === SF_ID };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export function openTrainer(win, extra = {}) {
   if (win.__saveforgeTrainer) {
     win.__saveforgeTrainer.show();
     return win.__saveforgeTrainer;
+  }
+  // Another SaveForge copy (a second installed script, an older version, the extension…) runs in
+  // another JavaScript world, so the global above cannot see it — but the DOM is shared. Never
+  // open a second panel: show the existing one instead.
+  try {
+    const de = win.document.documentElement;
+    const mine = `${SF_VERSION}@${SF_ID}`;
+    const list = (de.getAttribute('data-saveforge-copies') || '').split(' ').filter(Boolean);
+    if (!list.includes(mine)) de.setAttribute('data-saveforge-copies', [...list, mine].join(' '));
+    const other = win.document.querySelector('saveforge-trainer');
+    if (other && other.getAttribute('data-sf-id') !== SF_ID) {
+      other.dispatchEvent(new win.CustomEvent('saveforge-show'));
+      const stub = { show: () => other.dispatchEvent(new win.CustomEvent('saveforge-show')), hide() {}, destroy() {}, provider: () => null, duplicateOf: other.getAttribute('data-sf-version') || '?' };
+      return stub;
+    }
+  } catch {
+    /* no DOM access */
   }
   const origin = (() => {
     try {
@@ -53,7 +86,8 @@ export function openTrainer(win, extra = {}) {
       return 'page';
     }
   })();
-  const { frameReports, openInFrame, contextInfo, saveSyncMs, safeMode: safeArg, ...rest } = extra;
+  // the caller's onClose (the userscript's) runs in addition to SaveForge's own cleanup, never instead of it
+  const { frameReports, openInFrame, contextInfo, saveSyncMs, safeMode: safeArg, onClose: callerOnClose, ...rest } = extra;
   // a previous start that never finished (the tab crashed or reloaded while scanning)
   const interrupted = safeArg === undefined ? interruptedStartup(win) : null;
   let safeMode = !!safeArg;
@@ -237,16 +271,24 @@ export function openTrainer(win, extra = {}) {
   // connected as soon as its State is ready
   let scTimer = 0;
   const scWatch = () => {
-    if (!scProbe || !['not-started', 'hidden', 'blocked'].includes(scProbe.verdict) || !storyMarkers(win.document).sugarcube) return;
+    if (!scProbe || !['not-started', 'hidden'].includes(scProbe.verdict) || !storyMarkers(win.document).sugarcube) return;
+    win.clearInterval(scTimer);
+    // a story still loading may publish window.SugarCube for a while; one already running that
+    // keeps State private almost never will: check it only briefly, and cheaply (no storage reads)
+    const limit = scProbe.verdict === 'not-started' ? 90 : 15;
+    const bridge = scProbe.page ? pageBridge(win) : null; // the page-world agent exists only if the page allowed it
     let tries = 0;
     scTimer = win.setInterval(() => {
       tries++;
-      if (engines.some((e) => e.id === 'sugarcube') || tries > 90) return void win.clearInterval(scTimer);
+      if (engines.some((e) => e.id === 'sugarcube') || tries > limit) return void win.clearInterval(scTimer);
       let eng = sugarCubeDirect(win);
-      if (!eng) {
-        const p = probeSugarCube(win);
-        if (p.verdict === 'bridge') eng = sugarCubeBridge(win, pageBridge(win).rpc);
-        scProbe = p;
+      if (!eng && bridge && bridge.rpc) {
+        try {
+          const pr = bridge.rpc('probe');
+          if (pr && pr.present && pr.variablesType === 'object') eng = sugarCubeBridge(win, bridge.rpc);
+        } catch {
+          /* page agent gone */
+        }
       }
       if (!eng) return;
       win.clearInterval(scTimer);
@@ -312,10 +354,20 @@ export function openTrainer(win, extra = {}) {
     rescanSources,
     saveHub: hub,
     store: uiStore,
+    sfVersion: SF_VERSION,
+    sfId: SF_ID,
+    copies: () => saveforgeCopies(win),
     onClose: (kept) => {
       if (!kept) hub.dispose();
       scanSignal?.abort('closed');
+      win.clearInterval(scTimer);
+      scTimer = 0;
       win.__saveforgeStarting = false;
+      try {
+        callerOnClose?.(kept);
+      } catch {
+        /* caller cleanup is best-effort */
+      }
       win.clearInterval(scTimer);
       delete win.__saveforgeTrainer;
     },

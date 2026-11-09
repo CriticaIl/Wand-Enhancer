@@ -59,6 +59,10 @@ export function mountTrainer(win, opts) {
   const doc = win.document;
   const host = doc.createElement('saveforge-trainer');
   host.setAttribute('style', 'all: initial');
+  // identifies this copy; another SaveForge copy (other JS world) shows this panel instead of a second one
+  if (opts.sfId) host.setAttribute('data-sf-id', opts.sfId);
+  if (opts.sfVersion) host.setAttribute('data-sf-version', opts.sfVersion);
+  host.addEventListener('saveforge-show', () => setMinimized(false));
   const shadow = host.attachShadow({ mode: 'open' });
   const style = doc.createElement('style');
   style.textContent = TRAINER_CSS;
@@ -119,7 +123,7 @@ export function mountTrainer(win, opts) {
   // ---------- skeleton
   const root = h('div', { class: 'root' });
   const panel = h('section', { class: 'panel', role: 'dialog', 'aria-label': 'SaveForge trainer' });
-  const banner = h('div', { class: 'banner' }, h('div', { class: 'title' }, 'SaveForge', h('small', null, 'TRAINER')));
+  const banner = h('div', { class: 'banner' }, h('div', { class: 'title' }, 'SaveForge', h('small', null, `TRAINER ${opts.sfVersion && opts.sfVersion !== 'dev' ? opts.sfVersion : ''}`.trim())));
   const hbtns = h(
     'div',
     { class: 'hbtns' },
@@ -1742,6 +1746,7 @@ export function mountTrainer(win, opts) {
       d.engines.length ? h('ul', null, d.engines.map((e) => h('li', null, h('b', null, e.name), ` — ${e.channel === 'live' ? 'live' : e.channel === 'live-generic' ? 'live (generic)' : e.channel}${e.evidence ? ` · ${e.evidence}` : ''}`))) : h('p', null, 'No supported engine globals on this page.'),
       d.limitations.length ? h('div', null, d.limitations.map((l) => h('div', { class: 'warnbox' }, h('b', null, l.name), ' — ', l.reason))) : null,
       d.sugarcube && (d.sugarcube.connected || d.sugarcube.verdict !== 'none') ? sugarCubeBlock(d.sugarcube) : null,
+      copiesBlock(),
       perfBlock(),
       h('h3', null, `Frames on this page (${d.frames.length})`),
       d.frames.length
@@ -1767,6 +1772,20 @@ export function mountTrainer(win, opts) {
         ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
         : null,
     ));
+  }
+
+  /** More than one SaveForge copy on this page (two installed scripts, old + new, extension + script). */
+  function copiesBlock() {
+    const list = opts.copies ? opts.copies() : [];
+    const text = `This copy: SaveForge ${opts.sfVersion || '?'}`;
+    if (list.length <= 1) return h('p', { class: 'note' }, `${text}. No other SaveForge copy opened on this page.`);
+    return h(
+      'div',
+      { class: 'badbox' },
+      h('b', null, `${list.length} SaveForge copies opened on this page: `),
+      list.map((c) => `${c.version}${c.self ? ' (this one)' : ''}`).join(', '),
+      '. Only one panel is shown, but every copy runs its own code. Keep one: in the Userscripts app delete the extra SaveForge script (or the older one), and disable the SaveForge Safari extension if you also installed it.',
+    );
   }
 
   /** Performance Diagnostics: what each stage cost, what was read, what runs in the background. */

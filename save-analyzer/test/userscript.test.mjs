@@ -377,3 +377,74 @@ test('Diagnostics reports the script context (page world = edits can reach the g
   assert.match(await page.locator('saveforge-trainer .compat').innerText(), /Full live editing · Construct 2/);
   await ctx.close();
 });
+
+// ---------------------------------------------------------------- 2.2.1: one panel, no leaks (userscript path)
+// The userscript passed its own onClose, which REPLACED the trainer's cleanup: every close
+// left a timer running (the SugarCube watcher polled every second), and a second SaveForge copy
+// in another JavaScript world (a second installed script, the extension) opened a second panel.
+
+test('userscript: closing and reopening leaves no timers behind (SaveForge’s own cleanup runs too)', { skip, timeout: 60000 }, async () => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  await ctx.addInitScript(() => {
+    const si = window.setInterval;
+    const ci = window.clearInterval;
+    window.__iv = new Set();
+    window.setInterval = function (f, ms, ...a) {
+      const id = si.call(window, f, ms, ...a);
+      window.__iv.add(id);
+      return id;
+    };
+    window.clearInterval = function (id) {
+      window.__iv.delete(id);
+      return ci.call(window, id);
+    };
+  });
+  await ctx.addInitScript({ content: USERSCRIPT });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  // a SugarCube story that keeps its State private (like the user's game)
+  await page.goto(`${base()}/test/fixtures/sugarcube-real/?hidden=1&go=Shop`);
+  await page.waitForTimeout(500);
+  const idle = await page.evaluate(() => window.__iv.size);
+  const counts = [];
+  for (let i = 0; i < 3; i++) {
+    await page.evaluate(() => (location.hash = '#saveforge'));
+    await page.locator('saveforge-trainer .row').first().waitFor();
+    await page.waitForTimeout(1500);
+    counts.push(await page.evaluate(() => window.__iv.size));
+    await page.locator('saveforge-trainer .hbtn[aria-label="Close trainer"]').click();
+    await page.waitForTimeout(600);
+    assert.equal(await page.evaluate(() => window.__iv.size), idle, `round ${i}: every SaveForge timer stopped after closing`);
+  }
+  assert.equal(new Set(counts).size, 1, `the same number of timers each time it is open: ${counts.join(', ')}`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('two SaveForge copies in different JavaScript worlds show one panel, and Diagnostics says so', { skip, timeout: 60000 }, async () => {
+  const { ctx, page, errors } = await newPage();
+  await page.goto(`${base()}/demo-games/neon-courier/`);
+  // a second copy, isolated from the first (like a second installed script or the extension)
+  const cdp = await ctx.newCDPSession(page);
+  const { frameTree } = await cdp.send('Page.getFrameTree');
+  const { executionContextId } = await cdp.send('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: 'second-copy' });
+  await cdp.send('Runtime.evaluate', { expression: USERSCRIPT, contextId: executionContextId });
+  await page.evaluate(() => (location.hash = '#saveforge'));
+  await page.locator('saveforge-trainer .row').first().waitFor();
+  // the second copy is opened too (its launcher, a three-finger tap…)
+  await cdp.send('Runtime.evaluate', { expression: 'window.__saveforgeUserscript.openHere()', contextId: executionContextId });
+  await page.waitForTimeout(500);
+  assert.equal(await page.locator('saveforge-trainer').count(), 1, 'one panel');
+  assert.match(await page.evaluate(() => document.querySelector('saveforge-trainer').shadowRoot.querySelector('.title small').textContent), /^TRAINER \d+\.\d+\.\d+$/, 'the version is shown');
+  const nav = page.locator('saveforge-trainer .row .lbl', { hasText: 'Diagnostics' }).first();
+  for (let i = 0; i < 10 && !(await nav.count()); i++) {
+    await page.locator('saveforge-trainer .list').first().evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await page.waitForTimeout(200);
+  }
+  await nav.click();
+  await page.locator('saveforge-trainer .sheet .badbox', { hasText: 'SaveForge copies opened on this page' }).waitFor();
+  assert.match(await page.locator('saveforge-trainer .sheet .badbox', { hasText: 'SaveForge copies' }).innerText(), /2 SaveForge copies opened on this page: .*\(this one\).*delete the extra SaveForge script/s);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
