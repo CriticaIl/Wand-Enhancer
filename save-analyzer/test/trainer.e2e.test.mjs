@@ -693,3 +693,195 @@ test('custom game under a generic global: variables found without website global
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+// ---------------------------------------------------------------- Button & Textbox Linker
+const L = (page) => ({
+  async open() {
+    await T(page).home();
+    await T(page).nav('Button & Textbox Linker');
+    await page.locator('saveforge-trainer .sheet h2', { hasText: 'Button & Textbox Linker' }).waitFor();
+  },
+  async inspect(selector) {
+    await page.locator('saveforge-trainer .btn', { hasText: /^Inspect (element|another)$/ }).first().click();
+    await page.locator('saveforge-trainer .lk-bar').waitFor();
+    await page.locator(selector).tap();
+    await page.locator('saveforge-trainer .lk-bar').waitFor({ state: 'detached' });
+    await page.locator('saveforge-trainer .sheet .path').first().waitFor();
+    return page.locator('saveforge-trainer .sheet').innerText();
+  },
+  state: () => page.evaluate(() => ({ ...window.joueur, log: document.getElementById('log').textContent })),
+});
+
+test('Linker: inspecting a button never runs it, and shows confirmed vs possible links honestly', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/test/fixtures/linker-game/');
+  await inject(page);
+  const l = L(page);
+  await l.open();
+  const before = await l.state();
+  // inline onclick: confirmed, with the function and the variables its code changes
+  let text = await l.inspect('#acheter');
+  assert.deepEqual(await l.state(), before, 'the inspect tap did not buy anything');
+  assert.match(text, /Confirmed links \(1\)/i);
+  assert.match(text, /inline onclick attribute — runs acheter\(\)/);
+  assert.match(text, /joueur\.argent -= 30 — likely, in acheter\(\) · matches trainer variable/);
+  assert.match(text, /joueur\.epees \+= 1/);
+  assert.doesNotMatch(text, /textContent/, 'DOM writes are not reported as game variables');
+  assert.match(text, /may spend currency or erase progress/);
+  // handler property: confirmed by function identity
+  text = await l.inspect('#vendre');
+  assert.match(text, /click handler property — calls vendre\(\)/);
+  // delegated listener added before SaveForge: not invented, the limit is stated instead
+  text = await l.inspect('#annuler');
+  assert.match(text, /Confirmed links \(0\)/i);
+  assert.match(text, /cannot be listed/);
+  assert.doesNotMatch(text, /Annulé/);
+  // destructive button: inspected, not run
+  text = await l.inspect('#reset');
+  assert.match(text, /reinitialiser\(\)/);
+  assert.match(text, /joueur\.argent = 0/);
+  // textbox: inline oninput assigns this.value → likely bound variable
+  text = await l.inspect('#nom');
+  assert.match(text, /Variable receiving the input/i);
+  assert.match(text, /likely — handler code assigns the value to joueur\.nom/);
+  assert.equal(await page.evaluate(() => document.activeElement?.id || ''), '', 'the field was not focused (no keyboard on iPhone)');
+  // "Watch one tap" observes the real effect of a button whose listener cannot be listed
+  await page.locator('saveforge-trainer .btn', { hasText: 'Inspect another' }).click();
+  await page.locator('saveforge-trainer .lk-bar').waitFor();
+  await page.locator('#vendre').tap();
+  await page.locator('saveforge-trainer .lk-bar').waitFor({ state: 'detached' });
+  await page.locator('saveforge-trainer .btn', { hasText: 'Watch one tap' }).click();
+  await page.locator('#vendre').click();
+  await page.locator('saveforge-trainer .lk-watch .okbox').waitFor({ timeout: 5000 });
+  const watched = await page.locator('saveforge-trainer .lk-watch').innerText();
+  assert.match(watched, /2 variable\(s\) changed/);
+  assert.match(watched, /joueur › argent: 100 → 120/);
+  assert.match(watched, /joueur › epees: 1 → 0/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Linker: remap Buy → Sell with preview and confirmation; Undo, Restore original and Disable all restore the game', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/test/fixtures/linker-game/');
+  await inject(page);
+  const l = L(page);
+  await l.open();
+  await l.inspect('#acheter');
+  await page.locator('saveforge-trainer .btn', { hasText: 'Link to another action' }).click();
+  await page.locator('saveforge-trainer .lk-cand', { hasText: 'Same as tapping “Vendre une épée”' }).click();
+  const preview = await page.locator('saveforge-trainer .sheet').innerText();
+  assert.match(preview, /Preview mapping/i);
+  assert.match(preview, /inline onclick attribute: runs acheter\(\)/);
+  assert.match(preview, /Same as tapping “Vendre une épée”/);
+  // confirmation required: risky element needs the acknowledgement first
+  const apply = page.locator('saveforge-trainer .btn.go', { hasText: 'Apply mapping' });
+  assert.equal(await apply.isDisabled(), true);
+  assert.deepEqual((await l.state()).argent, 100, 'nothing changed by the preview');
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'I understand' }).locator('input').check();
+  await apply.click();
+  await page.locator('saveforge-trainer .lk-map', { hasText: 'Acheter' }).waitFor();
+  // the Buy button now sells
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#acheter').click();
+  let s = await l.state();
+  assert.equal(s.argent, 120);
+  assert.equal(s.epees, 0);
+  assert.equal(s.log, 'Épée vendue');
+  // other buttons are untouched
+  await page.locator('#vendre').click();
+  assert.equal((await l.state()).log, 'Rien à vendre');
+  // Disable all → original behaviour while disabled
+  await page.locator('saveforge-trainer .orb').click();
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'Mappings enabled' }).locator('input').uncheck();
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#acheter').click();
+  s = await l.state();
+  assert.equal(s.argent, 90, 'bought: original behaviour');
+  assert.equal(s.epees, 1);
+  await page.locator('saveforge-trainer .orb').click();
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'Mappings enabled' }).locator('input').check();
+  // Undo removes the mapping
+  await page.locator('saveforge-trainer .btn', { hasText: 'Undo last change' }).click();
+  assert.equal(await page.locator('saveforge-trainer .lk-map').count(), 0);
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#acheter').click();
+  assert.equal((await l.state()).argent, 60, 'buys again after Undo');
+  // map to Cancel (do nothing), then Restore original
+  await page.locator('saveforge-trainer .orb').click();
+  await l.inspect('#acheter');
+  await page.locator('saveforge-trainer .btn', { hasText: 'Link to another action' }).click();
+  await page.locator('saveforge-trainer .lk-cand', { hasText: 'Do nothing' }).click();
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'I understand' }).locator('input').check();
+  await page.locator('saveforge-trainer .btn.go', { hasText: 'Apply mapping' }).click();
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#acheter').tap();
+  assert.equal((await l.state()).argent, 60, 'cancelled: nothing bought');
+  await page.locator('saveforge-trainer .orb').click();
+  await page.locator('saveforge-trainer .lk-map .btn', { hasText: 'Restore original' }).click();
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#acheter').click();
+  assert.equal((await l.state()).argent, 30, 'original restored');
+  // closing SaveForge removes every interception
+  await page.locator('saveforge-trainer .orb').click();
+  await page.locator('saveforge-trainer .hbtn[aria-label="Close trainer"]').click();
+  await page.locator('#acheter').click();
+  assert.equal((await l.state()).argent, 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Linker: textbox binding (detect by typing, link a field to a variable) and per-game saved mappings', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/test/fixtures/linker-game/');
+  await inject(page);
+  const l = L(page);
+  await l.open();
+  // detect by typing: the variable that receives the text is observed
+  await l.inspect('#nom');
+  await page.locator('saveforge-trainer .btn', { hasText: 'Detect by typing' }).click();
+  await page.locator('#nom').fill('Zoé');
+  await page.locator('#nom').blur();
+  await page.locator('saveforge-trainer .lk-watch .okbox').waitFor({ timeout: 5000 });
+  assert.match(await page.locator('saveforge-trainer .lk-watch').innerText(), /joueur › nom: "Lucie" → "Zoé" — equals what you entered \(bound variable\)/);
+  // link the unbound nickname field to joueur.surnom (keeping the game's own handling)
+  await l.inspect('#surnom');
+  await page.locator('saveforge-trainer .btn', { hasText: 'Link to another action' }).click();
+  await page.locator('saveforge-trainer .lk-cand', { hasText: 'Write to joueur › surnom' }).click();
+  assert.match(await page.locator('saveforge-trainer .sheet').innerText(), /also goes into the variable; the game’s own handlers keep working/);
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'Save this mapping for this game' }).locator('input').check();
+  await page.locator('saveforge-trainer .btn.go', { hasText: 'Apply mapping' }).click();
+  await page.locator('saveforge-trainer .lk-map', { hasText: 'Surnom' }).waitFor();
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'Apply saved mappings automatically' }).locator('input').check();
+  await page.waitForTimeout(300);
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#surnom').fill('Max');
+  assert.equal(await page.evaluate(() => window.joueur.surnom), 'Max');
+  // the saved mapping comes back when SaveForge is opened again on this game
+  await page.locator('saveforge-trainer .orb').click();
+  await page.locator('saveforge-trainer .hbtn[aria-label="Close trainer"]').click();
+  await page.locator('#surnom').fill('Off');
+  assert.equal(await page.evaluate(() => window.joueur.surnom), 'Max', 'closed: no binding');
+  await inject(page);
+  await page.locator('saveforge-trainer .toast', { hasText: 'saved mapping(s) active' }).waitFor({ timeout: 4000 });
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#surnom').fill('Again');
+  assert.equal(await page.evaluate(() => window.joueur.surnom), 'Again');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('Linker: SugarCube-style story links can be inspected and relinked to another choice', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/demo-games/lantern-tale/');
+  await inject(page);
+  const l = L(page);
+  await l.open();
+  const text = await l.inspect('a[data-go="Stall"]');
+  assert.match(text, /Visit the lantern stall/);
+  assert.equal(await page.evaluate(() => window.SugarCube.State.passage), 'Market', 'inspect tap did not navigate');
+  await page.locator('saveforge-trainer .btn', { hasText: 'Link to another action' }).click();
+  await page.locator('saveforge-trainer .lk-cand', { hasText: 'Same as tapping “See the Oracle”' }).click();
+  await page.locator('saveforge-trainer .btn.go', { hasText: 'Apply mapping' }).click();
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('a[data-go="Stall"]').click();
+  assert.equal(await page.evaluate(() => window.SugarCube.State.passage), 'Oracle', 'the stall choice now leads to the Oracle');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

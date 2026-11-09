@@ -49,6 +49,21 @@ So it doesn't depend on anything one particular manager offers.
     - **It then reloads the page.** Unsaved in-game progress is lost on reload, so save in-game first.
 - **Undo / redo** are in the toolbar. **Main menu → Backups & restore** puts original values back (live) or restores a storage snapshot.
 
+### Button & Textbox Linker (advanced)
+
+Main menu → **Button & Textbox Linker**:
+1. Tap **Inspect element**, then tap a game button, link, textbox, dropdown or checkbox. The game does not receive that tap.
+2. Read what it is connected to:
+   - **confirmed** (its own handlers)
+   - **likely** (read from its code)
+   - **possible** (parents that may handle it, variables with the same value)
+3. **Show on screen** briefly hides the trainer and outlines the element.
+4. **Watch one tap** / **Detect by typing:** use the element once for real, and SaveForge shows which variables changed.
+5. **Link to another action…** → pick one → check the **preview** → **Apply mapping**.
+6. **Undo last change**, **Restore original**, or switch **Mappings enabled** off to disable all.
+
+Works on standard HTML elements, jQuery and SugarCube games. Canvas games (Phaser, RPG Maker, Unity…) draw their buttons as pixels and cannot be remapped. Details: [TRAINER.md](TRAINER.md#button--textbox-linker).
+
 ## Turning it on and off
 
 | You want… | Do this |

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>La Forge — boutique</title>
+<!-- Regression fixture for the Button & Textbox Linker (SaveForge 1.7). A plain
+     HTML game that wires its controls in every way a page can:
+       - inline onclick attribute          (Acheter → acheter())
+       - handler property                  (Vendre → el.onclick = vendre)
+       - delegated listener on document    (Annuler, added at load: not listable)
+       - inline oninput binding            (Nom → joueur.nom = this.value)
+       - addEventListener at load          (Son checkbox, Difficulté dropdown)
+       - a field with no handler           (Surnom, for "link to variable")
+       - a destructive button              (Recommencer → reinitialiser()) -->
+<style>
+  body { margin: 0; font: 16px system-ui, sans-serif; background: #1c1917; color: #fafaf9; }
+  main { padding: 14px; display: grid; gap: 10px; max-width: 420px; }
+  button { font: inherit; padding: 12px; border-radius: 10px; border: 0; background: #ea580c; color: #fff; }
+  input, select { font: inherit; padding: 10px; border-radius: 8px; border: 1px solid #57534e; }
+  .hud { font-weight: 700; }
+</style>
+<script>
+  var joueur = { nom: 'Lucie', surnom: '', argent: 100, epees: 1, niveau: 3 };
+  var options = { son: true, difficulte: 'normal' };
+  function afficher() {
+    document.getElementById('argent').textContent = joueur.argent;
+    document.getElementById('epees').textContent = joueur.epees;
+    document.getElementById('nomAffiche').textContent = joueur.nom;
+  }
+  function acheter() {
+    if (joueur.argent < 30) return journal('Pas assez d’argent');
+    joueur.argent -= 30;
+    joueur.epees += 1;
+    journal('Épée achetée');
+    afficher();
+  }
+  function vendre() {
+    if (joueur.epees <= 0) return journal('Rien à vendre');
+    joueur.epees -= 1;
+    joueur.argent += 20;
+    journal('Épée vendue');
+    afficher();
+  }
+  function reinitialiser() {
+    joueur.argent = 0;
+    joueur.epees = 0;
+    afficher();
+  }
+  function journal(t) {
+    document.getElementById('log').textContent = t;
+  }
+  addEventListener('DOMContentLoaded', function () {
+    document.getElementById('vendre').onclick = vendre;
+    document.addEventListener('click', function (e) {
+      if (e.target.id === 'annuler') journal('Annulé');
+    });
+    document.getElementById('son').addEventListener('change', function () { options.son = this.checked; });
+    document.getElementById('difficulte').addEventListener('change', function () { options.difficulte = this.value; });
+    afficher();
+  });
+</script>
+</head>
+<body>
+<main>
+  <div class="hud">Argent : <span id="argent"></span> € · Épées : <span id="epees"></span> · <span id="nomAffiche"></span></div>
+  <button id="acheter" onclick="acheter()">Acheter une épée (30 €)</button>
+  <button id="vendre">Vendre une épée</button>
+  <button id="annuler">Annuler</button>
+  <button id="reset" onclick="reinitialiser()">Recommencer</button>
+  <label>Nom <input id="nom" value="Lucie" oninput="joueur.nom = this.value; afficher()"></label>
+  <label>Surnom <input id="surnom" placeholder="Surnom"></label>
+  <label><input type="checkbox" id="son" checked> Son</label>
+  <label>Difficulté <select id="difficulte"><option value="facile">Facile</option><option value="normal" selected>Normal</option><option value="difficile">Difficile</option></select></label>
+  <p id="log"></p>
+</main>
+</body>
+</html>

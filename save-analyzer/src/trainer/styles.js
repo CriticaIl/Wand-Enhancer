@@ -122,6 +122,18 @@ textarea.field { height: 90px; font-size: 15px; padding: 10px 12px; font-weight:
 .btn.mini { min-height: 30px; padding: 4px 10px; font-size: 12px; margin: 4px 0 2px 6px; }
 .excluded-vars li { margin-bottom: 6px; }
 .field.report { min-height: 180px; font: 11px ui-monospace, monospace; }
+.lk-hl { position: fixed; z-index: 2147483646; border: 3px solid #3df5a7; border-radius: 8px; box-shadow: 0 0 0 3px rgba(4,20,13,.8), 0 0 18px rgba(61,245,167,.7); pointer-events: none; }
+.lk-bar { position: fixed; left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); z-index: 2147483647; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border-radius: 14px; background: rgba(12,16,26,.94); color: #e8ecf6; font: 14px/1.35 -apple-system, system-ui, sans-serif; border: 1px solid #3df5a7; }
+.lk-bar span { flex: 1 1 200px; color: #b7c0d6; }
+.lk-map { padding: 8px 10px; border-radius: 10px; border: 1px solid #2a3245; margin: 6px 0; }
+.lk-map.on { border-color: rgba(61,245,167,.6); }
+.lk-cands { display: flex; flex-direction: column; gap: 6px; }
+.lk-cand { text-align: left; padding: 10px 12px; min-height: 44px; border-radius: 10px; background: #1b2131; color: inherit; }
+.lk-cand .badge { margin-left: 6px; }
+.lk-confirmed b { color: #3df5a7; }
+.lk-likely b { color: #fbbf24; }
+pre.code { white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-monospace, monospace; background: #0b0f18; padding: 8px; border-radius: 8px; max-height: 180px; overflow: auto; }
+.set { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; font-size: 14px; }
 .okbox { padding: 10px 12px; border-radius: 10px; background: rgba(61,245,167,.1); border: 1px solid rgba(61,245,167,.35); color: #bbf7d0; font-size: 13px; margin: 8px 0; }
 .badbox { padding: 10px 12px; border-radius: 10px; background: rgba(251,113,133,.1); border: 1px solid rgba(251,113,133,.35); color: #fecdd3; font-size: 13px; margin: 8px 0; }
 .search { padding: 8px; background: #050608; }

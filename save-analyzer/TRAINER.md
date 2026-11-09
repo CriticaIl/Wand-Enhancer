@@ -161,6 +161,63 @@ Every panel shows:
 
 If nothing matches, the panel says the purpose isn't recognised and confidence is *Unknown*.
 
+## Button & Textbox Linker
+
+Main menu → **Button & Textbox Linker** (advanced, optional; `src/trainer/linker.js`, `src/trainer/linker-ui.js`).
+
+**Inspect element.** The panel steps aside and a bar at the bottom says *Tap a button, link, textbox, dropdown or checkbox*. That tap and the events after it are swallowed at the window (capture phase) before the game sees them:
+- no purchase, no navigation
+- no focus, so no keyboard on iPhone
+
+Game code is never called during inspection: handlers are read with `Function.prototype.toString`.
+
+**What it can find, and how sure it is**
+
+| Source | Label |
+| --- | --- |
+| Inline `on…` attributes (`onclick="acheter()"`), `on…` properties (`el.onclick = vendre`), jQuery's registry, `addEventListener` calls made after the Linker started recording | **Confirmed** |
+| SugarCube `data-passage` links (goes to passage X) | **Confirmed** |
+| Functions called by those handlers, and variables their code assigns (`joueur.argent -= 30`), matched to trainer variables by path | **Likely** (read from code, not run) |
+| SugarCube `textbox-<var>` ids, `this.value` assignments in input handlers | **Likely** binding |
+| Listeners on parents (`document`, `body`) that handle clicks for everything inside them | **Likely** when their code mentions the element's id/class/data attribute, otherwise **possible** |
+| Variables holding the same text as a field, or named like it | **Possible** binding |
+| *Watch one tap* / *Detect by typing*: you use the element once, SaveForge compares every scanned variable before and after | **Confirmed by observation** (this one really runs the element) |
+
+**What no web page can see:** listeners the game added with `addEventListener` before SaveForge started recording. Only browser developer tools can list those. The inspection says so, and points to *Watch one tap*, instead of guessing.
+
+**Linking.** *Link to another action…* lists only actions SaveForge can actually perform:
+- **Buttons, links, dialogue choices:**
+  - *Same as tapping “…”*: SaveForge taps that other element for you.
+  - *Call fn()*: zero-argument functions the page defines.
+  - *Go to passage* (SugarCube).
+  - *Do nothing*.
+- **Textboxes, dropdowns, sliders, checkboxes:** *Write to <variable>*, of a compatible type. Either keep the game's own handling (the default) or replace it. A field can also be set to *ignore input*.
+
+A **preview** shows *Now* (the confirmed handlers) next to *After*, with warnings. Buttons that look like they buy, reset or delete need an extra *I understand* tick before **Apply mapping**.
+
+Remappings are enforced by capture listeners on the window, matched by CSS selector at event time, so they survive the game re-rendering its screen:
+- **Remapped button:** the original click handlers (inline, property, delegated) don't run; the new action runs instead.
+- **Field linked to a variable:** writes go through the trainer's live provider.
+
+Nothing is intercepted while there are no active mappings, when *Mappings enabled* is off, or after the trainer is closed.
+
+**Undo / restore:** *Undo last change*, *Restore original* for each mapping, *Restore all originals*, *Pause* for each mapping, and the *Mappings enabled* switch (off = disable all).
+
+**Saved per game:** tick *Save this mapping for this game*. It is stored in SaveForge's own IndexedDB store for that site, keyed by page path. Saved mappings stay **off** next time unless *Apply saved mappings automatically when SaveForge opens on this game* is on. They apply only while the trainer is open; the userscript never applies them by itself on page load.
+
+**Supported**
+
+| Game / element | Inspect | Remap |
+| --- | --- | --- |
+| Plain HTML games (`button`, `a`, `input`, `textarea`, `select`, checkbox/radio, range, `role=button`, elements with `onclick`) | Yes | Yes |
+| jQuery-based games | Yes (handlers via `jQuery._data`) | Yes |
+| SugarCube / Twine (DOM links and form macros) | Yes (`data-passage`, `textbox-…` ids) | Yes (other choice, passage, variable) |
+| Games that delegate clicks from `document` | Partly (possible links, *Watch one tap*) | Yes |
+| Canvas games (Phaser, RPG Maker, Construct, Unity, Godot, GameMaker) | No: buttons are pixels, not elements; the canvas is reported as such | No |
+| Elements inside cross-origin frames | Only when SaveForge runs in that frame (the userscript does) | Same |
+
+A game that registers its own *window capture* listeners before SaveForge can still see a remapped tap first. *Watch one tap* shows what really happens.
+
 ## Performance and safety
 
 - **Fast menus at scale:** menu generation is O(n) because the per-node engine detectors are memoized. Generating the menu for 10,200 live variables takes about 0.1 s, and opening the trainer on such a page takes about 0.3 s in headless Chromium.

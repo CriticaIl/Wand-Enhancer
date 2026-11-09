@@ -1,6 +1,13 @@
-# SaveForge 1.6 on iPhone: install, test and what to expect
+# SaveForge 1.7 on iPhone: install, test and what to expect
 
-## What's new in 1.6
+## What's new in 1.7
+- **Button & Textbox Linker (advanced, optional):** Main menu → *Button & Textbox Linker* → **Inspect element**, then tap a game control. The tap is swallowed, so nothing is bought or changed.
+  - **What you see:** confirmed handlers, the functions they call, the variables their code changes, and possible links (labelled as such), plus what cannot be seen and why.
+  - **Watch one tap / Detect by typing:** runs the element once for real and shows exactly which variables changed.
+  - **Link to another action:** e.g. Buy → *Same as tapping “Sell”*, Buy → *Do nothing*, a textbox → *Write to player.name*, a story choice → another choice. A preview needs confirmation, and risky buttons need an extra tick.
+  - **Undoing it:** *Undo last change*, *Restore original*, *Restore all originals*, *Mappings enabled* (off = disable all). Mappings can be saved per game and stay off next time unless you turn on *apply automatically*.
+
+## What was new in 1.6
 - **Game variables are found one by one.** A game that keeps everything in one generic object (settings, asset lists *and* its money) no longer shows "Game state: 0". You should not need *Include website globals* any more.
 - **Potential game variables:** a new home-screen category for values SaveForge is not sure about. They are shown, not hidden.
 - **Learning while you play:** values that change while the trainer is open (checked every 2 s), and values whose edits were verified, are promoted to game variables.
@@ -42,7 +49,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **1.6.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **1.7.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -93,7 +100,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 150 tests)
+### Verified by the automated tests (Chromium, 155 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -101,6 +108,14 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**Button & Textbox Linker (1.7):**
+- Inspecting Buy, Reset and a name field runs nothing: money, items and focus are unchanged, so no keyboard opens.
+- Inline handlers and handler properties are confirmed. A listener the page added before SaveForge is not invented; the limit is stated instead.
+- Watch one tap reports the real changes (money 100 → 120, swords 1 → 0).
+- Buy → Sell works after preview and confirmation. *Mappings enabled* off restores buying, Undo removes the mapping, Do nothing swallows the tap, Restore original buys again, and closing SaveForge removes every interception.
+- Detect by typing finds the bound variable (`joueur.nom`). Linking an unbound field writes into `joueur.surnom`, and the saved mapping comes back when SaveForge is reopened with *apply automatically* on.
+- A story choice is relinked to another choice (SugarCube-style demo).
 
 **Detection (1.6):**
 - The 1.5 "Game state: 0" case: a custom game with no engine whose state sits under a generic global, next to config, asset URLs and UI settings. Money, shop stats and stock are found without website globals; config, assets, UI settings and site data stay out.
@@ -128,12 +143,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 1.6.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 1.7.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.
 
 **Real games and sites:**
+- How much the Linker can see on your games. Many games add their listeners before SaveForge starts, so those show only through *Watch one tap*. Canvas games cannot be remapped.
 - Whether the per-variable scores pick the right values on *your* game. If something is wrong, Diagnostics → *Copy detection report* gives a report you can share.
 - Real commercial games and portals such as mopoga.com. The demo games imitate the engines' public APIs, but they are not those engines. Unknown engines rely on the generic detector and Find a value.
 - Games that keep state in closures, ES modules, WebAssembly (Unity, Godot, Ren'Py web, GameMaker) or on a server. Those values cannot be found or edited live; SaveForge tells you so in Diagnostics.

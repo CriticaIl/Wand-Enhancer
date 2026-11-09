@@ -241,6 +241,21 @@ test('regression 1.6: a custom game under a generic global is excluded by the wh
   assert.equal(scoreLeaf({ key: '17', type: 'int', value: 4, parentKeys: ['tables', 'curve'], globalKind: 'unknown', inLargeArray: true }).tier, 'excluded');
 });
 
+test('Linker code reader: finds written variables and called functions without running anything', async () => {
+  const { writesIn, callsIn } = await import('../src/trainer/linker.js');
+  const w = writesIn("document.getElementById('log').textContent = t; joueur.argent -= 30; ++app.data.coins; inv['potion'] = 2; player.name = this.value; if (a == b) x.y++;");
+  const chains = w.map((x) => `${x.chain} ${x.op}`);
+  assert.ok(chains.includes('joueur.argent -='));
+  assert.ok(chains.includes('app.data.coins ++'));
+  assert.ok(chains.includes('inv.potion ='));
+  assert.ok(chains.includes('player.name ='));
+  assert.ok(chains.includes('x.y ++'));
+  assert.ok(!chains.some((c) => /textContent/.test(c)), 'DOM property writes are not variables');
+  assert.ok(!chains.some((c) => /^a /.test(c)), 'comparisons are not assignments');
+  assert.equal(w.find((x) => x.chain === 'player.name').rhs, 'this.value');
+  assert.deepEqual(callsIn('if (ok) { buy(1); render(); } else alert("x")').sort(), ['alert', 'buy', 'render']);
+});
+
 // ---------------------------------------------------------------- translation (offline)
 test('translation: dictionary words are translations, abbreviations are guesses, unknown text is not invented', async () => {
   const { toEnglish, englishLabel } = await import('../src/core/translate.js');

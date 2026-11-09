@@ -8,6 +8,7 @@ import { firstScan, foundValuesEngine, nextScan } from './scan.js';
 import { checkDisplay, detectRenderer, engineRedraw, patchVisibleNumber, redrawCandidates, tryRedraw } from './display.js';
 import { searchEntries, SUGGESTIONS } from './search.js';
 import { LiveProvider, SECTIONS, STATUS } from './providers.js';
+import { createLinkerUI } from './linker-ui.js';
 import { TRAINER_CSS } from './styles.js';
 
 let ROW_H = 56; // 44 in compact view
@@ -21,6 +22,7 @@ const ICONS = {
   back: 'M15.4 6.4L14 5l-7 7 7 7 1.4-1.4L9.8 12z',
   undo: 'M8 7V3L2 9l6 6v-4h6a4 4 0 010 8h-2v3h2a7 7 0 000-14z',
   redo: 'M16 7V3l6 6-6 6v-4h-6a4 4 0 000 8h2v3h-2a7 7 0 010-14z',
+  link: 'M10.6 13.4a1 1 0 010-1.4l3.5-3.5a3 3 0 114.2 4.2l-2.1 2.1-1.4-1.4 2.1-2.1a1 1 0 10-1.4-1.4L12 13.4a1 1 0 01-1.4 0zm2.8-2.8a1 1 0 010 1.4l-3.5 3.5a3 3 0 11-4.2-4.2l2.1-2.1 1.4 1.4-2.1 2.1a1 1 0 101.4 1.4L12 10.6a1 1 0 011.4 0z',
   search: 'M10 3a7 7 0 015.6 11.2l5 5-1.4 1.4-5-5A7 7 0 1110 3zm0 2a5 5 0 100 10 5 5 0 000-10z',
   star: 'M12 2.5l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6L12 17.3l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z',
   clock: 'M12 2a10 10 0 110 20 10 10 0 010-20zm-1 5v6l5 3 1-1.7-4-2.4V7z',
@@ -190,6 +192,26 @@ export function mountTrainer(win, opts) {
     orb.querySelector('.n')?.remove();
     const n = S.provider ? S.provider.pendingCount() || [...S.provider.entries].filter((e) => S.provider.isEdited(e.nodeId)).length : 0;
     if (n) orb.append(h('span', { class: 'n' }, n));
+  }
+
+  // ---------- Button & Textbox Linker (created lazily; saved mappings load at mount)
+  let linkerUI = null;
+  const liveProvider = () => (S.provider?.kind === 'live' ? S.provider : [...S.providers.values()].find((p) => p.kind === 'live') || null);
+  function getLinkerUI() {
+    if (!linkerUI) {
+      linkerUI = createLinkerUI({
+        win, h, bodyEl, push, back, top, toast, setDesc, renderAll, host, panel, orb, root, store,
+        getProvider: liveProvider,
+        get state() {
+          return S;
+        },
+        minimize: () => (panel.style.display = 'none'),
+        restore: () => {
+          if (!S.minimized) panel.style.display = '';
+        },
+      });
+    }
+    return linkerUI;
   }
 
   let toastTimer;
@@ -382,6 +404,7 @@ export function mountTrainer(win, opts) {
     if (p.kind === 'live') items.push({ kind: 'nav', label: 'Update game display', icon: 'refresh', count: '', hint: 'Make the game redraw its screen after an edit, and see how this game draws.', view: { type: 'display', id: S.recent[0] || null } });
     items.push({ kind: 'nav', label: 'Find a value', icon: 'search', count: '', hint: 'Unknown game? Type a number you see on screen, change it in the game, scan again: SaveForge finds the real variable.', view: { type: 'findvalue' } });
     items.push({ kind: 'action', label: 'Rescan game', icon: 'refresh', hint: 'Look for the game again: engines that finished loading, new variables, new saves.', run: () => rescanGame() });
+    items.push({ kind: 'nav', label: 'Button & Textbox Linker', icon: 'link', count: linkerUI ? linkerUI.linker.list().length || '' : '', hint: 'Advanced: inspect what a game button or field is connected to, and link it to another action (only after you confirm).', view: { type: 'linker' } });
     items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
     return items;
   }
@@ -417,7 +440,7 @@ export function mountTrainer(win, opts) {
       clear(compatEl).append(h('span', { class: `cdot ${c.level}` }), c.label);
     }
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -455,6 +478,7 @@ export function mountTrainer(win, opts) {
     if (v.type === 'findvalue') return renderFindValue();
     if (v.type === 'display') return renderDisplay(v.id);
     if (v.type === 'settings') return renderSettings();
+    if (/^link/.test(v.type)) return getLinkerUI().render(v);
     if (v.type === 'locks') {
       const p = S.provider;
       const entries = [...(p.locks?.keys() || [])].map((id) => p.entryById.get(id)).filter(Boolean);
@@ -1511,6 +1535,7 @@ export function mountTrainer(win, opts) {
     },
     destroy() {
       win.clearInterval(poll);
+      linkerUI?.dispose();
       for (const pr of S.providers.values()) pr.dispose?.();
       host.remove();
       opts.onClose?.();
@@ -1527,6 +1552,7 @@ export function mountTrainer(win, opts) {
   })();
   renderSources();
   setMinimized(S.minimized);
+  if (store) getLinkerUI(); // saved Linker mappings apply only if the user chose "apply automatically"
   if (opts.sources.length) selectSource(opts.sources[0].id);
   else {
     S.status = { error: 'No editable game data was found on this page.' };
