@@ -174,6 +174,46 @@ Every panel shows:
 
 If nothing matches, the panel says the purpose isn't recognised and confidence is *Unknown*.
 
+## SugarCube (Twine): live State and saves
+
+**Live: three ways to reach `State.variables`**, tried in this order.
+
+| Way | When | How |
+| --- | --- | --- |
+| Direct | SaveForge runs in the page's own JavaScript world | `window.SugarCube.State.variables` (current moment), `State.temporary` (`_temp` variables) and `setup` |
+| Page bridge | SaveForge runs in an isolated userscript or extension world, where `window.SugarCube` does not exist | A small agent is added to the page world with a `<script>` element. It answers synchronous requests over DOM events and attributes: read one path, write one path, dump variables, re-render. Edits are read back and verified like any live edit. |
+| Frame | The story runs in a same-site child frame | Diagnostics → Frames → *Open trainer in this frame* |
+
+A story that publishes `window.SugarCube` after the trainer opened is connected as soon as it is ready. SaveForge checks every second for 90 seconds and selects the new source.
+
+**Diagnostics → SugarCube** tells you which case you are in, step by step:
+- story markers in the DOM: `<tw-storydata format="SugarCube">`, `#ui-bar`, `#passages`
+- whether `window.SugarCube.State.variables` is visible from SaveForge's context
+- whether it exists in the page's own world
+- **Look up** an exact path: `player.money`, `$player.money`, `State.variables.player.money` or `_temp`
+
+When it cannot connect, it says why:
+- *not started yet*
+- *in a child frame* or *in another site's frame*
+- *the page blocks the bridge* (Content-Security-Policy)
+- *this build does not expose `window.SugarCube`* (State is private to the story's code, so no page or extension can read it live)
+
+**Saves: the current moment, not `delta[0]`.** A SugarCube save stores the story history, either as `state.history[]` or delta-encoded as `state.delta[]`, plus `state.index`:
+- `delta[0]` is the *first* moment in full.
+- Every later entry is a diff (`[2, value]` copy, `0` delete, `{"~": [1, start, end]}` splice).
+
+`src/adapters/sugarcube-moments.js` rebuilds moment `state.index` exactly like SugarCube's `patch()`. It is checked against SugarCube's own decoding on 300 random histories.
+
+- **The editor and trainer** show the current value as `$player.money`. Its field may live in `delta[0]` or in a later diff. Values of other moments are marked *not current* (visible under engine internals), and diff operation codes are locked.
+- **Live + Save links** for SugarCube use the current moment of the autosave (or the newest save).
+- **Storage format:** saves stored with LZString `compressToUTF16`, as SugarCube does in localStorage, are decoded. The trailing space of that format used to be trimmed away.
+
+**Import from Save Editor.** The editor (criticail.github.io) and the trainer (the game's site) cannot see each other's data.
+1. In the editor: Export → **Copy share code** (`SAVEFORGE-SHARE-1:…`).
+2. In the trainer: **Import from Save Editor** → paste → a preview shows the format, the variable count and the current moment → confirm.
+3. The values appear as **SAVE · IMPORTED** (never live). Edits can be downloaded (verified) or copied back as a share code.
+4. They can be added to the game's own save **only if it is verifiably the same save**: the same SugarCube story id and save date, or identical data. Then *Write saves* writes them, with a backup.
+
 ## Save variables in the trainer (shared with the Save Editor)
 
 **How the Save Editor finds variables:** a save (an imported file, or a Storage Bridge dump of the game's localStorage and IndexedDB) goes through `analyzeFile()` (`src/core/document.js`):

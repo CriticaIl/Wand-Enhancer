@@ -924,7 +924,7 @@ test('hidden state: script-level let/const, state created later (Rescan), SugarC
   // SugarCube story variables and setup objects
   const sc = await page.evaluate(() => window.__saveforgeTrainer.provider().entries.map((e) => e.path).join('|'));
   assert.match(sc, /State\.variables\.money/);
-  assert.match(sc, /setup › shop › prices › laptop/);
+  assert.match(sc, /setup\.shop\.prices\.laptop/); // SugarCube notation since 2.0
   // script-level variables are found and edited for real
   await t.chip('Other game state');
   await page.waitForTimeout(1200);
@@ -1165,6 +1165,163 @@ test('shared save variables: automatic sync, Sync save variables, and pending sa
     const p = window.__saveforgeTrainer.provider();
     return p.savePending() === 0 && !p.saves.stale && p.originOf('$/game/credits') === 'live+save' && p.value('$/game/credits') === 9999 && !p.entries.some((x) => /neoncourier\.save › credits$/.test(x.path));
   }, null, { timeout: 5000 });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// ---------------------------------------------------------------- 2.0: SugarCube State.variables.player.money
+// A realistic SugarCube story (fixtures/sugarcube-real): sealed window.SugarCube,
+// State.variables/temporary getters, a cloned moment per passage, and saves stored
+// like SugarCube 2.36 (delta-encoded history, LZString UTF-16 in localStorage).
+const SC_URL = '/test/fixtures/sugarcube-real/';
+
+test('SugarCube: State.variables.player.money is LIVE after a late start, found by exact path, edited and verified', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?init=1500&go=Shop`);
+  await inject(page); // before the story publishes window.SugarCube
+  await page.locator('saveforge-trainer .chip[aria-pressed=true]', { hasText: 'SugarCube' }).waitFor({ timeout: 6000 });
+  const t = T(page);
+  for (const q of ['player.money', '$player.money', 'State.variables.player.money']) {
+    await t.home();
+    await t.search(q);
+    assert.equal(await page.locator('saveforge-trainer .row .name').first().innerText(), '$player.money', q);
+  }
+  await t.setNumber('$player.money', 30000000);
+  assert.equal(await page.evaluate(() => SugarCube.State.variables.player.money), 30000000);
+  await page.waitForFunction(() => {
+    const p = window.__saveforgeTrainer.provider();
+    const e = p.entries.find((x) => x.label === '$player.money');
+    return p.statusOf(e.nodeId)?.state === 'verified';
+  }, null, { timeout: 4000 });
+  // _temporary variables of the passage are live too
+  await t.home();
+  await t.search('_cost');
+  assert.equal(await page.locator('saveforge-trainer .row .name').first().innerText(), '_cost');
+  // Diagnostics: connected directly; exact path lookup
+  await t.home();
+  await t.nav('Diagnostics');
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('h3', { hasText: 'SugarCube' }).waitFor();
+  assert.match(await sheet.innerText(), /Live: connected directly/);
+  await sheet.locator('.btn', { hasText: 'Look up' }).click();
+  assert.match(await sheet.locator('.sclookup').innerText(), /State\.variables\.player\.money = 30000000 \(number\) — LIVE\s+In the trainer as \$player\.money/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('SugarCube in an isolated userscript world: window.SugarCube is invisible, the page bridge connects the live State', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?go=Shop`);
+  const cdp = await ctx.newCDPSession(page);
+  const { frameTree } = await cdp.send('Page.getFrameTree');
+  const { executionContextId } = await cdp.send('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: 'saveforge-userscript' });
+  const iso = async (fn) => {
+    const r = await cdp.send('Runtime.evaluate', { expression: `(${fn})()`, contextId: executionContextId, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300));
+    return r.result.value;
+  };
+  await cdp.send('Runtime.evaluate', { expression: trainerJs, contextId: executionContextId });
+  await page.locator('saveforge-trainer .row').first().waitFor();
+  assert.equal(await iso('() => typeof window.SugarCube'), 'undefined', 'really isolated');
+  assert.equal(await iso('() => window.__saveforgeTrainer.provider().title'), 'SugarCube (Twine)');
+  const t = T(page);
+  await t.search('player.money');
+  await t.setNumber('$player.money', 12345);
+  assert.equal(await page.evaluate(() => SugarCube.State.variables.player.money), 12345, 'the page world changed');
+  assert.equal(await iso(`() => { const p = window.__saveforgeTrainer.provider(); const e = p.entries.find((x) => x.label === '$player.money'); return p.value(e.nodeId); }`), 12345);
+  await t.home();
+  await t.nav('Diagnostics');
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('h3', { hasText: 'SugarCube' }).waitFor();
+  assert.match(await sheet.innerText(), /Live: connected through the page bridge/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('SugarCube save: the current moment of a delta-encoded save is linked to the live variable, not delta[0]', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?go=Shop,Street`);
+  await inject(page);
+  const s = S9(page);
+  await s.waitOrigin(/^State\.variables\.player\.money$/, 'live+save');
+  const link = await page.evaluate(() => {
+    const p = window.__saveforgeTrainer.provider();
+    const e = p.entries.find((x) => x.label === '$player.money');
+    return { saveId: e.saveLink.saveId, detail: e.saveLink.detail, saveValue: p.saveProvider().value(e.saveLink.saveId), dupes: p.entries.filter((x) => /player\.money/.test(x.label)).length };
+  });
+  assert.match(link.saveId, /\/autosave\/state\/delta\/1\/variables\/player\/money\/1$/, 'the Copy op of moment 2, not delta[0]');
+  assert.match(link.detail, /current moment 3\/3 \(delta-encoded; value stored in delta\[1\]\)/);
+  assert.equal(link.saveValue, 28470000);
+  assert.equal(link.dupes, 1, 'superseded moments are not listed next to live values');
+  // edit live, also write it to the save, then decode the stored save like SugarCube does
+  const t = T(page);
+  await t.search('player.money');
+  await t.setNumber('$player.money', 5000000);
+  await page.locator('saveforge-trainer .row .info').first().click();
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Also write to save' }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: /Write saves \(1\)/ }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Write saves' }).click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'Saves written' }).waitFor();
+  const { decodeDelta } = await import('../src/adapters/sugarcube-moments.js');
+  const save = await page.evaluate(() => JSON.parse(LZString.decompressFromUTF16(localStorage.getItem('(Saved Games)fixture.saves'))).autosave);
+  const moments = decodeDelta(save.state.delta);
+  assert.equal(moments[save.state.index].variables.player.money, 5000000, 'current moment carries the new value');
+  assert.equal(save.state.delta[0].variables.player.money, 28480799, 'the first moment is untouched');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('SugarCube that keeps State private: the reason is reported, saves stay editable, and a share code from the Save Editor imports with confirmation', { skip, timeout: 90000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?hidden=1&go=Shop,Street`);
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+  const exported = await page.evaluate(() => window.__fixture.Save.exportText());
+  await inject(page);
+  const t = T(page);
+  // no live source is invented; the reason is explicit
+  assert.equal(await page.locator('saveforge-trainer .chip', { hasText: 'SugarCube' }).count(), 0);
+  await t.home();
+  await t.nav('Diagnostics');
+  let sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('h3', { hasText: 'SugarCube' }).waitFor();
+  const diag = await sheet.innerText();
+  assert.match(diag, /Live state not reachable — This SugarCube build does not expose window\.SugarCube/);
+  assert.match(diag, /✓ SugarCube story in this frame: <tw-storydata format="SugarCube" format-version="2\.36\.1">/);
+  assert.match(diag, /✕ In the page’s own world window\.SugarCube is undefined too/);
+  await sheet.locator('.btn', { hasText: 'Look up' }).click();
+  assert.match(await sheet.locator('.sclookup').innerText(), /Not connected to the live State/);
+  // the game's own saves: current-moment value as SAVE
+  await t.home();
+  await t.chip('Saves in storage');
+  await t.search('player.money');
+  assert.equal(await page.locator('saveforge-trainer .row .name').first().innerText(), '$player.money');
+  assert.match(await page.locator('saveforge-trainer .row .num').first().innerText(), /28,?470,?000/);
+  // Save Editor → share code → trainer (different sites): confirm, then SAVE · IMPORTED
+  const { encodeShare } = await import('../src/core/share.js');
+  const code = encodeShare({ name: 'fixture.save', input: exported, engine: 'sugarcube' });
+  await t.home();
+  await t.nav('Import from Save Editor');
+  await page.locator('saveforge-trainer .sheet textarea').fill(code);
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Read' }).click();
+  const preview = await t.sheetText();
+  assert.match(preview, /Current moment\s+3 of 3 \(delta-encoded history, resolved like SugarCube; state\.index = 2\)/);
+  assert.match(preview, /not the running game/);
+  assert.match(preview, /Matching save in this game: .*same SugarCube save \(story id “fixture”/);
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Import as SAVE variables' }).click();
+  await page.locator('saveforge-trainer .chip[aria-pressed=true]', { hasText: 'Imported: fixture.save' }).waitFor();
+  await t.search('player.money');
+  assert.equal(await page.locator('saveforge-trainer .row .otag').first().innerText(), 'SAVE · IMPORTED');
+  await t.setNumber('$player.money', 777);
+  // export: the downloaded file decodes to the edited current moment
+  await page.locator('saveforge-trainer .tool.primary', { hasText: 'Export' }).click();
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Download edited save' }).click()]);
+  const text = await (await import('node:fs/promises')).readFile(await dl.path(), 'utf8');
+  const out = await analyzeFile('edited.save', text);
+  const money = out.doc.menu.all.find((e) => e.label === '$player.money');
+  assert.equal(out.doc.node(money.nodeId).value, 777);
+  // write it into the game's matching save (verified destination), then Write saves
+  await page.locator('saveforge-trainer .sheet .btn.warn', { hasText: 'Add to the game’s save' }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Write saves' }).click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'Saves written' }).waitFor();
+  const { decodeDelta } = await import('../src/adapters/sugarcube-moments.js');
+  const save = await page.evaluate(() => JSON.parse(LZString.decompressFromUTF16(localStorage.getItem('(Saved Games)fixture.saves'))).autosave);
+  assert.equal(decodeDelta(save.state.delta)[save.state.index].variables.player.money, 777);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

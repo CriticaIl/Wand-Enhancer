@@ -21,6 +21,7 @@
 //     sides). Equal names or equal current values alone never link anything.
 
 import { StorageProvider } from './providers.js';
+import { isSugarCubeSaveNode, pathKey, resolveSugarCubeSave } from '../adapters/sugarcube-moments.js';
 
 const NUMERIC = new Set(['int', 'float']);
 const unesc = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~');
@@ -334,20 +335,19 @@ export function engineLinks(eng, p, sp) {
     }
   }
   if (eng === 'sugarcube') {
-    const saves = containers(sp, (n) => {
-      const st = childOf(n, 'state');
-      if (!st || !st.children) return false;
-      const k = childKeys(st);
-      return k.has('history') && k.has('index');
-    });
+    // every SugarCube save in the storage (autosave, slots), resolved to its CURRENT moment
+    // (delta-encoded history is patched like SugarCube does; delta[0] is only the first moment)
+    const saves = containers(sp, (n) => isSugarCubeSaveNode(n));
     if (!saves.length) return out;
-    const save = saves.find((x) => /autosave/i.test(x.id)) || saves.slice().sort((a, b) => Number(childOf(b.node, 'date')?.value || 0) - Number(childOf(a.node, 'date')?.value || 0))[0];
-    const idx = childOf(childOf(save.node, 'state'), 'index')?.value;
+    const save = saves.find((x) => /(^|\/)autosave($|\/)|\.auto(\.|$)|autosave/i.test(x.id)) || saves.slice().sort((a, b) => Number(childOf(b.node, 'date')?.value || 0) - Number(childOf(a.node, 'date')?.value || 0))[0];
+    const r = resolveSugarCubeSave(save.node);
+    if (!r) return out;
     const prefix = '$/state/history/0/variables/';
     for (const e of p.liveEntries || []) {
       if (!e.nodeId.startsWith(prefix)) continue;
-      const saveId = `${save.id}/state/history/${idx}/variables/${e.nodeId.slice(prefix.length)}`;
-      if (sp.node(saveId) && !sp.node(saveId).children) out.push({ liveId: e.nodeId, saveId, how: 'engine', detail: `SugarCube save (state.history[${idx}].variables), ${slotName(save.id)}` });
+      const path = e.nodeId.slice(prefix.length).split('/').map(unesc);
+      const cur = r.current.get(pathKey(path));
+      if (cur && sp.node(cur.nodeId) && !sp.node(cur.nodeId).children) out.push({ liveId: e.nodeId, saveId: cur.nodeId, how: 'engine', detail: `SugarCube save, current moment ${r.index + 1}/${r.total} (${r.encoding === 'delta' ? `delta-encoded; value stored in delta[${cur.moment}]` : `history[${r.index}]`}), ${slotName(save.id)}` });
     }
   }
   return out;

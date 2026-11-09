@@ -9,6 +9,7 @@ import { backupOriginal, deleteBackup, listBackups } from './backups.js';
 import { add, clear, displayValue, draggable, fmtBytes, h, icon } from './dom.js';
 import { SAMPLES } from './sample-data.js';
 import { openTrainer } from '../trainer/inject.js';
+import { decodeShare, encodeShare, SHARE_PREFIX } from '../core/share.js';
 import { FileProvider } from '../trainer/providers.js';
 import { createStore } from '../trainer/store.js';
 import { mountTrainer } from '../trainer/ui.js';
@@ -173,6 +174,17 @@ async function openFile(file) {
 
 async function load(name, input) {
   if (state.session && state.session.edits.size && !confirm('Discard the current unsaved changes and open another file?')) return;
+  // a share code from the floating trainer carries the save and its file name
+  if (typeof input === 'string' && input.trim().startsWith(SHARE_PREFIX)) {
+    try {
+      const sh = decodeShare(input);
+      name = sh.name;
+      input = sh.input;
+    } catch (e) {
+      toast(e.message, true);
+      return;
+    }
+  }
   toast('Analyzing…');
   const res = await analyzeFile(name, input);
   if (!res.ok) {
@@ -944,11 +956,25 @@ async function exportFlow() {
       canShare && v.ok ? h('button', { class: 'btn', onclick: () => navigator.share({ files: [new File([result.bytes], result.filename)] }).catch(() => {}) }, icon('share'), 'Share / Save to Files') : null,
       h('button', { class: 'btn', onclick: () => download(original, backupName(doc.name)) }, 'Download original'),
     ),
+    h('h3', null, 'Send to the floating trainer'),
+    h('p', { class: 'muted' }, 'The trainer runs on the game’s own site, which this page cannot reach. Copy a share code, open SaveForge over the game (⬢ or #saveforge), then Main menu → Import from Save Editor → paste. You confirm before anything is imported; the trainer shows these values as SAVE (not live) and can write them into the game’s matching save.'),
+    h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => copyShare(result.unchanged ? doc.input : result.bytes, result.unchanged ? doc.name : result.filename) }, icon('share'), 'Copy share code')),
     h('h3', null, 'Import it into the game'),
     h('ol', { class: 'steps' }, doc.engine.importGuide.map((s) => h('li', null, s))),
     state.frameSameOrigin && doc.engine.id === 'storage-dump' ? h('button', { class: 'btn primary', style: { marginTop: '8px' }, onclick: () => (back.remove(), writeToFrame(result.bytes)) }, 'Write into the running game') : null,
     h('div', { class: 'row', style: { marginTop: '14px' } }, h('button', { class: 'btn ghost', onclick: () => back.remove() }, 'Close')),
   );
+}
+
+async function copyShare(input, name) {
+  const code = encodeShare({ name, input, engine: state.doc?.engine?.id || '' });
+  try {
+    await navigator.clipboard.writeText(code);
+    toast(`Share code copied (${Math.round(code.length / 1024)} KB): paste it into the trainer`);
+  } catch {
+    prompt('Copy this share code:', code);
+  }
+  return code;
 }
 
 function backupName(name) {

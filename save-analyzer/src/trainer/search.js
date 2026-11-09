@@ -94,6 +94,23 @@ function typeMatches(filter, node, e) {
   }
 }
 
+/** A query that is a variable path (has a dot, or a SugarCube $/_ sigil), normalised; else null. */
+function pathQuery(q) {
+  const t = String(q || '').trim();
+  if (!/^[$_]?[A-Za-z_$][\w$]*(\.[\w$]+|\[\d+\])+$/.test(t.replace(/^(SugarCube\.)?State\.(variables|temporary)\./, '')) && !/^[$_][A-Za-z_]\w*$/.test(t)) return null;
+  return normPath(t);
+}
+function normPath(s) {
+  return String(s || '')
+    .replace(/ › /g, '.')
+    .replace(/\[(\d+)\]/g, '.$1')
+    .replace(/^(window|SugarCube|RPG Maker|Phaser|Construct 2)\./, '')
+    .replace(/^State\.variables\./, '')
+    .replace(/^State\.temporary\./, '_')
+    .replace(/^\$/, '')
+    .toLowerCase();
+}
+
 function numberQuery(q) {
   const t = q.trim().replace(/[\s,](?=\d{3}\b)/g, '').replace(/,/g, '.');
   return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : null;
@@ -108,6 +125,7 @@ export function searchEntries(p, query, { filter = 'all', gameplayOnly = true, m
   let hiddenText = 0;
   if (!base) return { results: out, hiddenText, total: 0, aliases };
   const num = numberQuery(query);
+  const pq = pathQuery(query);
   const exact = mode === 'exact';
   const textMatch = (hay, t) => (exact ? hay === t : hay.includes(t));
   for (const e of p.entries) {
@@ -119,6 +137,13 @@ export function searchEntries(p, query, { filter = 'all', gameplayOnly = true, m
     const hit = (s, w) => {
       if (s > score) (score = s), (why = w);
     };
+    if (pq) {
+      // exact variable paths: player.money, $player.money, State.variables.player.money, _tmp
+      const ep = normPath(e.path);
+      const el = normPath(e.label);
+      if (ep === pq || el === pq) hit(130, 'exact path');
+      else if (ep.endsWith('.' + pq) || el.endsWith('.' + pq)) hit(110, 'path');
+    }
     for (const t of terms) {
       const isAlias = t !== base;
       const k = isAlias ? 0.75 : 1;

@@ -7,6 +7,8 @@ import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
 import { frameLabel, LiveProvider } from './providers.js';
 import { createStore } from './store.js';
 import { SaveHub } from './save-hub.js';
+import { probeSugarCube, sugarCubeBridge, storyMarkers, pageBridge } from './sugarcube-live.js';
+import { sugarCubeDirect } from './engines.js';
 import { mountTrainer } from './ui.js';
 
 /** Iframes on this page that are big enough to be a game, with what we can know about them. */
@@ -53,6 +55,13 @@ export function openTrainer(win, extra = {}) {
   const { frameReports, openInFrame, contextInfo, saveSyncMs, ...rest } = extra;
   let engines = detectLiveEngines(win);
   let limitations = liveLimitations(win);
+  // SugarCube: when window.SugarCube is not visible from here, find out why and use the
+  // page bridge if SaveForge runs in an isolated userscript/extension world
+  let scProbe = null;
+  if (!engines.some((e) => e.id === 'sugarcube')) {
+    scProbe = probeSugarCube(win);
+    if (scProbe.verdict === 'bridge') engines.unshift(sugarCubeBridge(win, pageBridge(win).rpc));
+  }
   // one shared set of save variables (the Save Editor's pipeline) for every view
   const hub = new SaveHub(win, createStore(win, `${origin}|storage`), extra.saveSyncMs ? { autoMs: extra.saveSyncMs } : undefined);
   const sourceFor = (e) => ({
@@ -115,6 +124,7 @@ export function openTrainer(win, extra = {}) {
       engines: engines.map((e) => ({ id: e.id, name: e.name, channel: e.channel, evidence: e.evidence || (e.id === 'generic' ? 'page globals scored as game state' : '') })),
       limitations,
       globals: generic ? generic.classification() : [],
+      sugarcube: sugarCubeReport(),
       detection: detectionSummary(generic),
       frames: frames.map((f) => ({
         href: f.href,
@@ -153,6 +163,27 @@ export function openTrainer(win, extra = {}) {
     return { leaves, report: rep, lexical: raw.lexical(), special: raw.special(), generic: generic ? { leaves: generic.leaves(), report: generic.scanReport ? generic.scanReport() : null } : null, listed };
   };
 
+  /** The SugarCube connection report and an exact State path lookup (Diagnostics). */
+  function sugarCubeReport() {
+    const eng = engines.find((e) => e.id === 'sugarcube');
+    const probe = eng ? { verdict: eng.bridged ? 'bridge' : 'direct', reason: eng.bridged ? 'Connected through the page bridge (SaveForge runs isolated from the page).' : 'Connected directly to SugarCube.State.', steps: (scProbe && scProbe.steps) || [], markers: storyMarkers(win.document) } : probeSugarCube(win);
+    return {
+      ...probe,
+      frames: undefined,
+      connected: !!eng,
+      lookup: (expr) => {
+        const path = parseStatePath(expr);
+        if (!path) return { error: 'Use a path like player.money, $player.money, State.variables.player.money or _temp' };
+        if (!eng) return { error: `Not connected to the live State: ${probe.reason}`, path };
+        try {
+          return { path, ...eng.lookup(path) };
+        } catch (e) {
+          return { path, error: e.message };
+        }
+      },
+    };
+  }
+
   function frameActions(f) {
     const acts = [];
     if (f.report && openInFrame) acts.push({ label: 'Open trainer in this frame', run: () => openInFrame(f.report) });
@@ -160,6 +191,29 @@ export function openTrainer(win, extra = {}) {
     if (f.href && /^https?:/.test(f.href)) acts.push({ label: 'Open game frame directly', run: () => win.open(f.href, '_blank', 'noopener') });
     return acts;
   }
+
+  // a story that starts after the trainer opened (loading screen, "Start" passage) is
+  // connected as soon as its State is ready
+  let scTimer = 0;
+  const scWatch = () => {
+    if (!scProbe || !['not-started', 'hidden', 'blocked'].includes(scProbe.verdict) || !storyMarkers(win.document).sugarcube) return;
+    let tries = 0;
+    scTimer = win.setInterval(() => {
+      tries++;
+      if (engines.some((e) => e.id === 'sugarcube') || tries > 90) return void win.clearInterval(scTimer);
+      let eng = sugarCubeDirect(win);
+      if (!eng) {
+        const p = probeSugarCube(win);
+        if (p.verdict === 'bridge') eng = sugarCubeBridge(win, pageBridge(win).rpc);
+        scProbe = p;
+      }
+      if (!eng) return;
+      win.clearInterval(scTimer);
+      engines = [eng, ...engines];
+      scProbe = { verdict: eng.bridged ? 'bridge' : 'direct', reason: 'Connected after the story started.', steps: [], markers: storyMarkers(win.document), frames: [] };
+      win.__saveforgeTrainer?.addSources?.([sourceFor(eng)], { select: true, note: `SugarCube connected${eng.bridged ? ' through the page bridge' : ''}` });
+    }, 1000);
+  };
 
   const ctl = mountTrainer(win, {
     sources,
@@ -173,11 +227,13 @@ export function openTrainer(win, extra = {}) {
     store: createStore(win, `${origin}|ui`),
     onClose: () => {
       hub.dispose();
+      win.clearInterval(scTimer);
       delete win.__saveforgeTrainer;
     },
     ...rest,
   });
   win.__saveforgeTrainer = ctl;
+  scWatch();
   return ctl;
 }
 
@@ -196,4 +252,20 @@ function safe(fn) {
   } catch {
     return null;
   }
+}
+
+/** "player.money", "$player.money", "State.variables.player.money", "_tmp", "State.temporary.x" → ['variables'|'temporary', ...] */
+export function parseStatePath(expr) {
+  let e = String(expr || '').trim().replace(/^SugarCube\./, '');
+  let root = 'variables';
+  if (/^State\.temporary\./.test(e)) (root = 'temporary'), (e = e.replace(/^State\.temporary\./, ''));
+  else if (/^State\.variables\./.test(e)) e = e.replace(/^State\.variables\./, '');
+  else if (/^_/.test(e)) (root = 'temporary'), (e = e.slice(1));
+  else e = e.replace(/^\$/, '');
+  const parts = e
+    .replace(/\[(\d+)\]/g, '.$1')
+    .replace(/\[["']([^"']+)["']\]/g, '.$1')
+    .split('.')
+    .filter(Boolean);
+  return parts.length ? [root, ...parts] : null;
 }

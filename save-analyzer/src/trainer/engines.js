@@ -147,6 +147,11 @@ function rpgMaker(win) {
 
 // ---------------------------------------------------------------- SugarCube 2
 
+/** The direct SugarCube adapter, or null (used again when a story starts late). */
+export function sugarCubeDirect(win) {
+  return sugarCube(win);
+}
+
 function sugarCube(win) {
   let SC;
   try {
@@ -169,7 +174,32 @@ function sugarCube(win) {
       const root = { state: { history: [{ title: safe(() => SC.State.passage) || 'current', variables: SC.State.variables }], index: 0 } };
       const setup = safe(() => SC.setup);
       if (setup && typeof setup === 'object') root.setup = setup;
+      // State.temporary: the _temporary variables of the current passage
+      const temp = safe(() => SC.State.temporary);
+      if (temp && typeof temp === 'object') root.temporary = temp;
       return root;
+    },
+    resolve(id) {
+      const segs = id.split('/').slice(1).map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~'));
+      let obj = segs[0] === 'state' && segs[3] === 'variables' ? safe(() => SC.State.variables) : segs[0] === 'temporary' ? safe(() => SC.State.temporary) : segs[0] === 'setup' ? safe(() => SC.setup) : null;
+      const from = segs[0] === 'state' ? 4 : 1;
+      if (!obj) return null;
+      for (let i = from; i < segs.length - 1; i++) {
+        obj = safe(() => obj[segs[i]]);
+        if (obj === null || typeof obj !== 'object') return null;
+      }
+      return { obj, key: segs[segs.length - 1] };
+    },
+    /** Exact path lookup, e.g. ['variables','player','money'] (Diagnostics). */
+    lookup(path) {
+      let o = path[0] === 'temporary' ? safe(() => SC.State.temporary) : safe(() => SC.State.variables);
+      for (let i = 1; i < path.length - 1; i++) {
+        if (o === null || typeof o !== 'object') return { found: false };
+        o = o[path[i]];
+      }
+      if (o === null || typeof o !== 'object' || !(path[path.length - 1] in o)) return { found: false };
+      const v = o[path[path.length - 1]];
+      return { found: true, value: v, type: typeof v };
     },
     snapshot() {
       // story variables and setup get separate budgets so a large setup table cannot hide $variables

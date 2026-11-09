@@ -543,3 +543,95 @@ test('display helpers: number forms and safe redraw candidates only', async () =
   const labels = redrawCandidates(win).map((c) => c.label);
   assert.deepEqual(labels.sort(), ['afficherMagasin()', 'renderAll()', 'updateMoney()']);
 });
+
+// ---------------------------------------------------------------- 2.0: SugarCube current moment, share codes, exact paths
+test('SugarCube saves: the current moment of a delta-encoded history matches SugarCube’s own decoding (random histories)', async () => {
+  const { historyDeltaEncode } = await import('./sugarcube-diff.mjs');
+  const { decodeDelta, resolveSugarCubeSave } = await import('../src/adapters/sugarcube-moments.js');
+  const { analyzeFile } = await import('../src/core/document.js');
+  let seed = 7;
+  const rnd = (n) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);
+  const mutate = (v) => {
+    const o = JSON.parse(JSON.stringify(v));
+    for (let i = 0; i < 1 + rnd(4); i++) {
+      const r = rnd(9);
+      if (r < 3) o.player.money = rnd(5) === 0 ? 0 : rnd(40000000);
+      else if (r === 3) o.player.items[`it${rnd(4)}`] = rnd(9);
+      else if (r === 4) delete o.player.items[Object.keys(o.player.items)[0]];
+      else if (r === 5) o.flags.push(`f${rnd(50)}`);
+      else if (r === 6 && o.flags.length > 1) o.flags.splice(rnd(o.flags.length), 1 + rnd(2));
+      else if (r === 7) o.day = rnd(30);
+      else o.player.stats = rnd(2) ? { lust: rnd(100) } : 'gone'; // type change → whole Copy
+    }
+    return o;
+  };
+  const flat = (v, p = [], out = new Map()) => {
+    if (v === null || typeof v !== 'object') return out.set(p.join('.'), v);
+    for (const k of Object.keys(v)) flat(v[k], [...p, k], out);
+    return out;
+  };
+  for (let run = 0; run < 300; run++) {
+    let vars = { player: { money: 28480799, items: { partySupplies: 0 }, stats: { lust: 40 } }, day: 1, flags: ['a', 'b'] };
+    const history = [{ title: 'p0', variables: vars }];
+    for (let i = 1; i < 1 + rnd(6); i++) history.push({ title: `p${i}`, variables: (vars = mutate(vars)) });
+    const index = rnd(history.length);
+    const delta = historyDeltaEncode(history);
+    assert.deepEqual(decodeDelta(delta), history, 'reference decode');
+    const res = await analyzeFile('save.json', JSON.stringify({ id: 's', state: { delta, index }, date: 1 }));
+    assert.ok(res.ok);
+    const r = resolveSugarCubeSave(res.doc.root);
+    const got = new Map([...r.current.values()].map((c) => [c.path.join('.'), res.doc.node(c.nodeId).value]));
+    const want = flat(history[index].variables);
+    assert.deepEqual(new Map([...got].sort()), new Map([...want].sort()), `run ${run}, index ${index}/${history.length}`);
+    // the editor labels exactly the current values as $variables
+    const shown = res.doc.menu.all.filter((e) => e.category !== 'internal' && e.label.startsWith('$')).map((e) => [e.label.slice(1), res.doc.node(e.nodeId).value]);
+    assert.deepEqual(new Map(shown.sort()), new Map([...want].sort()));
+  }
+});
+
+test('SugarCube saves stored with LZString compressToUTF16 (trailing space) decode, edit and rebuild', async () => {
+  const LZ = await import('../src/core/lzstring.js');
+  const { analyzeFile, EditSession } = await import('../src/core/document.js');
+  const raw = LZ.compressToUTF16(JSON.stringify({ id: 'x', state: { history: [{ title: 'A', variables: { player: { money: 28480799 } } }], index: 0 }, date: 1 }));
+  assert.ok(raw.endsWith(' '));
+  const res = await analyzeFile('slot', raw);
+  assert.ok(res.ok, res.reasons?.join('; '));
+  const e = res.doc.menu.all.find((x) => x.label === '$player.money');
+  assert.equal(res.doc.node(e.nodeId).value, 28480799);
+  const s = new EditSession(res.doc);
+  s.set({ id: e.nodeId, value: '1' });
+  const out = await s.export();
+  assert.ok(out.validation.ok, out.validation.problems.join('; '));
+  const txt = typeof out.bytes === 'string' ? out.bytes : new TextDecoder().decode(out.bytes);
+  assert.ok(txt.endsWith(' '), 'still UTF-16 LZString');
+  assert.equal(JSON.parse(LZ.decompressFromUTF16(txt)).state.history[0].variables.player.money, 1);
+});
+
+test('share codes carry a save between the Save Editor and the trainer; exact SugarCube paths are understood', async () => {
+  const { encodeShare, decodeShare, SHARE_PREFIX } = await import('../src/core/share.js');
+  const text = encodeShare({ name: 'pasted-save.txt', input: 'N4Ig...', engine: 'sugarcube' });
+  assert.ok(text.startsWith(SHARE_PREFIX));
+  assert.deepEqual((({ name, input, engine, shared }) => ({ name, input, engine, shared }))(decodeShare(text)), { name: 'pasted-save.txt', input: 'N4Ig...', engine: 'sugarcube', shared: true });
+  const bytes = new Uint8Array([0, 1, 2, 250, 255]);
+  assert.deepEqual([...decodeShare(encodeShare({ name: 'f.save', input: bytes })).input], [...bytes]);
+  assert.equal(decodeShare('  {"plain":"save"} ').input, '{"plain":"save"}');
+  assert.throws(() => decodeShare(`${SHARE_PREFIX}garbage!!`), /damaged/);
+  const { parseStatePath } = await import('../src/trainer/inject.js');
+  assert.deepEqual(parseStatePath('player.money'), ['variables', 'player', 'money']);
+  assert.deepEqual(parseStatePath('$player.money'), ['variables', 'player', 'money']);
+  assert.deepEqual(parseStatePath('State.variables.player.money'), ['variables', 'player', 'money']);
+  assert.deepEqual(parseStatePath('SugarCube.State.variables.inv[2]'), ['variables', 'inv', '2']);
+  assert.deepEqual(parseStatePath('_cost'), ['temporary', 'cost']);
+  assert.deepEqual(parseStatePath('State.temporary.cost'), ['temporary', 'cost']);
+  // search: an exact path outranks everything else
+  const { searchEntries } = await import('../src/trainer/search.js');
+  const p = {
+    entries: [
+      { nodeId: 'a', label: '$player.moneyBank', path: 'State.variables.player.moneyBank', key: 'moneyBank', category: 'currency' },
+      { nodeId: 'b', label: '$player.money', path: 'State.variables.player.money', key: 'money', category: 'currency' },
+    ],
+    node: () => ({ type: 'int', editable: true }),
+    value: () => 5,
+  };
+  for (const q of ['player.money', '$player.money', 'State.variables.player.money']) assert.equal(searchEntries(p, q).results[0].entry.nodeId, 'b', q);
+});

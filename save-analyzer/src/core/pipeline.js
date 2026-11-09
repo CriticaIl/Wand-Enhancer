@@ -233,13 +233,15 @@ export async function analyzeText(text, prefix, ctx = {}) {
 
   const compact = trimmed;
   for (const v of LZ_VARIANTS) {
-    if (!v.test(compact)) continue;
-    const out = LZ.tryDecompress(v.dec, compact);
+    // compressToUTF16 output ends with a space (part of the stream): never test it trimmed
+    const src = v.dec === LZ.decompressFromUTF16 ? text : compact;
+    if (!v.test(src)) continue;
+    const out = LZ.tryDecompress(v.dec, src);
     if (!out || printableRatio(out) < 0.95) continue;
     const inner = await analyzeText(out, prefix, { ...c, depth: c.depth + 1 });
     if (inner) {
       // Only claim LZ-String when re-compressing reproduces the input exactly.
-      if (v.enc(out) !== compact) c.trace.push(`${v.label}: decompressed, but re-compression differs from the original (edits still produce a valid stream).`);
+      if (v.enc(out) !== src) c.trace.push(`${v.label}: decompressed, but re-compression differs from the original (edits still produce a valid stream).`);
       return wrap(inner, text, { label: v.label, encode: async (s) => v.enc(s) });
     }
   }

@@ -240,6 +240,8 @@ export class LiveProvider extends BaseProvider {
     if (sp) {
       for (const se of sp.entries) {
         if (this.saveToLive.has(se.nodeId)) continue;
+        // engine internals (e.g. superseded SugarCube moments) stay in “Saves in storage” only
+        if (se.category === 'internal') continue;
         extra.push({ ...se, nodeId: SAVE_PREFIX + se.nodeId, origin: 'save', saveId: se.nodeId, en: undefined });
       }
     }

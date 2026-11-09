@@ -5,6 +5,7 @@
 // never by file name alone. A profile only adds presentation; parsing and
 // rebuilding always go through the generic pipeline.
 
+import { resolveSugarCubeSave } from './sugarcube-moments.js';
 import { walk } from '../core/model.js';
 
 export const kindOf = (n) => (n.type === 'embedded' ? n.meta.innerType : n.type);
@@ -179,7 +180,7 @@ export function classifyByEngine(node, parents) {
       if (node.key === '@c') return { hidden: true, category: 'internal' };
       return rpgMaker(node, parents.slice(i + 1).filter((c) => c.key !== '@a'));
     }
-    if (isSugarCubeSave(p)) return sugarCube(node, parents.slice(i + 1));
+    if (isSugarCubeSave(p)) return sugarCube(node, parents.slice(i + 1), p);
     if (isStorageDump(p)) {
       const top = parents[i + 1] || node;
       if (top === node || top.key !== 'localStorage') {
@@ -197,6 +198,12 @@ export function classifyByEngine(node, parents) {
 /** Marks structural fields that must never be edited (engine bookkeeping). */
 export function lockStructuralFields(root) {
   walk(root, (n, parents) => {
+    let sc = null;
+    for (let i = parents.length - 1; i >= 0 && !sc; i--) if (isSugarCubeSave(parents[i])) sc = parents[i];
+    if (sc && resolveSugarCubeSave(sc)?.opNodes.has(n.id)) {
+      n.editable = false;
+      n.meta.readOnlyReason = 'SugarCube diff operation code: changing it would corrupt the save history.';
+    }
     if (n.key === '@c' && n.type === 'int' && parents.some(isRpgMakerSave)) {
       n.editable = false;
       n.meta.readOnlyReason = 'RPG Maker JsonEx object id (editing it would break the save).';
@@ -250,14 +257,44 @@ function rpgMaker(node, chain) {
   return null;
 }
 
-function sugarCube(node, chain) {
+function sugarCube(node, chain, save) {
   const keys = chain.map((c) => c.key);
-  // state.history[i].variables.X  or state.delta[0].variables.X
-  const vi = keys.indexOf('variables');
-  if (keys[0] === 'state' && vi >= 0) {
+  // state.history[i].variables.X  or  state.delta[k].variables.X (delta-encoded history)
+  if (keys[0] === 'state' && (keys[1] === 'delta' || keys[1] === 'history') && keys[3] === 'variables') {
+    const r = save ? resolveSugarCubeSave(save) : null;
+    if (r && r.opNodes.has(node.id)) return { hidden: true, category: 'internal', note: 'SugarCube diff operation code (part of the save structure).' };
+    const info = r && r.byNode.get(node.id);
+    if (info) {
+      const name = info.path.join('.');
+      if (info.current) {
+        return {
+          label: `$${name}`,
+          scope: `current moment ${r.index + 1}/${r.total}${info.moment !== r.index ? ` · stored in ${keys[1]}[${info.moment}]` : ''}`,
+          path: `State.variables.${name}`,
+          note: r.encoding === 'delta' && r.total > 1 ? `Current value of $${name} (${r.indexNote}; delta-encoded history resolved like SugarCube's patch()).` : null,
+        };
+      }
+      return {
+        hidden: true,
+        category: 'internal',
+        label: `$${name} (moment ${info.moment + 1}, not current)`,
+        scope: `${keys[1]}[${info.moment}]`,
+        path: `State.variables.${name}`,
+        note: info.supersededBy !== null ? `Older/other moment: the game loads $${name} from moment ${info.supersededBy + 1}. Editing this field does not change the current value.` : `Not part of the current moment ${r.index + 1}.`,
+      };
+    }
     const moment = keys[2];
-    const rest = keys.slice(vi + 1);
+    const rest = keys.slice(4);
     return { label: `$${[...rest, node.key].join('.')}`, scope: `${keys[1]}[${moment}]`, path: `State.variables.${[...rest, node.key].join('.')}` };
+  }
+  // live SugarCube: State.temporary (_vars) and setup (story data)
+  if (keys[0] === 'temporary') {
+    const name = [...keys.slice(1), node.key].join('.');
+    return { label: `_${name}`, scope: 'temporary (this passage)', path: `State.temporary.${name}` };
+  }
+  if (keys[0] === 'setup') {
+    const name = [...keys.slice(1), node.key].join('.');
+    return { label: `setup.${name}`, scope: 'setup (story data)', path: `setup.${name}` };
   }
   return { hidden: true, category: 'internal' };
 }

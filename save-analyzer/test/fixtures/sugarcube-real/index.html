@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fixture Story (SugarCube)</title>
+<!-- Regression fixture (SaveForge 2.0): a story shaped like a published SugarCube 2
+     game, built to test the exact path State.variables.player.money.
+       - <tw-storydata format="SugarCube" format-version="2.36.1">, script#script-sugarcube,
+         #passages and #ui-bar, like a published story
+       - window.SugarCube is a sealed, prototype-less object; State.variables and
+         State.temporary are getters; every passage creates a new history moment
+         holding a CLONE of the variables (like SugarCube)
+       - saves are stored like SugarCube 2.36: localStorage "(Saved Games)<id>.saves"
+         = LZString.compressToUTF16(JSON {autosave, slots}), each save holding
+         state.delta (delta-encoded history) and state.index
+     Query parameters:
+       ?init=ms   publish window.SugarCube only after this delay (late start)
+       ?hidden=1  never publish window.SugarCube (builds that keep State private)
+       ?go=Shop,Street  play these passages after the start -->
+<style>
+  body { margin: 0; font: 16px system-ui, sans-serif; background: #111; color: #eee; display: flex; }
+  #ui-bar { width: 140px; padding: 10px; background: #222; font-size: 14px; }
+  #story { flex: 1; padding: 12px; }
+  a { color: #68d; cursor: pointer; }
+</style>
+<script src="/demo-games/crystal-quest/lz-string.min.js"></script>
+</head>
+<body>
+<tw-storydata name="Fixture Story" startnode="1" creator="Twine" creator-version="2.6.2" ifid="A7E1D2C4-0000-4000-8000-000000000001" format="SugarCube" format-version="2.36.1" options="" hidden>
+  <tw-passagedata pid="1" name="Start" tags="">Welcome.</tw-passagedata>
+  <tw-passagedata pid="2" name="Shop" tags="">Shop.</tw-passagedata>
+  <tw-passagedata pid="3" name="Street" tags="">Street.</tw-passagedata>
+</tw-storydata>
+<div id="ui-bar"><div id="hud"></div></div>
+<div id="story"><div id="passages"></div></div>
+<script id="script-sugarcube">
+(function () {
+  var params = new URLSearchParams(location.search);
+  var STORY_ID = 'fixture';
+  // ---- SugarCube-style history: every moment is {title, variables}; navigation clones
+  var history = [];
+  var active = -1;
+  var temporary = {};
+  var clone = function (v) { return JSON.parse(JSON.stringify(v)); };
+  // SugarCube's diff (lib/helpers.js) — used for the delta-encoded history in saves
+  function diff(orig, dest) {
+    var origIsArray = Array.isArray(orig);
+    var keys = Object.keys(orig).concat(Object.keys(dest)).sort().filter(function (v, i, a) { return i === 0 || a[i - 1] !== v; });
+    var out = {}; var aOpRef;
+    keys.forEach(function (key) {
+      var o = orig[key], d = dest[key];
+      if (orig.hasOwnProperty(key)) {
+        if (dest.hasOwnProperty(key)) {
+          if (o === d) return;
+          if (typeof o === typeof d && typeof o === 'object' && o !== null && d !== null && Array.isArray(o) === Array.isArray(d)) { var r = diff(o, d); if (r !== null) out[key] = r; }
+          else out[key] = [2, clone(d)];
+        } else if (origIsArray && /^\d+$/.test(key)) {
+          var n = Number(key);
+          if (!aOpRef) { aOpRef = ''; do { aOpRef += '~'; } while (keys.indexOf(aOpRef) >= 0); out[aOpRef] = [1, n, n]; }
+          if (n < out[aOpRef][1]) out[aOpRef][1] = n;
+          if (n > out[aOpRef][2]) out[aOpRef][2] = n;
+        } else out[key] = 0;
+      } else out[key] = [2, clone(d)];
+    });
+    return Object.keys(out).length ? out : null;
+  }
+  function deltaEncode(h) { var d = [clone(h[0])]; for (var i = 1; i < h.length; i++) d.push(diff(h[i - 1], h[i]) || {}); return d; }
+
+  var passages = {
+    Start: function (v) {
+      v.player = v.player || { name: 'Max', money: 28480799, items: { partySupplies: 0, flowers: 1 }, stats: { lust: 40, hygiene: 40, happiness: 98 } };
+      v.day = v.day || 1;
+      v.flags = v.flags || ['intro'];
+      return 'You wake up. <a class="link-internal" data-passage="Shop">Go to the shop</a>';
+    },
+    Shop: function (v) {
+      v.player.money -= 10799;
+      v.player.items.partySupplies += 2;
+      temporary.cost = 10799;
+      return 'You buy party supplies. <a class="link-internal" data-passage="Street">Leave</a>';
+    },
+    Street: function (v) {
+      v.day += 1;
+      v.flags.push('street');
+      return 'A new day. <a class="link-internal" data-passage="Shop">Back to the shop</a>';
+    },
+  };
+  function render() {
+    var v = history[active].variables;
+    document.getElementById('passages').innerHTML = '<div class="passage">' + passages[history[active].title].html + '</div>';
+    document.getElementById('hud').textContent = '💵 ' + v.player.money + ' · Day ' + v.day;
+  }
+  function play(title) {
+    var vars = active >= 0 ? clone(history[active].variables) : {};
+    history = history.slice(0, active + 1);
+    temporary = {};
+    var html = passages[title](vars);
+    history.push({ title: title, variables: vars });
+    active = history.length - 1;
+    passages[title].html = html;
+    render();
+    autosave();
+  }
+  function marshal() { return { delta: deltaEncode(history), index: active }; }
+  var KEY = '(Saved Games)' + STORY_ID + '.saves';
+  function readSaves() { var raw = localStorage.getItem(KEY); return raw ? JSON.parse(LZString.decompressFromUTF16(raw)) : { autosave: null, slots: [null, null, null] }; }
+  function writeSaves(s) { localStorage.setItem(KEY, LZString.compressToUTF16(JSON.stringify(s))); }
+  function saveObj() { return { id: STORY_ID, state: marshal(), title: history[active].title, date: Date.now(), metadata: {}, version: 1 }; }
+  function autosave() { var s = readSaves(); s.autosave = saveObj(); writeSaves(s); }
+  var Save = {
+    slots: { save: function (i) { var s = readSaves(); s.slots[i] = saveObj(); writeSaves(s); }, get: function (i) { return readSaves().slots[i]; } },
+    autosave: { get: function () { return readSaves().autosave; } },
+    // SugarCube's "Save to Disk" file content: LZString base64 of the save JSON
+    exportText: function () { return LZString.compressToBase64(JSON.stringify(readSaves().autosave)); },
+  };
+  var State = {};
+  Object.defineProperties(State, {
+    variables: { get: function () { return history[active].variables; } },
+    temporary: { get: function () { return temporary; } },
+    passage: { get: function () { return history[active].title; } },
+    active: { get: function () { return history[active]; } },
+    length: { get: function () { return active + 1; } },
+    size: { get: function () { return history.length; } },
+  });
+  State.marshalForSave = marshal;
+  var Engine = { play: play, show: function () { render(); } };
+  var setup = { shopPrices: { partySupplies: 10799 }, dialogue: { 'Olivia Livingroom Phone 1': { De: 'Naja...', Es: 'No es para tanto', Fr: 'Non, pas vraiment' } } };
+  var Story = { title: 'Fixture Story', domId: STORY_ID, lookupWith: function () { return ['Start', 'Shop', 'Street'].map(function (t) { return { title: t }; }); } };
+
+  document.addEventListener('click', function (e) {
+    var p = e.target.getAttribute && e.target.getAttribute('data-passage');
+    if (p) { e.preventDefault(); play(p); }
+  });
+  play('Start');
+  (params.get('go') || '').split(',').filter(Boolean).forEach(play);
+  window.__fixture = { Save: Save, play: play, history: function () { return history; } }; // test hook (not part of SugarCube)
+  if (params.get('hidden') === '1') return;
+  var publish = function () {
+    Object.defineProperty(window, 'SugarCube', {
+      value: Object.seal(Object.assign(Object.create(null), { State: State, Engine: Engine, Story: Story, Save: Save, setup: setup, version: { title: 'SugarCube', short: function () { return '2.36.1'; } } })),
+    });
+  };
+  var delay = Number(params.get('init') || 0);
+  if (delay) setTimeout(publish, delay); else publish();
+})();
+</script>
+</body>
+</html>

@@ -9,6 +9,10 @@ import { checkDisplay, detectRenderer, engineRedraw, patchVisibleNumber, redrawC
 import { searchEntries, SUGGESTIONS } from './search.js';
 import { LiveProvider, SECTIONS, STATUS } from './providers.js';
 import { createLinkerUI } from './linker-ui.js';
+import { analyzeFile } from '../core/document.js';
+import { decodeShare, encodeShare } from '../core/share.js';
+import { ImportedProvider, matchImported } from './imported.js';
+import { resolveSugarCubeSave, isSugarCubeSaveNode } from '../adapters/sugarcube-moments.js';
 import { TRAINER_CSS } from './styles.js';
 
 let ROW_H = 56; // 44 in compact view
@@ -416,6 +420,7 @@ export function mountTrainer(win, opts) {
       if (hub.stale) items.push({ kind: 'nav', label: 'The game saved new progress', icon: 'info', count: '', hint: 'Your pending save edits were made on older save data. Open to write them anyway is refused; sync to discard them and read the new save.', view: { type: 'apply' } });
       items.push({ kind: 'action', label: 'Sync save variables', icon: 'refresh', hint: `Read the game’s saves again with the Save Editor’s detection (${savesOf(p)?.entries.length || 0} save variables now${hub.auto ? ', synced automatically while the trainer is open' : ''}).`, run: () => (syncSaves(), undefined) });
     }
+    items.push({ kind: 'nav', label: 'Import from Save Editor', icon: 'shield', count: '', hint: 'Bring a save decoded by the SaveForge Save Editor (share code or pasted save text) into the trainer as SAVE variables. You confirm first.', view: { type: 'import' } });
     items.push({ kind: 'nav', label: 'Button & Textbox Linker', icon: 'link', count: linkerUI ? linkerUI.linker.list().length || '' : '', hint: 'Advanced: inspect what a game button or field is connected to, and link it to another action (only after you confirm).', view: { type: 'linker' } });
     items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
     return items;
@@ -452,7 +457,7 @@ export function mountTrainer(win, opts) {
       clear(compatEl).append(h('span', { class: `cdot ${c.level}` }), c.label);
     }
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : v.type === 'import' ? 'Import from Save Editor' : v.type === 'impexport' ? 'Export imported save' : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -492,6 +497,8 @@ export function mountTrainer(win, opts) {
     if (v.type === 'display') return renderDisplay(v.id);
     if (v.type === 'settings') return renderSettings();
     if (/^link/.test(v.type)) return getLinkerUI().render(v);
+    if (v.type === 'import') return renderImport(v);
+    if (v.type === 'impexport') return renderImportExport();
     if (v.type === 'locks') {
       const p = S.provider;
       const entries = [...(p.locks?.keys() || [])].map((id) => p.entryById.get(id)).filter(Boolean);
@@ -679,6 +686,7 @@ export function mountTrainer(win, opts) {
   /** LIVE / SAVE / LIVE+SAVE, shown once save variables are part of the list. */
   function originTag(e) {
     const p = S.provider;
+    if (p?.imported) return h('span', { class: 'otag o-save', title: 'Imported save: not the running game' }, 'SAVE · IMPORTED');
     if (!p?.hasSaves?.()) return null;
     const o = p.originOf(e.nodeId);
     return h('span', { class: `otag o-${o.replace('+', '')}`, title: o === 'live' ? 'Live: changes the running game' : o === 'save' ? 'Save: written to the game’s save (needs a reload or export)' : 'Live + Save: the running game and its save, linked by a verified mapping' }, o === 'live+save' ? 'LIVE+SAVE' : o.toUpperCase());
@@ -1272,6 +1280,132 @@ export function mountTrainer(win, opts) {
     setDesc('Save edits are written to the game’s storage. The running game sees them after it loads the save.', 'reload');
   }
 
+  // ---------- import from the Save Editor (different site: share code through the clipboard)
+  function renderImport(v) {
+    const sheet = h('div', { class: 'sheet' }, h('h2', null, 'Import from Save Editor'));
+    bodyEl.append(sheet);
+    if (!v.preview) {
+      const ta = h('textarea', { class: 'field', placeholder: 'Paste the share code from the Save Editor (Export → Copy share code), or a save text', autocapitalize: 'off', spellcheck: false, style: 'min-height:120px' });
+      const err = h('div');
+      const read = async () => {
+        clear(err);
+        try {
+          const sh = decodeShare(ta.value);
+          const res = await analyzeFile(sh.name, sh.input);
+          if (!res.ok) throw new Error(`The save could not be decoded: ${res.reasons.slice(0, 2).join('; ')}`);
+          const sp = hub ? await hub.ensure() : null;
+          v.preview = { sh, doc: res.doc, match: matchImported(res.doc, sp) };
+          renderAll();
+        } catch (e) {
+          err.append(h('div', { class: 'badbox' }, e.message));
+        }
+      };
+      sheet.append(
+        h('p', { class: 'note' }, 'The Save Editor runs on another site, so browsers keep the two apart. In the Save Editor: Export → Copy share code. Then paste it here. Nothing is imported until you confirm.'),
+        ta,
+        h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: read }, 'Read'), h('button', { class: 'btn', onclick: back }, 'Cancel')),
+        err,
+      );
+      setDesc('Paste a share code from the Save Editor.');
+      return;
+    }
+    const { sh, doc: d, match } = v.preview;
+    const sc = [...d.index.byId.values()].filter((n) => n.children && isSugarCubeSaveNode(n)).map((n) => resolveSugarCubeSave(n)).filter(Boolean)[0];
+    const visible = d.menu.all.filter((e) => e.category !== 'internal').length;
+    sheet.append(
+      h('dl', { class: 'kv' },
+        h('dt', null, 'Save'), h('dd', null, sh.name),
+        h('dt', null, 'Format'), h('dd', null, d.engine.name),
+        h('dt', null, 'Variables'), h('dd', null, `${visible} (of ${d.index.byId.size} fields)`),
+        sc ? [h('dt', null, 'Current moment'), h('dd', null, `${sc.index + 1} of ${sc.total} (${sc.encoding === 'delta' ? 'delta-encoded history, resolved like SugarCube' : 'history'}; ${sc.indexNote})`)] : null,
+        sh.at ? [h('dt', null, 'Shared'), h('dd', null, new Date(sh.at).toLocaleString())] : null,
+      ),
+      h('div', { class: 'warnbox' }, 'These values are a copy of the save, not the running game. They are listed as SAVE · IMPORTED. Editing them never changes the game until you export them or write them into the game’s matching save.'),
+      match ? h('div', { class: 'okbox' }, `Matching save in this game: ${hub?.provider?.sourceOf(match.storageId) || match.storageId} — ${match.how}. Edits can be written into it (verified, with a backup).`) : h('p', { class: 'note' }, 'No identical save was found in this game’s storage, so edits can only be exported (file or share code).'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => confirmImport(v.preview) }, 'Import as SAVE variables'), h('button', { class: 'btn', onclick: () => ((v.preview = null), renderAll()) }, 'Back')),
+    );
+    setDesc('Check the save, then confirm the import.');
+  }
+  async function confirmImport(pv) {
+    const p = new ImportedProvider(pv.doc, { shared: pv.sh.shared, at: pv.sh.at, original: pv.sh.input, match: pv.match });
+    try {
+      await store?.addBackup?.({ kind: 'imported', title: `Imported ${pv.doc.name}`, name: pv.doc.name, original: typeof pv.sh.input === 'string' ? pv.sh.input : null });
+    } catch {
+      /* backup list unavailable: the original stays downloadable from Export */
+    }
+    const src = { id: 'imported', label: `Imported: ${pv.doc.name}`, channel: 'file', create: async () => p };
+    S.providers.delete('imported');
+    const i = opts.sources.findIndex((x) => x.id === 'imported');
+    if (i >= 0) opts.sources.splice(i, 1, src);
+    else opts.sources.push(src);
+    renderSources();
+    await selectSource('imported');
+    toast(`Imported ${pv.doc.name}: SAVE values, not live`);
+  }
+  function renderImportExport() {
+    const p = S.provider;
+    if (!p?.imported) return back();
+    const match = p.meta.match || matchImported(p.doc, hub?.provider);
+    const sheet = h(
+      'div',
+      { class: 'sheet' },
+      h('h2', null, `Export ${p.pendingCount()} change(s)`),
+      h('ul', null, p.session.diff().slice(0, 40).map((d) => h('li', null, `${p.entryById.get(d.id)?.label || d.node.key}: ${show(d.before)} → ${show(d.after)}`))),
+      h('div', { class: 'btns' },
+        h('button', { class: 'btn go', onclick: () => exportImported('file') }, 'Download edited save'),
+        h('button', { class: 'btn', onclick: () => exportImported('share') }, 'Copy share code for the Save Editor'),
+        h('button', { class: 'btn', onclick: () => downloadBytes(typeof p.meta.original === 'string' ? new TextEncoder().encode(p.meta.original) : p.meta.original, `${p.doc.name}.original`) }, 'Download original'),
+      ),
+      h('p', { class: 'note' }, 'Both are re-decoded and verified before you get them.'),
+      h('h3', null, 'Write into the game’s save'),
+      match && hub?.provider
+        ? h('div', null, h('p', { class: 'note' }, `Verified destination: ${hub.provider.sourceOf(match.storageId)} — ${match.how}. The changes are added to the game’s save as pending edits; then use Write saves (verified, with a backup).`), h('div', { class: 'btns' }, h('button', { class: 'btn warn', onclick: () => transferImported(match) }, 'Add to the game’s save')))
+        : h('p', { class: 'note' }, 'Not available: no save in this game’s storage is verifiably the same save (same SugarCube story id and save date, or identical data). Export instead.'),
+    );
+    bodyEl.append(sheet);
+    setDesc('Imported save edits: export them, or write them into the matching game save.');
+  }
+  async function exportImported(how) {
+    const p = S.provider;
+    try {
+      const out = await p.session.export();
+      if (!out.validation.ok) throw new Error(`Verification failed: ${out.validation.problems.slice(0, 2).join('; ')}`);
+      if (how === 'file') {
+        downloadBytes(typeof out.bytes === 'string' ? new TextEncoder().encode(out.bytes) : out.bytes, out.filename || p.doc.name);
+        toast('Edited save downloaded (verified)');
+      } else {
+        const code = encodeShare({ name: out.filename || p.doc.name, input: out.bytes, engine: p.doc.engine.id });
+        try {
+          await win.navigator.clipboard.writeText(code);
+          toast('Share code copied: paste it into the Save Editor (Paste save text)');
+        } catch {
+          const ta = h('textarea', { class: 'field report', readonly: 'readonly' });
+          ta.value = code;
+          bodyEl.append(h('div', { class: 'sheet' }, h('h3', null, 'Share code'), ta));
+          ta.select();
+        }
+      }
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+  async function transferImported(match) {
+    const p = S.provider;
+    const sp = hub?.provider;
+    if (!sp) return toast('The game’s saves are not available', true);
+    const { changes, skipped } = match.transfer(p.session.edits);
+    if (!changes.length) return toast('None of these edits are in the current moment of the game’s save', true);
+    if (!win.confirm(`Add ${changes.length} change(s) to the game’s save ${sp.sourceOf(match.storageId)}?${skipped.length ? ` (${skipped.length} edit(s) of older moments are skipped)` : ''} They stay pending until you tap Write saves.`)) return;
+    try {
+      sp.set(changes.map((c) => ({ id: c.id, value: typeof c.value === 'number' ? String(c.value) : c.value })), 'From imported save');
+      toast(`${changes.length} change(s) added to the game’s save: Write saves to keep them`);
+      await selectSource(opts.sources.find((x) => x.id === 'storage') ? 'storage' : S.sourceId);
+      push({ type: 'apply' });
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
   async function doWriteNow() {
     try {
       toast('Verifying and writing…');
@@ -1450,6 +1584,7 @@ export function mountTrainer(win, opts) {
       h('h3', null, 'Engines'),
       d.engines.length ? h('ul', null, d.engines.map((e) => h('li', null, h('b', null, e.name), ` — ${e.channel === 'live' ? 'live' : e.channel === 'live-generic' ? 'live (generic)' : e.channel}${e.evidence ? ` · ${e.evidence}` : ''}`))) : h('p', null, 'No supported engine globals on this page.'),
       d.limitations.length ? h('div', null, d.limitations.map((l) => h('div', { class: 'warnbox' }, h('b', null, l.name), ' — ', l.reason))) : null,
+      d.sugarcube && (d.sugarcube.connected || d.sugarcube.verdict !== 'none') ? sugarCubeBlock(d.sugarcube) : null,
       h('h3', null, `Frames on this page (${d.frames.length})`),
       d.frames.length
         ? d.frames.map((f) =>
@@ -1474,6 +1609,33 @@ export function mountTrainer(win, opts) {
         ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
         : null,
     ));
+  }
+
+  /** Can the trainer reach the running SugarCube State, and why (not)? Plus an exact path lookup. */
+  function sugarCubeBlock(sc) {
+    const cls = sc.connected ? 'okbox' : ['not-started', 'frame', 'other-site-frame'].includes(sc.verdict) ? 'warnbox' : 'badbox';
+    const label = { direct: 'Live: connected directly', bridge: 'Live: connected through the page bridge', frame: 'In a child frame', 'other-site-frame': 'Game in another site’s frame', 'not-started': 'Story not started yet', hidden: 'Live state not reachable', blocked: 'Live state not reachable', none: 'Not a SugarCube story' }[sc.verdict] || sc.verdict;
+    const q = h('input', { class: 'field', type: 'search', value: 'player.money', autocapitalize: 'none', autocorrect: 'off', spellcheck: false, 'aria-label': 'State path' });
+    const out = h('div', { class: 'sclookup' });
+    const look = () => {
+      clear(out);
+      const r = sc.lookup(q.value);
+      if (r.error) return void out.append(h('div', { class: 'badbox' }, r.error));
+      const expr = `State.${r.path[0]}.${r.path.slice(1).join('.')}`;
+      if (!r.found) return void out.append(h('div', { class: 'warnbox' }, `${expr} does not exist in the live State (checked in the current moment).`));
+      const listed = S.provider?.entries?.find((e) => e.path === expr || e.path === `State.${r.path[0]}.${r.path.slice(1).join('.')}`);
+      out.append(h('div', { class: 'okbox' }, h('b', null, expr), ` = ${typeof r.value === 'object' ? JSON.stringify(r.value).slice(0, 80) : String(r.value)} (${r.type}) — LIVE`, h('div', null, listed ? `In the trainer as ${listed.label}.` : 'Open the SugarCube source to edit it.')));
+    };
+    q.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), look(), q.blur()));
+    return h(
+      'div',
+      null,
+      h('h3', null, 'SugarCube'),
+      h('div', { class: cls }, h('b', null, label), ' — ', sc.reason),
+      sc.steps?.length ? h('ul', null, sc.steps.map((st) => h('li', null, `${st.ok ? '✓' : '✕'} ${st.text}`))) : null,
+      h('div', { class: 'btns' }, q, h('button', { class: 'btn go', onclick: look }, 'Look up')),
+      out,
+    );
   }
 
   /**
@@ -1737,6 +1899,8 @@ export function mountTrainer(win, opts) {
     const sp = savesOf(p);
     if (sp && sp.pendingCount()) {
       toolsEl.append(h('button', { class: 'tool primary', onclick: () => push({ type: 'apply' }) }, p.kind === 'storage' ? 'Apply & Reload ' : 'Write saves ', h('span', { class: 'n' }, sp.pendingCount())));
+    } else if (p && p.imported) {
+      toolsEl.append(h('button', { class: 'tool primary', onclick: () => push({ type: 'impexport' }) }, 'Export ', h('span', { class: 'n' }, p.pendingCount())));
     } else if (p && p.kind === 'file' && opts.onExport) {
       toolsEl.append(h('button', { class: 'tool', style: 'flex:2', onclick: opts.onExport }, `Export${p.pendingCount() ? ` (${p.pendingCount()})` : ''}`));
     }
@@ -1787,6 +1951,21 @@ export function mountTrainer(win, opts) {
       opts.onClose?.();
     },
     provider: () => S.provider,
+    /** New sources found after opening (e.g. a SugarCube story that started late). */
+    addSources(list, { select = false, note = '' } = {}) {
+      const added = [];
+      for (const src of list) {
+        if (opts.sources.some((x) => x.id === src.id)) continue;
+        opts.sources.unshift(src);
+        added.push(src);
+      }
+      if (!added.length) return;
+      if (opts.engineInfoRefresh) opts.engineInfo = opts.engineInfoRefresh();
+      renderSources();
+      if (note) toast(note);
+      const cur = S.provider;
+      if (select && (!cur || cur.kind !== 'live' || !cur.touched?.size)) selectSource(added[0].id);
+    },
     selectSource,
     root: shadow,
   };

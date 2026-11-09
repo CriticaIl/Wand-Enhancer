@@ -1,6 +1,17 @@
-# SaveForge 1.9 on iPhone: install, test and what to expect
+# SaveForge 2.0 on iPhone: install, test and what to expect
 
-## What's new in 1.9
+## What's new in 2.0 (SugarCube)
+- **Live `State.variables`:** found directly, or through a page bridge when the userscript runs isolated from the page. It is also found when the story starts after SaveForge opened. `$player.money` is a LIVE variable; search `player.money` or `$player.money`.
+- **Diagnostics → SugarCube:** says step by step whether the live State is reachable and why not, with **Look up** for an exact path. Type `player.money` and you see its live value, or the reason it can't be read.
+- **Saves are read at their current moment:** for a delta-encoded save, `delta[0]` is only the first moment. The Save Editor and the trainer now show the value the game actually loads (`state.index`).
+- **Fixed:** SugarCube saves stored in localStorage with LZString UTF-16 were not decoded at all.
+- **Save Editor → trainer:** Export → *Copy share code*, then in the trainer *Import from Save Editor* → paste → confirm. The values are SAVE · IMPORTED, and you can export them or write them into the game's matching save.
+
+**Try this on tukann.itch.io:** open the game, open SaveForge, then Diagnostics → SugarCube.
+- **It says "Live: connected":** search `player.money` and edit it.
+- **It says "Live state not reachable":** the reason is listed. The game's saves and *Import from Save Editor* still work.
+
+## What was new in 1.9
 - **Save variables in the trainer.** The trainer runs the Save Editor's own save detection on the game's browser saves (localStorage, IndexedDB) and lists those variables next to the live ones, with the same friendly names, categories and search.
 - **Labels:**
   - **LIVE:** applied now and verified.
@@ -68,7 +79,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **1.9.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.0.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -119,7 +130,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 163 tests)
+### Verified by the automated tests (Chromium, 170 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -127,6 +138,17 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**SugarCube (2.0), on a realistic story:** sealed `window.SugarCube`, getter-based `State`, cloned moments, saves stored as SugarCube 2.36 does.
+- **Late start:** `State.variables.player.money` becomes LIVE once the story starts, is found by `player.money`, `$player.money` and `State.variables.player.money`, and is edited and verified. `_temp` variables are listed too.
+- **Isolated userscript world** (a real isolated world in Chromium): the trainer can't see `window.SugarCube`, but the page bridge connects, and an edit changes the page's State.
+- **Delta save:** the live variable is linked to the current moment's field `delta[1]`, not `delta[0]`. Writing the save produces a history whose current moment holds the new value, with `delta[0]` untouched.
+- **State kept private:** Diagnostics names the reason. The game's saves show the current-moment value, and a share code from the Save Editor imports after confirmation, exports a verified file and writes into the matching game save.
+- **Unit tests:**
+  - the current moment matches SugarCube's own decoding on 300 random histories
+  - the UTF-16 LZString round trip
+  - share codes
+  - exact-path parsing and search
 
 **Save variables (1.9):**
 - A generic game's save shows up as SAVE entries next to the LIVE ones. Fields with the same name and value are *not* merged. After a live edit and an in-game save they become one LIVE+SAVE entry, linked by observation.
@@ -179,7 +201,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 1.9.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.0.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

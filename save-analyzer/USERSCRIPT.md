@@ -49,6 +49,15 @@ So it doesn't depend on anything one particular manager offers.
     - **It then reloads the page.** Unsaved in-game progress is lost on reload, so save in-game first.
 - **Undo / redo** are in the toolbar. **Main menu → Backups & restore** puts original values back (live) or restores a storage snapshot.
 
+### SugarCube (Twine) games
+
+- **`$player.money` and the other story variables** are LIVE when SaveForge can reach SugarCube's `State`: directly, or through its page bridge if the userscript runs isolated. Search accepts exact paths: `player.money`, `$player.money` or `State.variables.player.money`.
+- **Diagnostics → SugarCube** shows whether the live State is reachable and, if not, why. **Look up** checks one exact path.
+- **From the online Save Editor:**
+  1. In the editor: Export → **Copy share code**.
+  2. In the trainer: **Import from Save Editor** → paste → confirm.
+  3. The values show as SAVE · IMPORTED. Edit them, then download them, copy them back, or add them to the game's matching save.
+
 ### Save variables (same as the online Save Editor)
 
 When the game keeps saves in the browser, the trainer reads them with the same detection as the SaveForge Save Editor. It lists them next to the live values, tagged:
