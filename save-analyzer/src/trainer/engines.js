@@ -4,7 +4,7 @@
 // closure), it is reported as not live-editable instead of being faked.
 
 import { applyMutation, classifyGlobal, countChanges, sampleNumbers, scoreLeaf, screenNumbers } from './game-state.js';
-import { buildLiveTree } from './live-tree.js';
+import { buildLiveTree, buildLiveTreeAsync } from './live-tree.js';
 import { childId, escapeSegment } from '../core/model.js';
 
 /**
@@ -354,7 +354,14 @@ function genericGlobals(win, hasEngine) {
     return best ? marks[best] : null;
   };
   /** Globals whose variables are inspected one by one (known analytics/ads/library globals are not, unless marked). */
+  let candidateCache = null; // recomputed when the globals are re-classified or a mark changes
   const candidateKeys = () => {
+    if (candidateCache && candidateCache.cls === results && candidateCache.marks === marks && candidateCache.all === engine.includeAll) return candidateCache.keys;
+    const keys = candidateKeysRaw();
+    candidateCache = { cls: results, marks, all: engine.includeAll, keys };
+    return keys;
+  };
+  const candidateKeysRaw = () => {
     const cls = engine.classification();
     const keys = cls.filter((r) => !r.known || markOf(`$/${escapeSegment(r.name)}`) === 'game' || engine.includeAll).map((r) => r.name);
     // `var textes = jeu.textes = {…}`: walk the object where the game keeps it (inside the
@@ -406,7 +413,7 @@ function genericGlobals(win, hasEngine) {
   };
   /** Compares with the previous sample; returns the leaves that changed for the first time. */
   const learn = () => {
-    const now = sampleIds(candidateKeys());
+    const now = sampleIds(candidateKeys(), engine.profile?.observeCap ?? 6000);
     const fresh = [];
     if (lastSample) {
       for (const [id, v] of now) {
@@ -430,7 +437,9 @@ function genericGlobals(win, hasEngine) {
     note: 'Game variables found in the page’s global JavaScript. Each variable is judged on its own (name, type, where it sits, whether it changes while you play, whether its value is on screen), so game state inside a generic object is still found while analytics, ads and page data stay hidden. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
     /** Samples values twice so state that changes while the game runs counts as evidence. */
     async prepare(ms = 500) {
-      await Promise.race([lexical.fetchExternal(), new Promise((r) => win.setTimeout(r, 1500))]);
+      // reading the game's script files (possibly many MB) is skipped in Low Memory Mode;
+      // a Deep scan reads them (Diagnostics says which happened)
+      if (!this.profile?.lowMemory || (this.profile?.maxNodes || 0) >= 100000) await Promise.race([lexical.fetchExternal(), new Promise((r) => win.setTimeout(r, 1500))]);
       collect();
       const first = new Map(pageGlobals.map((k) => [k, sampleNumbers(read(k))]));
       learn();
@@ -444,13 +453,14 @@ function genericGlobals(win, hasEngine) {
       store = s;
       try {
         marks = (await s.get('detection-marks', {})) || {};
+        candidateCache = null;
       } catch {
         marks = {};
       }
     },
     /** Keeps watching while the trainer is open; variables that start changing are promoted. */
     startLearning(every = 2000) {
-      if (learnTimer) return;
+      if (learnTimer || !every) return; // background scanning can be turned off
       learnTimer = win.setInterval(() => {
         let fresh;
         try {
@@ -476,6 +486,7 @@ function genericGlobals(win, hasEngine) {
     mark(id, tier) {
       if (tier === 'game' || tier === 'not') marks[id] = tier;
       else delete marks[id];
+      candidateCache = null;
       persistMarks();
     },
     marks: () => ({ ...marks }),
@@ -514,73 +525,46 @@ function genericGlobals(win, hasEngine) {
       collect();
       classifyAll(null);
     },
-    snapshot() {
-      const cls = this.classification();
-      const kindOf = new Map(cls.map((r) => [r.name, r.kind]));
-      const keys = candidateKeys();
+    /** Scan limits come from the performance profile (Smart Scan / Standard / Deep). */
+    profile: null,
+    walkOpts(keys) {
+      const P = this.profile || { maxNodes: 90000, depth: 10, rootBudget: 20000, textCap: 4000 };
       // each global gets its own budget and text is capped separately, so a huge dialogue or
-      // translation table can no longer use up the scan before deeper game values are reached
-      // (1.6/1.7 regression: one shared breadth-first budget of 40,000 nodes)
-      const t = buildLiveTree(win, { rootKeys: keys, maxNodes: 90000, maxDepth: 10, rootBudget: 20000, maxStrings: 4000, rootLabel: 'window', rootGetters: lexical.getters(keys) });
-      lastReport = { ...t.report, keys, count: t.count, truncated: t.truncated };
-      const screen = safe(() => screenNumbers(win)) || new Set();
-      const report = [];
-      // text inside game-state globals, or next to detected game variables (item names,
-      // dialogue), is kept for search and translation
-      const gameGlobals = new Set(cls.filter((r) => r.kind === 'game').map((r) => r.name));
-      // pass 1: score every primitive leaf on its own
-      const visit = (node, parents) => {
-        if (!node.children) return;
-        const big = node.type === 'array' && node.children.length > 20 && node.children.filter((c) => c.type === 'int' || c.type === 'float').length > 20;
-        for (const c of node.children) {
-          if (c.children) {
-            visit(c, [...parents, c.key]);
-            continue;
-          }
-          if (!['int', 'float', 'bool', 'string'].includes(c.type)) continue;
-          const global = parents[0] ?? c.key;
-          const d = scoreLeaf({
-            key: c.key,
-            type: c.type,
-            value: c.value,
-            parentKeys: parents,
-            globalKind: kindOf.get(global) || 'unknown',
-            inLargeArray: big && (c.type === 'int' || c.type === 'float'),
-            changed: changedIds.has(c.id),
-            onScreen: (c.type === 'int' || c.type === 'float') && Math.abs(c.value) >= 10 && screen.has(c.value),
-            verified: verifiedIds.has(c.id),
-            mark: markOf(c.id),
-          });
-          const leaf = { id: c.id, global, path: [...parents, c.key].join('.'), type: c.type, tier: d.tier, score: d.score, reasons: d.reasons, node: c };
-          report.push(leaf);
-        }
-      };
-      visit(t.root, []);
-      // pass 2: text next to real game variables (item names, quest text…) stays available
-      // for search and translation, but URLs and website fields do not
-      const gameBoxes = new Set(report.filter((l) => l.type !== 'string' && l.tier !== 'excluded').map((l) => l.id.slice(0, l.id.lastIndexOf('/'))));
-      for (const l of report) {
-        const box = l.id.slice(0, l.id.lastIndexOf('/'));
-        if (l.type === 'string' && l.tier === 'excluded' && l.score > -0.2 && (gameGlobals.has(l.global) || gameBoxes.has(box)) && box !== '$') l.tier = 'text';
-        l.node.meta.detect = { tier: l.tier, score: l.score, reasons: l.reasons };
+      // translation table cannot use up the scan before deeper game values are reached
+      // globals with game-state evidence are read first (Smart Scan priority); the others follow
+      const prio = new Set(this.classification().filter((r) => r.kind === 'game' || marks[`$/${escapeSegment(r.name)}`] === 'game').map((r) => r.name));
+      return { rootKeys: keys, maxNodes: P.maxNodes, maxDepth: P.depth, rootBudget: P.rootBudget, maxStrings: P.textCap, rootLabel: 'window', rootGetters: lexical.getters(keys), priorityRoots: prio.size ? prio : null };
+    },
+    snapshot() {
+      if (this._cached) {
+        const t = this._cached;
+        this._cached = null;
+        return t;
       }
-      leafReport = report.map(({ node, ...rest }) => rest);
-      if (this.includeAll) return t;
-      // pass 3: keep only detected variables (and the objects that hold them)
-      const keep = new Set(report.filter((l) => l.tier !== 'excluded').map((l) => l.id));
-      const prune = (node) => {
-        node.children = node.children.filter((c) => {
-          if (c.children) {
-            prune(c);
-            return c.children.length > 0;
-          }
-          return keep.has(c.id);
-        });
-      };
-      prune(t.root);
-      for (const id of [...t.refs.keys()]) if (!keep.has(id)) t.refs.delete(id);
-      t.count = keep.size;
-      return t;
+      const keys = candidateKeys();
+      const t = buildLiveTree(win, this.walkOpts(keys));
+      const gen = finishScan(this, t, keys);
+      let r = gen.next();
+      while (!r.done) r = gen.next();
+      return r.value;
+    },
+    /** Time-sliced scan: the game keeps running between slices; Stop keeps what was found. */
+    async snapshotAsync({ signal = null, sliceMs = 8, yieldFn = () => new Promise((r) => win.setTimeout(r, 0)), onProgress = null } = {}) {
+      const keys = candidateKeys();
+      const t = await buildLiveTreeAsync(win, this.walkOpts(keys), { signal, sliceMs, yieldFn, onProgress: (p) => onProgress && onProgress({ stage: 'reading', ...p }) });
+      const gen = finishScan(this, t, keys);
+      let deadline = performance.now() + sliceMs;
+      let r = gen.next();
+      while (!r.done) {
+        if (performance.now() > deadline) {
+          if (onProgress) onProgress({ stage: 'scoring', count: t.count });
+          await yieldFn();
+          deadline = performance.now() + sliceMs;
+        }
+        r = gen.next();
+      }
+      this._cached = r.value;
+      return r.value;
     },
     sourceOf(id) {
       const top = (id.split('/')[1] || '').replace(/~1/g, '/').replace(/~0/g, '~');
@@ -590,6 +574,74 @@ function genericGlobals(win, hasEngine) {
       return `${lexical.has(top) ? `script variable ${top}` : `window.${top}`}${conf ? ` (${conf}${this.includeAll && d?.tier === 'excluded' ? ', shown because “include website globals” is on' : ''})` : ''}`;
     },
   };
+  /** Scores every leaf (tiers), keeps text next to game state, prunes the rest. Pauses (yield) every 256 leaves. */
+  function* finishScan(self, t, keys) {
+    const cls = self.classification();
+    const kindOf = new Map(cls.map((r) => [r.name, r.kind]));
+    lastReport = { ...t.report, keys, count: t.count, truncated: t.truncated, stopped: !!t.stopped, profile: self.profile ? self.profile.name : 'Standard scan', limits: self.profile ? { maxNodes: self.profile.maxNodes, depth: self.profile.depth, textCap: self.profile.textCap } : null };
+    const screen = safe(() => screenNumbers(win)) || new Set();
+    const report = [];
+    // text inside game-state globals, or next to detected game variables (item names,
+    // dialogue), is kept for search and translation
+    const gameGlobals = new Set(cls.filter((r) => r.kind === 'game').map((r) => r.name));
+    // pass 1: score every primitive leaf on its own (iterative, pausable)
+    const stack = [{ node: t.root, parents: [], pathStr: '' }];
+    let n = 0;
+    while (stack.length) {
+      const { node, parents, pathStr } = stack.pop();
+      if (!node.children) continue;
+      const big = node.type === 'array' && node.children.length > 20 && node.children.filter((c) => c.type === 'int' || c.type === 'float').length > 20;
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        const c = node.children[i];
+        if (c.children) stack.push({ node: c, parents: [...parents, c.key], pathStr: pathStr ? `${pathStr}.${c.key}` : c.key });
+      }
+      for (const c of node.children) {
+        if (c.children || !['int', 'float', 'bool', 'string'].includes(c.type)) continue;
+        const global = parents[0] ?? c.key;
+        const d = scoreLeaf({
+          key: c.key,
+          type: c.type,
+          value: c.value,
+          parentKeys: parents,
+          globalKind: kindOf.get(global) || 'unknown',
+          inLargeArray: big && (c.type === 'int' || c.type === 'float'),
+          changed: changedIds.has(c.id),
+          onScreen: (c.type === 'int' || c.type === 'float') && Math.abs(c.value) >= 10 && screen.has(c.value),
+          verified: verifiedIds.has(c.id),
+          mark: markOf(c.id),
+        });
+        report.push({ id: c.id, global, path: pathStr ? `${pathStr}.${c.key}` : c.key, type: c.type, tier: d.tier, score: d.score, reasons: d.reasons, node: c });
+        if ((++n & 255) === 0) yield n;
+      }
+    }
+    // pass 2: text next to real game variables (item names, quest text…) stays available
+    // for search and translation, but URLs and website fields do not
+    const gameBoxes = new Set(report.filter((l) => l.type !== 'string' && l.tier !== 'excluded').map((l) => l.id.slice(0, l.id.lastIndexOf('/'))));
+    let m = 0;
+    for (const l of report) {
+      if ((++m & 2047) === 0) yield m;
+      const box = l.id.slice(0, l.id.lastIndexOf('/'));
+      if (l.type === 'string' && l.tier === 'excluded' && l.score > -0.2 && (gameGlobals.has(l.global) || gameBoxes.has(box)) && box !== '$') l.tier = 'text';
+      l.node.meta.detect = { tier: l.tier, score: l.score, reasons: l.reasons };
+    }
+    leafReport = report.map(({ node, ...rest }) => rest);
+    if (self.includeAll) return t;
+    // pass 3: keep only detected variables (and the objects that hold them)
+    const keep = new Set(report.filter((l) => l.tier !== 'excluded').map((l) => l.id));
+    const prune = (node) => {
+      node.children = node.children.filter((c) => {
+        if (c.children) {
+          prune(c);
+          return c.children.length > 0;
+        }
+        return keep.has(c.id);
+      });
+    };
+    prune(t.root);
+    for (const id of [...t.refs.keys()]) if (!keep.has(id)) t.refs.delete(id);
+    t.count = keep.size;
+    return t;
+  }
   return engine;
 }
 
@@ -847,7 +899,7 @@ function ownData(obj, key) {
     return undefined;
   }
 }
-const unesc = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~');
+const unesc = (s) => (s.includes('~') ? s.replace(/~1/g, '/').replace(/~0/g, '~') : s);
 
 /** Live path resolution from the window, script variables, or documented engine getters. */
 function resolveFrom(win, id, lexical, special = null) {

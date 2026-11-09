@@ -125,7 +125,32 @@ export function editState(state, edits) {
  * @returns {saves: [{id, label, kind:'autosave'|'slot', slot?, key, path, codec, raw, save}],
  *           free: [{id, label, slot, key, path, codec, raw}], session: {key, codec, raw, state}|null, bundles}
  */
-export function readSugarCubeStorage(win) {
+let cacheEntry = null;
+/** Cheap signature of both storages (keys, lengths, edges) — avoids decoding everything again. */
+function storageSig(win) {
+  let s = '';
+  for (const store of ['localStorage', 'sessionStorage']) {
+    try {
+      const st = win[store];
+      for (let i = 0; i < st.length; i++) {
+        const k = st.key(i);
+        const v = st.getItem(k) || '';
+        s += `${store[0]}${k}:${v.length}:${v.slice(0, 24)}${v.slice(-24)}|`;
+      }
+    } catch {
+      /* blocked */
+    }
+  }
+  return s;
+}
+export function readSugarCubeStorage(win, { fresh = false } = {}) {
+  const sig = storageSig(win);
+  if (!fresh && cacheEntry && cacheEntry.win === win && cacheEntry.sig === sig) return cacheEntry.out;
+  const out = readSugarCubeStorageRaw(win);
+  cacheEntry = { win, sig, out };
+  return out;
+}
+function readSugarCubeStorageRaw(win) {
   const out = { saves: [], free: [], session: null };
   const each = (store, fn) => {
     try {
@@ -163,6 +188,21 @@ export function readSugarCubeStorage(win) {
     if (d && isState(d.obj)) out.session = { key, codec: d.codec, raw, state: d.obj };
   });
   return out;
+}
+
+function readSession(win) {
+  try {
+    const st = win.sessionStorage;
+    for (let i = 0; i < st.length; i++) {
+      const key = st.key(i);
+      const raw = st.getItem(key);
+      const d = decodeStored(raw);
+      if (d && isState(d.obj)) return { key, codec: d.codec, raw, state: d.obj };
+    }
+  } catch {
+    /* blocked */
+  }
+  return null;
 }
 
 /** Re-reads one save (or the session) to compare with what the workflow started from. */
@@ -219,7 +259,8 @@ export function writeSession(win, session, state, expectRaw) {
 
 /** Did the game load the edited values? Reads the session state the game writes after loading. */
 export function checkLoaded(win, expect) {
-  const sc = readSugarCubeStorage(win);
+  // only the session state is read (exactly, every time): no localStorage decoding while polling
+  const sc = { session: readSession(win) };
   if (!sc.session) return { state: 'unknown', detail: 'The game has no session state to check yet.' };
   const vars = currentVariables(sc.session.state);
   const got = expect.map((e) => ({ ...e, now: getPath(vars, e.path) }));

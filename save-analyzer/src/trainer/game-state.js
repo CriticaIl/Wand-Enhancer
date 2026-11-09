@@ -21,9 +21,13 @@ export const INCLUDE_THRESHOLD = 0.35;
 const enKeyCache = new Map();
 /** Key words for scoring; non-English names (所持金, monedas…) use their offline translation. */
 function keyWords(k) {
-  const base = splitName(k);
-  if (/^[\x00-\x7f]*$/.test(k) && !/[a-z]{4,}/i.test(k)) return base;
   if (enKeyCache.has(k)) return enKeyCache.get(k);
+  const base = splitName(k);
+  if (/^[\x00-\x7f]*$/.test(k) && !/[a-z]{4,}/i.test(k)) {
+    if (enKeyCache.size > 20000) enKeyCache.clear();
+    enKeyCache.set(k, base);
+    return base;
+  }
   const r = toEnglish(k);
   const out = r.kind === 'translation' || r.kind === 'partial' ? `${base} ${r.english.toLowerCase()}` : base;
   if (enKeyCache.size > 20000) enKeyCache.clear();

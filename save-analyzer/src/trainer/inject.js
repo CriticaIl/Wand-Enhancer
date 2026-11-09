@@ -7,6 +7,7 @@ import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
 import { frameLabel, LiveProvider } from './providers.js';
 import { createStore } from './store.js';
 import { SaveHub } from './save-hub.js';
+import { createSignal, finishStartup, interruptedStartup, PerfLog, PROFILES, resolveSettings } from './perf.js';
 import { probeSugarCube, sugarCubeBridge, storyMarkers, pageBridge } from './sugarcube-live.js';
 import { sugarCubeDirect } from './engines.js';
 import { mountTrainer } from './ui.js';
@@ -52,27 +53,63 @@ export function openTrainer(win, extra = {}) {
       return 'page';
     }
   })();
-  const { frameReports, openInFrame, contextInfo, saveSyncMs, ...rest } = extra;
-  let engines = detectLiveEngines(win);
+  const { frameReports, openInFrame, contextInfo, saveSyncMs, safeMode: safeArg, ...rest } = extra;
+  // a previous start that never finished (the tab crashed or reloaded while scanning)
+  const interrupted = safeArg === undefined ? interruptedStartup(win) : null;
+  let safeMode = !!safeArg;
+  const perf = new PerfLog(win);
+  win.__saveforgeStarting = true;
+  const uiStore = createStore(win, `${origin}|ui`);
+  // scan profile (Low Memory Mode on phones by default); read before any scan starts
+  const settingsP = uiStore
+    .get('perf', {})
+    .catch(() => ({}))
+    .then((saved) => resolveSettings(saved || {}, win));
+  let deepFor = new Set(); // sources the user asked to scan deeply
+  let scanSignal = null;
+  let progressFn = null;
+
+  // results kept from the last time the trainer was closed on this page: reopening does not
+  // repeat an expensive scan (Rescan game does it on request)
+  const cache = win.__saveforgeCache && Date.now() - win.__saveforgeCache.at < win.__saveforgeCache.ttl ? win.__saveforgeCache : null;
+  if (cache) win.clearTimeout(cache.timer);
+  delete win.__saveforgeCache;
+
+  const st0 = perf.start('detect engines');
+  let engines = cache ? cache.engines : detectLiveEngines(win, { generic: !(interrupted || safeMode) });
   let limitations = liveLimitations(win);
   // SugarCube: when window.SugarCube is not visible from here, find out why and use the
   // page bridge if SaveForge runs in an isolated userscript/extension world
-  let scProbe = null;
-  if (!engines.some((e) => e.id === 'sugarcube')) {
+  let scProbe = cache ? cache.scProbe : null;
+  if (!cache && !engines.some((e) => e.id === 'sugarcube')) {
     scProbe = probeSugarCube(win);
     if (scProbe.verdict === 'bridge') engines.unshift(sugarCubeBridge(win, pageBridge(win).rpc));
   }
+  perf.end(st0, { engines: engines.map((e) => e.id).join(', ') });
   // one shared set of save variables (the Save Editor's pipeline) for every view
-  const hub = new SaveHub(win, createStore(win, `${origin}|storage`), extra.saveSyncMs ? { autoMs: extra.saveSyncMs } : undefined);
+  const hub = cache ? cache.hub : new SaveHub(win, createStore(win, `${origin}|storage`), extra.saveSyncMs ? { autoMs: extra.saveSyncMs } : undefined);
+  settingsP.then((P) => {
+    hub.profile = P;
+    if (!cache) hub.includeIndexedDB = !!P.readIndexedDB;
+    if (!extra.saveSyncMs) hub.autoMs = P.hubAutoMs || 0;
+    if (!P.hubAutoMs) hub.setAuto(false);
+  });
   const sourceFor = (e) => ({
     id: e.id,
     label: e.name,
     channel: e.channel,
     create: async () => {
+      const P = await settingsP;
+      e.profile = deepFor.has(e.id) ? { ...P, ...PROFILES.deep, name: PROFILES.deep.name } : P;
       const store = createStore(win, `${origin}|${e.id}`);
       if (e.useStore) await e.useStore(store);
-      if (e.prepare) await e.prepare();
-      const p = new LiveProvider(win, e, store);
+      if (e.prepare) await perf.time(`prepare: ${e.name}`, () => e.prepare());
+      scanSignal = createSignal();
+      const p = await LiveProvider.createAsync(win, e, store, { signal: scanSignal, sliceMs: e.profile.sliceMs || 8, perf, onProgress: (x) => progressFn && progressFn(x) });
+      scanSignal = null;
+      if (safeMode) return p; // Safe Mode: no save reading, no background work
+      finishStartup(win);
+      win.__saveforgeStarting = false;
       // save variables appear as soon as the saves are read (never blocks the live list)
       hub.ensure().then(() => p.attachSaves(hub));
       return p;
@@ -108,8 +145,12 @@ export function openTrainer(win, extra = {}) {
     label: 'Saves in storage',
     channel: 'reload',
     create: async () => {
-      const p = await hub.ensure();
+      await settingsP;
+      let p = await perf.time('read saves', () => hub.ensure());
       if (!p) throw new Error(hub.error || 'Browser storage could not be decoded.');
+      // opening this source is the request to read IndexedDB too (large binaries stay unread)
+      if (!hub.includeIndexedDB && (p.dump.indexedDBNotRead || []).length) await perf.time('read IndexedDB saves', () => hub.readIndexedDB());
+      p = hub.provider;
       return p;
     },
   });
@@ -215,25 +256,79 @@ export function openTrainer(win, extra = {}) {
     }, 1000);
   };
 
+  /** Deep scan on request: bigger limits for one source (never automatic). */
+  const deepScan = async (id) => {
+    deepFor.add(id);
+    const e = engines.find((x) => x.id === id);
+    if (!e) return null;
+    if (id === 'storage' || id === 'raw') return null;
+    e.profile = { ...(await settingsP), ...PROFILES.deep, name: PROFILES.deep.name };
+    return e;
+  };
+
   const ctl = mountTrainer(win, {
     sources,
     limitations,
     diagnostics,
     fullScan,
+    perf,
+    settingsP,
+    deepScan,
+    interrupted,
+    safeMode: () => safeMode,
+    enterSafeMode: () => {
+      safeMode = true;
+    },
+    stopScan: () => scanSignal && scanSignal.abort('stopped by you'),
+    onScanProgress: (fn) => (progressFn = fn),
+    prefilled: cache ? cache.providers : null,
+    onReady: () => {
+      finishStartup(win);
+      win.__saveforgeStarting = false;
+    },
+    cachedAt: cache ? cache.at : null,
+    keepOnClose: (providers) => {
+      // keep scan results for a while so reopening is instant; timers are paused, locks released
+      const P = resolveSettingsSync();
+      if (P && P.keepResults === false) return false;
+      const ttl = P && P.lowMemory ? 3 * 60 * 1000 : 10 * 60 * 1000;
+      for (const pr of providers.values()) {
+        pr.unlockAll?.();
+        pr.setPaused?.(true);
+      }
+      hub.stopAuto();
+      const c = { providers, engines, hub, scProbe, at: Date.now(), ttl };
+      c.timer = win.setTimeout(() => {
+        if (win.__saveforgeCache !== c) return;
+        for (const pr of providers.values()) pr.dispose?.();
+        hub.dispose();
+        delete win.__saveforgeCache;
+      }, ttl);
+      win.__saveforgeCache = c;
+      return true;
+    },
     engineInfo: engineInfo(),
     engineInfoRefresh: engineInfo,
     rescanSources,
     saveHub: hub,
-    store: createStore(win, `${origin}|ui`),
-    onClose: () => {
-      hub.dispose();
+    store: uiStore,
+    onClose: (kept) => {
+      if (!kept) hub.dispose();
+      scanSignal?.abort('closed');
+      win.__saveforgeStarting = false;
       win.clearInterval(scTimer);
       delete win.__saveforgeTrainer;
     },
     ...rest,
   });
   win.__saveforgeTrainer = ctl;
-  scWatch();
+  ctl.perf = () => ({ stages: perf.stages, last: perf.lastCompleted()?.name || null, current: perf.current?.name || null });
+  let settingsNow = null;
+  settingsP.then((P) => (settingsNow = P));
+  function resolveSettingsSync() {
+    return settingsNow;
+  }
+  if (!interrupted && !safeMode) scWatch();
   return ctl;
 }
 

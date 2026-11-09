@@ -18,6 +18,21 @@ export function storageBridge(win, mode, payload) {
   'use strict';
   var FORMAT = 'saveforge-storage-dump';
   var doc = win.document;
+  // collect options: {indexedDB: false} lists databases without reading them;
+  // {maxBinary: n} leaves binary values larger than n bytes unread (marked, never written back)
+  var opts = mode === 'collect' && payload && typeof payload === 'object' ? payload : {};
+  var MAX_BIN = typeof opts.maxBinary === 'number' ? opts.maxBinary : Infinity;
+  var skippedCount = 0;
+  function skipped(tag, bytes) {
+    skippedCount++;
+    return { $type: 'Skipped', what: tag, bytes: bytes };
+  }
+  function hasSkipped(v) {
+    if (!v || typeof v !== 'object') return false;
+    if (v.$type === 'Skipped') return true;
+    for (var k in v) if (Object.prototype.hasOwnProperty.call(v, k) && hasSkipped(v[k])) return true;
+    return false;
+  }
 
   function b64(bytes) {
     var s = '';
@@ -41,8 +56,9 @@ export function storageBridge(win, mode, payload) {
     if (typeof v === 'bigint') return { $type: 'BigInt', value: v.toString() };
     var tag = Object.prototype.toString.call(v).slice(8, -1);
     if (tag === 'Date') return { $type: 'Date', value: isNaN(v.getTime()) ? null : v.toISOString() };
-    if (tag === 'ArrayBuffer') return { $type: 'ArrayBuffer', base64: b64(new Uint8Array(v)) };
+    if (tag === 'ArrayBuffer') return v.byteLength > MAX_BIN ? skipped(tag, v.byteLength) : { $type: 'ArrayBuffer', base64: b64(new Uint8Array(v)) };
     if (win.ArrayBuffer.isView && win.ArrayBuffer.isView(v) && tag !== 'DataView') {
+      if (v.byteLength > MAX_BIN) return skipped(tag, v.byteLength);
       return { $type: tag, base64: b64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) };
     }
     if (tag === 'Map') {
@@ -94,6 +110,8 @@ export function storageBridge(win, mode, payload) {
           return new win.Set(v.items.map(decode));
         case 'Blob':
           return new win.Blob([unb64(v.base64)], { type: v.mime || '' });
+        case 'Skipped':
+          throw new Error('A value that was not read (too large) cannot be written');
         case 'Object':
           var inner = {};
           Object.keys(v.value).forEach(function (k) {
@@ -131,6 +149,7 @@ export function storageBridge(win, mode, payload) {
     // IndexedDB may hold Blobs (some engines store files that way); read them first.
     var tag = Object.prototype.toString.call(v).slice(8, -1);
     if (tag === 'Blob' || tag === 'File') {
+      if (v.size > MAX_BIN) return Promise.resolve(skipped(tag, v.size));
       return v.arrayBuffer().then(function (buf) {
         return { $type: 'Blob', mime: v.type, base64: b64(new Uint8Array(buf)) };
       });
@@ -206,6 +225,11 @@ export function storageBridge(win, mode, payload) {
     var dump = { format: FORMAT, version: 1, origin: win.location.origin, exportedAt: new Date().toISOString(), localStorage: ls, indexedDB: [] };
     if (!win.indexedDB || !win.indexedDB.databases) return Promise.resolve(dump);
     return win.indexedDB.databases().then(function (dbs) {
+      if (opts.indexedDB === false) {
+        // listed, not read: reading big game file stores (Unity /idbfs…) costs a lot of memory
+        dump.indexedDBNotRead = dbs.map(function (d) { return d.name; }).filter(function (n) { return n && n !== 'saveforge-trainer' && n !== 'saveforge'; });
+        return;
+      }
       return dbs.reduce(function (p, info) {
         return p.then(function () {
           if (!info.name || info.name === 'saveforge-trainer' || info.name === 'saveforge') return; // SaveForge's own bookkeeping
@@ -220,6 +244,7 @@ export function storageBridge(win, mode, payload) {
         });
       }, Promise.resolve());
     }).then(function () {
+      if (skippedCount) dump.skippedValues = skippedCount;
       return dump;
     });
   }
@@ -260,6 +285,11 @@ export function storageBridge(win, mode, payload) {
               if (names.indexOf(s.name) < 0) return;
               var store = tx.objectStore(s.name);
               s.records.forEach(function (r) {
+                // records holding values that were not read stay exactly as they are
+                if (hasSkipped(r.value) || hasSkipped(r.key)) {
+                  summary.skipped.push(dbDump.name + '/' + s.name + ' (large value not read, left unchanged)');
+                  return;
+                }
                 var value = decode(r.value);
                 if (store.keyPath === null) store.put(value, decode(r.key));
                 else store.put(value);

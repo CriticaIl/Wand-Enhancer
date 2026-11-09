@@ -46,20 +46,59 @@ export function expandQuery(q, mode = 'partial') {
 }
 
 /** Cached, normalised search fields for an entry. */
+const keyEnCache = new Map();
+function keyEnglish(key) {
+  const k = String(key);
+  if (/^[\d.\-_~]*$/.test(k)) return ''; // array indices and numbers: nothing to translate
+  let v = keyEnCache.get(k);
+  if (v === undefined) {
+    const r = toEnglish(k);
+    v = r.kind === 'translation' || r.kind === 'partial' || r.kind === 'guess' ? norm(r.english) : '';
+    if (keyEnCache.size > 20000) keyEnCache.clear();
+    keyEnCache.set(k, v);
+  }
+  return v;
+}
+
 function fields(p, e) {
   if (e._sf) return e._sf;
   const node = p.node(e.nodeId);
   const key = norm(node?.key ?? e.key);
   const label = norm(p.displayLabel ? p.displayLabel(e) : e.label);
+  // translating every (mostly unique) label is the expensive part of the first search on big
+  // games; keys repeat, so translate the key (cached) and the label only when it is not ASCII
   let en = '';
-  const t = englishLabel(e.label);
-  if (t) en = norm(t.text);
-  if (!en) {
-    const k = toEnglish(node?.key ?? e.key);
-    if (k.kind === 'translation' || k.kind === 'partial' || k.kind === 'guess') en = norm(k.english);
+  if (/[^\x00-\x7f·›…#]/.test(e.label)) { // SaveForge's own separators (·, ›) are not foreign words
+    const t = englishLabel(e.label);
+    if (t) en = norm(t.text);
   }
+  if (!en) en = keyEnglish(node?.key ?? e.key);
   e._sf = { key, label, en, path: norm(e.path), words: new Set(`${key} ${label} ${en}`.split(/[^\p{L}\p{N}]+/u).filter(Boolean)) };
   return e._sf;
+}
+
+/**
+ * Builds the search index in small time slices (after a list loads), so the first search is
+ * instant instead of one long pause on big games. Stops when `isPaused()` (minimized/hidden).
+ */
+export async function warmSearchIndex(p, { sliceMs = 8, yieldFn = () => new Promise((r) => setTimeout(r, 0)), isPaused = () => false } = {}) {
+  const list = p.entries;
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  let deadline = now() + sliceMs;
+  for (let i = 0; i < list.length; i++) {
+    if (p.entries !== list) return false; // the list was rebuilt meanwhile
+    try {
+      fields(p, list[i]);
+    } catch {
+      /* entry gone */
+    }
+    if ((i & 63) === 0 && now() > deadline) {
+      await yieldFn();
+      while (isPaused()) await new Promise((r) => setTimeout(r, 1000));
+      deadline = now() + sliceMs;
+    }
+  }
+  return true;
 }
 
 const LONG_TEXT = 40;

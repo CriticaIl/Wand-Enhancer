@@ -1,6 +1,17 @@
-# SaveForge 2.1 on iPhone: install, test and what to expect
+# SaveForge 2.2 on iPhone: install, test and what to expect
 
-## What's new in 2.1: SugarCube saves that stick
+## What's new in 2.2: performance and stability
+- **Big games stay playable while SaveForge works:** it scans in small steps (the game keeps rendering between them), and **Stop scanning** keeps what was read.
+- **Memory:** game files in IndexedDB (Unity/Godot) are no longer read when SaveForge opens or in the background. In tests, 60 MB of such files had frozen the game for 44 s and used about 335 MB; now the freeze is under a second and the memory about 10 MB. Large binary values are never decoded or written back.
+- **Low Memory Mode (Smart Scan)** is on by default on iPhone. It reads gameplay values first, and the home screen says what it did not read, with **Deep scan** on request.
+- **Nothing runs in the background while SaveForge is minimized** or the page is hidden.
+- **Reopening is instant:** the last scan is kept for a few minutes (*Results from … · Rescan*).
+- **Safe Mode:** if SaveForge did not finish starting last time (the tab crashed or reloaded), the next launch tells you where it stopped and offers Safe Mode.
+- **Diagnostics → Performance** shows stage times, values read, what was not read and what runs in the background. **Settings → Performance** has the limits.
+
+**Please check on your iPhone:** whether the games that crashed or reloaded still do. These fixes target what was measured (see TRAINER.md); a crash on iOS can have other causes that tests here cannot reproduce. If one still crashes, reopen SaveForge on that tab: the Safe Mode screen shows the stage it stopped at, and Diagnostics → Performance shows what happened.
+
+## What was new in 2.1: SugarCube saves that stick
 - **Why money reverted:** SugarCube resumes its *session state* when the page reloads; it never loads a save on reload. So the edited autosave was ignored, and the next autosave wrote the old money back.
 - **Edit SugarCube save** (main menu):
   1. Choose a save and the new value. SaveForge shows the save's value and the running game's value.
@@ -98,7 +109,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.1.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.2.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -149,7 +160,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 175 tests)
+### Verified by the automated tests (Chromium, 180 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -157,6 +168,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**Performance and stability (2.2)**, with 4× CPU throttling and a phone-like (touch, small screen) context, measuring the game's own frame gaps:
+- **20,000 variables, dialogue and a busy game loop:** the game keeps rendering while SaveForge opens (longest freeze under 1 s), while it stays open (under 0.7 s) and while it is minimized (no long tasks).
+- **100,000 variables, 10 levels deep:** the player's money is read first, what was not read is shown, and Deep scan can be stopped.
+- **60 MB in IndexedDB:** opening uses under 80 MB more memory (was about 335 MB) and does not read it. *Saves in storage* reads it with the 1 MB files left unread, and writing back leaves those files untouched.
+- **Reopening reuses the last scan**, and an interrupted start offers Safe Mode, which does no heavy work.
+- **The Button Linker never stacks duplicate page listeners.**
 
 **SugarCube save editing (2.1)**, on a story that resumes its session state on reload like SugarCube:
 - **The money revert is reproduced:** editing the autosave + Apply & Reload brings back the old money, and the next autosave writes it back. SaveForge now warns before that write.
@@ -231,7 +249,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.1.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.2.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

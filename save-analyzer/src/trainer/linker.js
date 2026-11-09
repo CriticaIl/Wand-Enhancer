@@ -689,6 +689,8 @@ export function createLinker(win, { store, key, getProvider, host, onChange = ()
       return autoApply;
     },
     list: () => mappings,
+    /** Window listeners the Linker has installed right now (0 while no mapping is active). */
+    listenerCount: () => (installed ? POINTER_EVENTS.length + 4 : 0),
     history: () => history,
     /** Loads saved mappings; they are applied only if the user chose "apply automatically". */
     async load() {

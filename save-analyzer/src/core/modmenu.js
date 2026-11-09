@@ -49,14 +49,30 @@ function englishWords(s) {
 }
 
 /** Words for *understanding* a name (categories, explanations): non-English names use their offline translation. */
-export function meaningWords(s) {
+// keys repeat thousands of times in big games (x, hp, item3…): cache per key string
+const memo = (fn, max = 20000) => {
+  const m = new Map();
+  return (s) => {
+    const k = String(s);
+    let v = m.get(k);
+    if (v === undefined) {
+      v = fn(k);
+      if (m.size >= max) m.clear();
+      m.set(k, v);
+    }
+    return v;
+  };
+};
+export const meaningWords = memo(meaningWordsRaw);
+function meaningWordsRaw(s) {
   const raw = String(s);
   const en = /^[\x00-\x7f]*$/.test(raw) && !/[a-z]{4,}/i.test(raw.replace(/[A-Z][a-z]+/g, '')) ? null : englishWords(raw.replace(/^store\./, ''));
   return en ? words(en) : words(raw);
 }
 
 /** Words for *displaying* a name: always the original (translation is opt-in via “Show English labels”). */
-export function words(s) {
+export const words = memo(wordsRaw);
+function wordsRaw(s) {
   return String(s)
     .replace(/^[_$@.]+/, '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -66,13 +82,25 @@ export function words(s) {
     .toLowerCase();
 }
 
-export function humanize(key) {
+export const humanize = memo(humanizeRaw);
+function humanizeRaw(key) {
   const w = words(key);
   if (!w) return String(key);
   return w.replace(/\b[a-z]/g, (c) => c.toUpperCase()).replace(/\b(Hp|Mp|Tp|Xp|Exp|Atk|Def|Id|Npc|Ui)\b/g, (m) => m.toUpperCase());
 }
 
+const catMemo = new Map();
 function heuristicCategory(node, parents) {
+  const k = `${node.type}\u0001${node.key}\u0001${parents.slice(-3).map((p) => p.key).join('\u0001')}`;
+  let c = catMemo.get(k);
+  if (c === undefined) {
+    c = heuristicCategoryRaw(node, parents);
+    if (catMemo.size > 50000) catMemo.clear();
+    catMemo.set(k, c);
+  }
+  return c;
+}
+function heuristicCategoryRaw(node, parents) {
   const own = meaningWords(node.key);
   const near = parents
     .slice(-3)
@@ -149,33 +177,64 @@ export function sliderRange(node, category) {
  * @returns {{categories: Array<{id,name,icon,hiddenByDefault,entries,groups}>, stats}}
  */
 export function generateModMenu(root) {
-  const entries = [];
-  const valuesByKey = new Map();
-  walk(root, (node, parents) => {
-    if (!node.editable) return;
-    const eng = classifyByEngine(node, parents) || {};
-    const category = eng.category || (eng.hidden ? 'internal' : heuristicCategory(node, parents));
-    const entry = {
-      nodeId: node.id,
-      key: node.key,
-      label: eng.label || genericLabel(node, parents),
-      path: eng.path || breadcrumb(node, parents),
-      type: node.type,
-      category: eng.hidden ? 'internal' : category,
-      note: eng.note || node.meta.note || null,
-      scope: eng.scope || null,
-      groupHint: eng.group || null,
-      parentId: parents.length ? parents[parents.length - 1].id : null,
-      parentKey: [...parents].reverse().find((p) => p.key !== '@a')?.key ?? null,
-    };
-    entries.push(entry);
-    if (node.type === 'string') {
-      const set = valuesByKey.get(node.key) || new Set();
-      if (set.size <= 13) set.add(node.value);
-      valuesByKey.set(node.key, set);
-    }
-  });
+  const acc = { entries: [], valuesByKey: new Map() };
+  walk(root, (node, parents) => menuEntry(node, parents, acc));
+  return finishMenu(acc);
+}
 
+/**
+ * Same menu, built in time slices (walks at most `sliceMs` at a time, then yields) so a
+ * big game keeps running while SaveForge reads it. Same order and result as generateModMenu.
+ */
+export async function generateModMenuAsync(root, { sliceMs = 8, signal = null, yieldFn = () => new Promise((r) => setTimeout(r, 0)) } = {}) {
+  const acc = { entries: [], valuesByKey: new Map() };
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // iterative pre-order walk with the same visiting order as walk()
+  const stack = [{ node: root, parents: [] }];
+  let deadline = now() + sliceMs;
+  let n = 0;
+  while (stack.length) {
+    const { node, parents } = stack.pop();
+    if (menuEntry(node, parents, acc) === false) continue;
+    if (node.children && node.children.length) {
+      const next = [...parents, node];
+      for (let i = node.children.length - 1; i >= 0; i--) stack.push({ node: node.children[i], parents: next });
+    }
+    if ((++n & 127) === 0 && now() > deadline) {
+      if (signal && signal.aborted) break;
+      await yieldFn();
+      deadline = now() + sliceMs;
+    }
+  }
+  return finishMenu(acc);
+}
+
+function menuEntry(node, parents, acc) {
+  if (!node.editable) return;
+  const eng = classifyByEngine(node, parents) || {};
+  const category = eng.category || (eng.hidden ? 'internal' : heuristicCategory(node, parents));
+  const entry = {
+    nodeId: node.id,
+    key: node.key,
+    label: eng.label || genericLabel(node, parents),
+    path: eng.path || breadcrumb(node, parents),
+    type: node.type,
+    category: eng.hidden ? 'internal' : category,
+    note: eng.note || node.meta.note || null,
+    scope: eng.scope || null,
+    groupHint: eng.group || null,
+    parentId: parents.length ? parents[parents.length - 1].id : null,
+    parentKey: [...parents].reverse().find((p) => p.key !== '@a')?.key ?? null,
+  };
+  acc.entries.push(entry);
+  if (node.type === 'string') {
+    const set = acc.valuesByKey.get(node.key) || new Set();
+    if (set.size <= 13) set.add(node.value);
+    acc.valuesByKey.set(node.key, set);
+  }
+}
+
+function finishMenu({ entries, valuesByKey }) {
   // Large homogeneous collections (switch arrays, item tables) become searchable groups.
   const byParent = new Map();
   for (const e of entries) {

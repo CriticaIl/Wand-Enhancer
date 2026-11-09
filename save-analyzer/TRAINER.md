@@ -328,6 +328,67 @@ Nothing is intercepted while there are no active mappings, when *Mappings enable
 
 A game that registers its own *window capture* listeners before SaveForge can still see a remapped tap first. *Watch one tap* shows what really happens.
 
+## Performance and stability (2.2)
+
+**How it was measured:** `node tools/profile-trainer.mjs "<fixture query>" 4` runs the stress fixture (`test/fixtures/stress/`) in Chromium with 4× CPU throttling (roughly a phone) and a game loop that changes state every frame. It measures:
+- the game's own frame gaps while SaveForge opens, while it stays open, and while it is minimized
+- long tasks
+- the JavaScript heap
+- a CPU profile per function
+
+These are Chromium measurements: iPhone Safari was not measured, and passing them does not prove a crash on a phone is fixed.
+
+**What the profile showed (before 2.2), at 4× throttling:**
+
+| Case | Before | After 2.2 |
+| --- | --- | --- |
+| 60 MB of game files in IndexedDB (Unity/Godot keep files there): opening | game frozen **44 s**, heap 2 → **337 MB** | longest freeze 0.5 s, heap +9 MB |
+| same, trainer open | frozen **52 s** every ~10 s (re-read) | no long tasks |
+| 20,000 variables + 5,000 dialogue lines: opening | longest freeze 1.5–2.2 s (4.4 s blocked in total) | ≈ 0.5 s (1.4 s in total, in slices) |
+| same, trainer open | freezes up to 0.85–1.1 s (full re-scans) | ≤ 0.4 s, rate-limited |
+| same, minimized | background scanning continued | nothing runs |
+| 100,000 variables, 10 levels deep, 20,000 dialogue lines (Low Memory) | — | longest freeze ≈ 0.5 s; player values read first |
+| first search, 7,800 entries | 0.77–0.9 s | ≈ 0.4 s (index built in the background) |
+
+**Causes and fixes:**
+1. **Eager save reading.** Since 1.9 the shared save hub read all of IndexedDB when the trainer opened and every 10 s. It Base64-encoded every binary file and tried LZString on each. Now:
+   - Opening reads localStorage only and lists IndexedDB databases by name.
+   - IndexedDB is read when you open *Saves in storage*, tap *Read IndexedDB saves*, run a Deep scan, or enable it in Settings.
+   - Binary values over a size limit (512 KB in Low Memory Mode, 4 MB otherwise) are not read. They are marked, counted in Diagnostics, and **never written back**: the Storage Bridge leaves such records untouched.
+   - Auto-sync compares only a localStorage signature.
+2. **One long synchronous scan.** The tree walk, scoring and variable-list building now run in time slices (6–12 ms each, yielding to the game between them). *Stop scanning* keeps what was read so far.
+3. **Full re-scans on learning.** A new changing value used to trigger a complete re-scan immediately. Background re-scans now happen at most every 20 s (Low Memory) or 10 s, are time-sliced, and are paused while the trainer is minimized or the page is hidden. Your own actions (marking a value, a verified edit) are not rate-limited.
+4. **Repeated work:** label and category computation is cached per key, and candidate globals are cached until they are re-classified. Save-hub observation reads a rotating window of 500 values per tick, and SugarCube save detection caches by a storage signature (verification always reads exactly).
+5. **Smart Scan priority:** globals with game-state evidence are read first, then their large lists (more than 256 items), then other globals, then their large lists. A dialogue table can no longer use up the budget before the player's values. Nothing is dropped by this ordering.
+
+**Low Memory Mode** is on by default on phones (touch + small screen, or `deviceMemory` ≤ 4).
+
+| | Smart Scan (Low Memory) | Standard | Deep scan (on request) |
+| --- | --- | --- | --- |
+| Values read first | 30,000 | 90,000 | 300,000 |
+| Per global / text per global | 20,000 / 1,000 | 20,000 / 4,000 | 120,000 / 60,000 |
+| Depth | 8 | 10 | 14 |
+| Learning / background re-scan | every 4 s / at most every 20 s | 2 s / 10 s | — |
+| Script files read for let/const | no | yes | yes |
+| IndexedDB read automatically | no | no | yes |
+
+What was not read is always shown, never hidden:
+- **Home:** *“Smart Scan: N values · more available”* lists what was not read (texts over the limit, globals cut by size, objects deeper than the limit) and starts a **Deep scan**, which can be stopped.
+- **Diagnostics → Performance** shows:
+  - the profile and the last completed stage, plus what is running now
+  - per-stage times, values read and variables listed
+  - the JavaScript heap (Chromium only: Safari does not report memory)
+  - background status, save reads, IndexedDB databases not read, large values skipped
+  - Button Linker page listeners
+
+**Settings → Performance:** Low Memory Mode (automatic/on/off), scan depth, variable limit, background scanning (automatic/slow/off), read IndexedDB automatically, and keep scan results when closed.
+
+**Reopening and Safe Mode:**
+- **Reopening:** closing SaveForge keeps the last scan, with background work paused and locks released, for 3 minutes (Low Memory) or 10 minutes. Reopening shows it immediately (*Results from N min ago · Rescan*).
+- **Interrupted starts:** every start writes its current stage to sessionStorage, which survives a tab reload. If a start never finished (the tab crashed or reloaded while scanning), the next launch says at which stage it stopped and offers **Safe Mode**: no automatic scan, no save reading, no background work, and no Linker at start, with everything available on request.
+
+**Button Linker:** its page interception listeners are installed once while a mapping is active and removed when none is. A test checks that repeated inspect/apply/restore cycles never stack listeners.
+
 ## Performance and safety
 
 - **Fast menus at scale:** menu generation is O(n) because the per-node engine detectors are memoized. Generating the menu for 10,200 live variables takes about 0.1 s, and opening the trainer on such a page takes about 0.3 s in headless Chromium.

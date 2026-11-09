@@ -11,7 +11,7 @@ import { storageBridge } from '../bridge/storage-bridge.js';
 import { analyzeFile, EditSession } from '../core/document.js';
 import { explain } from '../core/explain.js';
 import { indexTree, pathOf, sameValue } from '../core/model.js';
-import { generateModMenu } from '../core/modmenu.js';
+import { generateModMenu, generateModMenuAsync } from '../core/modmenu.js';
 import { coerceLive } from './live-tree.js';
 
 /** Ids of save variables listed inside a live source. */
@@ -42,10 +42,10 @@ class BaseProvider {
   emit(reason, ids = []) {
     for (const fn of this.listeners) fn(reason, ids);
   }
-  load(root) {
+  load(root, menu = null) {
     this.root = root;
     this.index = indexTree(root);
-    this.menu = generateModMenu(root);
+    this.menu = menu || generateModMenu(root);
     this.entries = this.menu.all;
     this.entryById = new Map(this.entries.map((e) => [e.nodeId, e]));
     for (const e of this.entries) {
@@ -144,7 +144,20 @@ function ownValue(obj, key) {
 }
 
 export class LiveProvider extends BaseProvider {
-  constructor(win, engine, store) {
+  /**
+   * Builds the provider with a time-sliced scan (the game keeps running) instead of one
+   * long synchronous pass. `signal.abort()` (Stop scanning) keeps what was read so far.
+   */
+  static async createAsync(win, engine, store, { signal = null, sliceMs = 8, perf = null, onProgress = null, yieldFn } = {}) {
+    const y = yieldFn || (() => new Promise((r) => win.setTimeout(r, 0)));
+    const snap = engine.snapshotAsync ? await timed(perf, `scan: ${engine.name}`, () => engine.snapshotAsync({ signal, sliceMs, yieldFn: y, onProgress }), (t) => ({ nodes: t.count, truncated: t.truncated, stopped: !!t.stopped })) : await timed(perf, `scan: ${engine.name}`, () => engine.snapshot(), (t) => ({ nodes: t.count, truncated: t.truncated }));
+    engine._cached = null;
+    if (onProgress) onProgress({ stage: 'menu', count: snap.count });
+    const menu = await timed(perf, 'build variable list', () => generateModMenuAsync(snap.root, { sliceMs, signal: null, yieldFn: y }), (m) => ({ variables: m.all.length }));
+    return new LiveProvider(win, engine, store, { preloaded: { snap, menu } });
+  }
+
+  constructor(win, engine, store, opts = {}) {
     super();
     this.win = win;
     this.engine = engine;
@@ -162,12 +175,46 @@ export class LiveProvider extends BaseProvider {
     this.lockTimer = 0;
     this.timers = win && typeof win.setTimeout === 'function' ? win : globalThis;
     this.backupSaved = false;
-    this.rescan();
-    // session learning: variables that start changing while you play are promoted
+    this.paused = false;
+    this.lastRelearn = 0;
+    this.relearnMinMs = opts.relearnMinMs ?? engine.profile?.relearnMinMs ?? 15000;
+    if (opts.preloaded) {
+      this.refs = opts.preloaded.snap.refs;
+      this.truncated = opts.preloaded.snap.truncated;
+      this.scanStopped = !!opts.preloaded.snap.stopped;
+      this.load(opts.preloaded.snap.root, opts.preloaded.menu);
+    } else this.rescan();
+    // session learning: variables that start changing while you play are promoted. A full
+    // re-scan is expensive on big games, so it is rate-limited, time-sliced and paused while
+    // the trainer is minimized or the page is hidden.
     if (engine.onLearned && engine.startLearning) {
-      this.unlearn = engine.onLearned(() => this.relearn());
-      engine.startLearning();
+      this.unlearn = engine.onLearned(() => this.requestRelearn());
+      engine.startLearning(engine.profile?.learnEveryMs ?? 2000);
     }
+  }
+
+  /** Learning found new evidence: re-scan later, at most every relearnMinMs, never while paused. */
+  requestRelearn() {
+    this.relearnDirty = true;
+    if (this.paused || this.relearnTimer || this.relearning) return;
+    const wait = Math.max(0, this.lastRelearn + this.relearnMinMs - Date.now());
+    this.relearnTimer = this.timers.setTimeout(() => {
+      this.relearnTimer = 0;
+      if (this.paused) return;
+      this.relearnAsync({ background: true });
+    }, wait);
+  }
+  /** Minimized / hidden: stop background work (learning, save sync, re-scans). */
+  setPaused(on) {
+    this.paused = !!on;
+    if (on) {
+      if (this.engine.stopLearning) this.engine.stopLearning();
+      if (this.relearnTimer) this.timers.clearTimeout(this.relearnTimer), (this.relearnTimer = 0);
+    } else {
+      if (this.engine.startLearning) this.engine.startLearning(this.engine.profile?.learnEveryMs ?? 2000);
+      if (this.relearnDirty) this.requestRelearn();
+    }
+    if (this.saves) this.saves.setPaused?.(this, on);
   }
 
   /** Re-runs detection without leaving the current screen (new evidence, a mark, a verified edit). */
@@ -176,7 +223,29 @@ export class LiveProvider extends BaseProvider {
     this.refs = snap.refs;
     this.truncated = snap.truncated;
     this.load(snap.root);
+    this.relearnDirty = false; // user-triggered (mark, verified edit): does not use up the background rate limit
     this.emit('learned');
+  }
+  /** Same, time-sliced so the game keeps running. */
+  async relearnAsync({ signal = null, background = false } = {}) {
+    if (this.relearning) return;
+    this.relearning = true;
+    try {
+      const y = () => new Promise((r) => this.timers.setTimeout(r, 0));
+      const sliceMs = this.engine.profile?.sliceMs ?? 8;
+      const snap = this.engine.snapshotAsync ? await this.engine.snapshotAsync({ signal, sliceMs, yieldFn: y }) : this.engine.snapshot();
+      this.engine._cached = null;
+      const menu = await generateModMenuAsync(snap.root, { sliceMs, yieldFn: y });
+      this.refs = snap.refs;
+      this.truncated = snap.truncated;
+      this.scanStopped = !!snap.stopped;
+      this.load(snap.root, menu);
+      if (background) this.lastRelearn = Date.now();
+      this.relearnDirty = false;
+      this.emit('learned');
+    } finally {
+      this.relearning = false;
+    }
   }
   detection(id) {
     if (this.isSave(id)) return null;
@@ -197,8 +266,8 @@ export class LiveProvider extends BaseProvider {
   // next to live variables with ids prefixed "save:"; a save field linked to a live
   // variable (engine mapping or verified observation) is shown once, on the live entry.
 
-  load(root) {
-    super.load(root);
+  load(root, menu = null) {
+    super.load(root, menu);
     this.liveEntries = this.entries;
     if (this.saves) this.mergeSaves();
   }
@@ -626,12 +695,14 @@ export class LiveProvider extends BaseProvider {
 export class ConflictError extends Error {}
 
 export class StorageProvider extends BaseProvider {
-  static async create(win, store) {
-    const dump = await storageBridge(win, 'collect');
-    const text = JSON.stringify(dump, null, 1);
+  /** collectOpts: {indexedDB: false} reads localStorage only; {maxBinary} leaves big binary files unread. */
+  static async create(win, store, collectOpts = {}) {
+    const dump = await storageBridge(win, 'collect', collectOpts);
+    const text = JSON.stringify(dump);
     const res = await analyzeFile('browser-storage.json', new TextEncoder().encode(text));
     if (!res.ok) throw new Error('Browser storage could not be decoded.');
     const p = new StorageProvider(win, store, dump, res.doc);
+    p.collectOpts = collectOpts;
     await p.verifyAfterReload();
     return p;
   }
@@ -665,9 +736,9 @@ export class StorageProvider extends BaseProvider {
   }
 
   /** Same pipeline as the SaveForge Save Editor: Storage Bridge dump → analyzeFile. */
-  static async read(win) {
-    const dump = await storageBridge(win, 'collect');
-    const res = await analyzeFile('browser-storage.json', new TextEncoder().encode(JSON.stringify(dump, null, 1)));
+  static async read(win, collectOpts = {}) {
+    const dump = await storageBridge(win, 'collect', collectOpts);
+    const res = await analyzeFile('browser-storage.json', new TextEncoder().encode(JSON.stringify(dump)));
     return { dump, doc: res.ok ? res.doc : null };
   }
 
@@ -745,7 +816,7 @@ export class StorageProvider extends BaseProvider {
 
   /** Checks storage has not changed since it was read (e.g. a game autosave). */
   async assertUnchanged() {
-    const now = await storageBridge(this.win, 'collect');
+    const now = await storageBridge(this.win, 'collect', this.collectOpts || {});
     const strip = (d) => JSON.stringify({ l: d.localStorage, i: d.indexedDB });
     if (strip(now) !== strip(this.dump)) {
       throw new ConflictError('The game has saved to its storage since the trainer read it (for example an autosave). Nothing was written, so no newer progress was overwritten. Tap “Re-read storage”, then make your edits again.');
@@ -838,4 +909,9 @@ export class FileProvider extends BaseProvider {
   dispose() {
     this.unsub?.();
   }
+}
+
+async function timed(perf, name, fn, extra) {
+  if (!perf) return fn();
+  return perf.time(name, fn, extra);
 }

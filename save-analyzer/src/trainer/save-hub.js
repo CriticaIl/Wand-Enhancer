@@ -27,9 +27,15 @@ const NUMERIC = new Set(['int', 'float']);
 const unesc = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~');
 
 export class SaveHub {
-  constructor(win, store, { autoMs = 2500 } = {}) {
+  constructor(win, store, { autoMs = 2500, profile = null } = {}) {
     this.win = win;
     this.store = store;
+    // memory safety: IndexedDB (Unity/Godot keep whole game files there) is read only on request,
+    // and binary values above maxBinary are left unread (marked, never written back)
+    this.profile = profile || { readIndexedDB: false, maxBinary: 4 * 1024 * 1024, observeCap: 5000 };
+    this.includeIndexedDB = !!this.profile.readIndexedDB;
+    this.pausedBy = new Set();
+    this.reads = { count: 0, lastMs: 0, lastBytes: 0 };
     this.provider = null; // shared StorageProvider (null: nothing readable)
     this.error = '';
     this.stale = false; // the game saved while save edits were pending
@@ -69,7 +75,9 @@ export class SaveHub {
           /* no stored links */
         }
         try {
-          this.provider = await StorageProvider.create(this.win, this.store);
+          const t0 = Date.now();
+          this.provider = await StorageProvider.create(this.win, this.store, this.collectOpts());
+          this.noteRead(t0, this.provider.dump);
           this.sig = signature(this.provider.dump);
           this.lsSig = lsSignature(this.win);
           this.saveVals = numericValues(this.provider);
@@ -98,7 +106,10 @@ export class SaveHub {
     this.syncing = (async () => {
       try {
         for (const p of this.attached) this.observeLive(p);
-        const { dump, doc } = await StorageProvider.read(this.win);
+        const t0 = Date.now();
+        const opts = this.collectOpts();
+        const { dump, doc } = await StorageProvider.read(this.win, opts);
+        this.noteRead(t0, dump);
         const sig = signature(dump);
         this.lsSig = lsSignature(this.win);
         if (!doc) return { changed: false, error: 'The saves could not be decoded.' };
@@ -113,6 +124,7 @@ export class SaveHub {
         const before = this.saveVals;
         if (this.provider) this.provider.replaceData(dump, doc);
         else this.provider = new StorageProvider(this.win, this.store, dump, doc);
+        this.provider.collectOpts = opts;
         this.sig = sig;
         this.stale = false;
         this.saveVals = numericValues(this.provider);
@@ -142,18 +154,44 @@ export class SaveHub {
     else this.stopAuto();
   }
   async tick() {
-    if (this.syncing) return;
+    if (this.syncing || this.isPaused()) return;
     for (const p of this.attached) this.observeLive(p);
     this.ticks++;
-    // localStorage is cheap to compare every tick; IndexedDB is read every 4th tick
+    // only localStorage is compared periodically (cheap); IndexedDB is re-read only on request
     const ls = lsSignature(this.win);
-    if (ls !== this.lsSig || this.ticks % 4 === 0) {
+    if (ls !== this.lsSig) {
       try {
         await this.sync();
       } catch {
         /* storage temporarily unavailable */
       }
     }
+  }
+
+  /** Options for the Storage Bridge read. */
+  collectOpts() {
+    return { indexedDB: this.includeIndexedDB, maxBinary: this.profile.maxBinary };
+  }
+  noteRead(t0, dump) {
+    this.reads.count++;
+    this.reads.lastMs = Date.now() - t0;
+    try {
+      this.reads.lastBytes = JSON.stringify(dump.localStorage || {}).length + (dump.indexedDB || []).reduce((a, d) => a + JSON.stringify(d).length, 0);
+    } catch {
+      this.reads.lastBytes = 0;
+    }
+  }
+  /** Reads IndexedDB too (on request: Sync / Saves in storage / Deep scan). */
+  async readIndexedDB() {
+    this.includeIndexedDB = true;
+    return this.sync({ force: true });
+  }
+  setPaused(p, on) {
+    if (on) this.pausedBy.add(p);
+    else this.pausedBy.delete(p);
+  }
+  isPaused() {
+    return this.attached.size > 0 && [...this.attached].every((p) => this.pausedBy.has(p));
   }
 
   attach(p) {
@@ -174,8 +212,15 @@ export class SaveHub {
     if (!this.hist.has(eng)) this.hist.set(eng, new Map());
     const h = this.hist.get(eng);
     let n = 0;
-    for (const e of p.liveEntries || []) {
-      if (n++ > 5000) break;
+    // a rotating window per tick: the cost is spread instead of re-reading everything at once
+    const cap = this.profile.observeCap ?? 5000;
+    const all = p.liveEntries || [];
+    const per = Math.min(500, cap);
+    if (!this.cursor) this.cursor = new Map();
+    const from = (this.cursor.get(p) || 0) % Math.max(1, Math.min(all.length, cap));
+    this.cursor.set(p, from + per);
+    for (const e of all.slice(from, from + per)) {
+      if (n++ > per) break;
       const node = p.node(e.nodeId);
       if (!node || !NUMERIC.has(node.type)) continue;
       let v;

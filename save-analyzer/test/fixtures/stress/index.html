@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stress game</title>
+<!-- Performance/stability fixture (SaveForge 2.2). A busy game page:
+       ?vars=N       numeric/bool game variables spread over nested objects (default 20000)
+       ?depth=D      nesting depth of the entity tree (default 6)
+       ?lines=L      multilingual dialogue table entries (default 5000)
+       ?idbmb=M      MB of save data in IndexedDB (like Unity /idbfs, default 0)
+       ?lskb=K       KB of save data in localStorage (default 0)
+       ?churn=C      values changed per frame by the game loop (default 200)
+     The page measures its own responsiveness: window.__perf = {frames, maxGap, gaps>100ms}. -->
+<style>body { margin: 0; font: 15px system-ui, sans-serif; background: #0b1020; color: #e5e7eb; } #hud { padding: 8px; }</style>
+<script>
+  var q = new URLSearchParams(location.search);
+  var VARS = Number(q.get('vars') || 20000), DEPTH = Number(q.get('depth') || 6), LINES = Number(q.get('lines') || 5000);
+  var CHURN = Number(q.get('churn') || 200);
+  // entity tree: wide at the top, DEPTH levels deep, VARS leaves in total
+  var world = { player: { money: 28480799, hp: 100, level: 7, stats: { str: 10, dex: 12 } }, entities: [] };
+  var perEntity = 10;
+  var n = 0;
+  function deep(d) { if (d <= 0) { n += 2; return { hp: n % 97, alive: n % 2 === 0 }; } return { x: n++ % 1000, next: deep(d - 1) }; }
+  while (n < VARS) {
+    var e = { id: n, name: 'npc' + n, pos: { x: n % 640, y: n % 480 }, inv: {} };
+    for (var k = 0; k < perEntity; k++) e.inv['item' + k] = (n + k) % 50;
+    n += perEntity + 3;
+    if (world.entities.length % 50 === 0) e.chain = deep(DEPTH);
+    world.entities.push(e);
+  }
+  var dialogue = {};
+  for (var i = 0; i < LINES; i++) dialogue['Scene ' + i] = { En: 'Line number ' + i + ' of a long conversation that goes on for a while.', De: 'Zeile ' + i + ' eines langen Gesprächs.', Fr: 'Ligne ' + i + ' d’une longue conversation.' };
+  // the game loop keeps changing state (positions, timers) every frame
+  var perf = { frames: 0, maxGap: 0, gaps100: 0, last: 0, t0: 0 };
+  window.__perf = perf;
+  function loop(t) {
+    if (perf.last) { var g = t - perf.last; if (g > perf.maxGap) perf.maxGap = g; if (g > 100) perf.gaps100++; }
+    perf.last = t; perf.frames++;
+    var ents = world.entities;
+    for (var j = 0; j < CHURN && ents.length; j++) { var x = ents[(perf.frames * 7 + j) % ents.length]; x.pos.x = (x.pos.x + 1) % 640; }
+    world.player.hp = 100 - (perf.frames % 5);
+    document.getElementById('hud').textContent = '💰 ' + world.player.money + ' · HP ' + world.player.hp + ' · frame ' + perf.frames;
+    requestAnimationFrame(loop);
+  }
+  addEventListener('DOMContentLoaded', function () { requestAnimationFrame(loop); });
+  window.resetPerf = function () { perf.frames = 0; perf.maxGap = 0; perf.gaps100 = 0; perf.last = 0; };
+  // big saves, like engines that keep files in IndexedDB or large localStorage saves
+  var lskb = Number(q.get('lskb') || 0);
+  if (lskb) localStorage.setItem('stress.save', JSON.stringify({ player: world.player, blob: 'x'.repeat(lskb * 1024) }));
+  var idbmb = Number(q.get('idbmb') || 0);
+  window.__idbReady = !idbmb;
+  if (idbmb) {
+    var req = indexedDB.open('/idbfs', 1);
+    req.onupgradeneeded = function () { req.result.createObjectStore('FILE_DATA'); };
+    req.onsuccess = function () {
+      var tx = req.result.transaction('FILE_DATA', 'readwrite');
+      var chunk = new Uint8Array(1024 * 1024);
+      for (var m = 0; m < idbmb; m++) tx.objectStore('FILE_DATA').put({ contents: chunk, mode: 33206, timestamp: new Date() }, '/idbfs/data/file' + m);
+      tx.oncomplete = function () { window.__idbReady = true; };
+    };
+  }
+</script>
+</head>
+<body>
+<div id="hud"></div>
+</body>
+</html>

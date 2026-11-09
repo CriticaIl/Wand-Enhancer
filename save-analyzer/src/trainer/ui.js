@@ -6,11 +6,12 @@ import { sliderRange } from '../core/modmenu.js';
 import { englishLabel, onlineTranslateUrl, toEnglish } from '../core/translate.js';
 import { firstScan, foundValuesEngine, nextScan } from './scan.js';
 import { checkDisplay, detectRenderer, engineRedraw, patchVisibleNumber, redrawCandidates, tryRedraw } from './display.js';
-import { searchEntries, SUGGESTIONS } from './search.js';
+import { searchEntries, SUGGESTIONS, warmSearchIndex } from './search.js';
 import { LiveProvider, SECTIONS, STATUS } from './providers.js';
 import { createLinkerUI } from './linker-ui.js';
 import { createSugarCubeSavesUI } from './sugarcube-saves-ui.js';
 import { readSugarCubeStorage } from './sugarcube-saves.js';
+import { createSignal, PROFILES } from './perf.js';
 import { analyzeFile } from '../core/document.js';
 import { decodeShare, encodeShare } from '../core/share.js';
 import { ImportedProvider, matchImported } from './imported.js';
@@ -186,9 +187,15 @@ export function mountTrainer(win, opts) {
     S.minimized = v;
     panel.style.display = v ? 'none' : '';
     orb.style.display = v ? '' : 'none';
+    syncPaused();
     if (!v) renderAll();
     updateOrb();
   }
+  /** Background work (learning, save sync, re-scans) runs only while the trainer is visible. */
+  function syncPaused() {
+    for (const [k, pr] of S.providers) pr.setPaused?.(S.minimized || doc.hidden || k !== S.sourceId);
+  }
+  doc.addEventListener('visibilitychange', syncPaused);
   function setCollapsed(v) {
     S.collapsed = v;
     panel.classList.toggle('collapsed', v);
@@ -259,23 +266,47 @@ export function mountTrainer(win, opts) {
     renderSources();
     if (!S.providers.has(id)) {
       S.provider = null;
-      S.status = { loading: `Reading ${src.label}…` };
+      S.status = { loading: `Reading ${src.label}…`, scanning: true };
       renderAll();
       try {
         const p = await src.create();
         S.providers.set(id, p);
-        p.on((reason, ids) => onProviderChange(reason, ids, p));
+        listen(p);
       } catch (e) {
         S.status = { error: e.message || String(e) };
         renderAll();
+        opts.onReady?.();
         return;
       }
     }
+    if (S.sourceId !== id) return; // another source was picked meanwhile
     S.provider = S.providers.get(id);
     S.status = null;
+    // only the source on screen does background work (learning, save sync)
+    for (const [k, pr] of S.providers) pr.setPaused?.(k !== id || S.minimized || doc.hidden);
     await loadPrefs();
     renderAll();
+    opts.onReady?.();
+    warmSearch(S.provider);
   }
+  function warmSearch(p) {
+    if (!p || p.entries.length < 2000) return; // small lists index instantly anyway
+    win.setTimeout(() => warmSearchIndex(p, { sliceMs: 6, yieldFn: () => new Promise((r) => win.setTimeout(r, 0)), isPaused: () => S.minimized || doc.hidden }).catch(() => {}), 500);
+  }
+  const unsubs = [];
+  function listen(p) {
+    unsubs.push(p.on((reason, ids) => onProviderChange(reason, ids, p)));
+  }
+  // scan progress on the loading screen (updated in place, no re-render)
+  let lastProg = 0;
+  opts.onScanProgress?.((x) => {
+    const t = Date.now();
+    if (t - lastProg < 250) return; // a few updates per second are enough
+    lastProg = t;
+    const el = bodyEl.querySelector('.scanprog');
+    if (!el) return;
+    el.textContent = x.stage === 'menu' ? `Building the list of ${fmtNum(x.count)} values…` : x.stage === 'scoring' ? `Sorting ${fmtNum(x.count)} values…` : `Read ${fmtNum(x.count)} values${x.pending ? ` · ${fmtNum(x.pending)} objects left` : ''}…`;
+  });
 
   async function loadPrefs() {
     if (!store) return;
@@ -324,6 +355,7 @@ export function mountTrainer(win, opts) {
     if (reason === 'learned') {
       // new evidence while playing: update the lists in place, keep the current screen
       const p = S.provider;
+      warmSearch(p);
       for (const v of S.stack) {
         if (v.section) v.entries = p.entries.filter((e) => e.section === v.section && (v.section !== 'advanced' || e.category !== 'internal'));
         else if (v.all) v.entries = p.entries;
@@ -420,6 +452,9 @@ export function mountTrainer(win, opts) {
       items.push({ kind: 'nav', label: 'No game variables found here', icon: 'info', count: '', hint: 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
     }
     if (p.reloadSummary) items.push({ kind: 'nav', label: `After reload: ${p.reloadSummary.ok}/${p.reloadSummary.total} edits kept`, icon: p.reloadSummary.ok === p.reloadSummary.total ? 'shield' : 'info', count: '', hint: p.reloadSummary.ok === p.reloadSummary.total ? 'Every value written with Apply & Reload was still in storage after the game reloaded.' : 'The game overwrote some values when it reloaded (for example an autosave). Recent shows which.', view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
+    const lim = scanLimitItem(p);
+    if (lim) items.unshift(lim);
+    if (opts.cachedAt && p.kind === 'live') items.push({ kind: 'action', label: `Results from ${Math.max(1, Math.round((Date.now() - opts.cachedAt) / 60000))} min ago · Rescan`, icon: 'refresh', hint: 'Reopening reused the last scan instead of scanning again. Tap to read the game again.', run: () => (rescanGame(), undefined) });
     if (p.locks?.size) items.push({ kind: 'nav', label: `Locked values`, icon: 'lock', count: p.locks.size, hint: 'Values SaveForge keeps re-applying. Open to unlock.', view: { type: 'locks' } });
     for (const sec of SECTIONS) {
       const entries = p.entries.filter((e) => e.section === sec.id && (sec.id !== 'advanced' || e.category !== 'internal'));
@@ -436,7 +471,7 @@ export function mountTrainer(win, opts) {
     items.push({ kind: 'nav', label: 'Find a value', icon: 'search', count: '', hint: 'Unknown game? Type a number you see on screen, change it in the game, scan again: SaveForge finds the real variable.', view: { type: 'findvalue' } });
     items.push({ kind: 'action', label: 'Rescan game', icon: 'refresh', hint: 'Look for the game again: engines that finished loading, new variables, new saves.', run: () => rescanGame() });
     if (hub && (p.kind === 'live' || p.kind === 'storage')) {
-      if (hub.stale) items.push({ kind: 'nav', label: 'The game saved new progress', icon: 'info', count: '', hint: 'Your pending save edits were made on older save data. Open to write them anyway is refused; sync to discard them and read the new save.', view: { type: 'apply' } });
+      if (hub.stale) items.unshift({ kind: 'nav', label: 'The game saved new progress', icon: 'info', count: '', hint: 'Your pending save edits were made on older save data. Open to write them anyway is refused; sync to discard them and read the new save.', view: { type: 'apply' } });
       items.push({ kind: 'action', label: 'Sync save variables', icon: 'refresh', hint: `Read the game’s saves again with the Save Editor’s detection (${savesOf(p)?.entries.length || 0} save variables now${hub.auto ? ', synced automatically while the trainer is open' : ''}).`, run: () => (syncSaves(), undefined) });
     }
     const scUI = getScSavesUI();
@@ -449,6 +484,43 @@ export function mountTrainer(win, opts) {
     items.push({ kind: 'nav', label: 'Button & Textbox Linker', icon: 'link', count: linkerUI ? linkerUI.linker.list().length || '' : '', hint: 'Advanced: inspect what a game button or field is connected to, and link it to another action (only after you confirm).', view: { type: 'linker' } });
     items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
     return items;
+  }
+
+  /** Smart Scan stops early on big games; say what was not read and offer more, never hide it. */
+  function scanLimitItem(p) {
+    if (p.kind !== 'live' || !(p.truncated || p.scanStopped)) return null;
+    const r = p.engine?.scanReport?.();
+    const parts = [];
+    if (r) {
+      const roots = Object.entries(r.roots || {});
+      const texts = roots.reduce((a, [, v]) => a + (v.skippedStrings || 0), 0);
+      const cut = roots.filter(([, v]) => v.cut).map(([k]) => k);
+      if (texts) parts.push(`${fmtNum(texts)} texts (text limit)`);
+      if (cut.length) parts.push(`part of ${cut.slice(0, 3).join(', ')}${cut.length > 3 ? '…' : ''} (size limit)`);
+      if (r.depthLimited) parts.push(`${fmtNum(r.depthLimited)} objects deeper than ${r.limits?.depth ?? '?'} levels`);
+    }
+    const label = p.scanStopped ? `Scan stopped · ${fmtNum(p.entries.length)} values so far` : `${r?.profile || 'Scan'}: ${fmtNum(p.entries.length)} values · more available`;
+    return { kind: 'action', label, icon: 'search', hint: `Not read yet: ${parts.join('; ') || 'some values (scan limits)'}. Tap for a Deep scan (bigger limits; Stop keeps what it finds).`, run: () => (runDeepScan(), undefined) };
+  }
+  async function runDeepScan() {
+    const p = S.provider;
+    if (!p || p.kind !== 'live' || !opts.deepScan) return;
+    const e = await opts.deepScan(S.sourceId);
+    if (!e) return;
+    const sig = createSignal();
+    S.scanSignal = sig;
+    S.status = { loading: `Deep scan of ${p.title}…`, scanning: true };
+    renderAll();
+    try {
+      if (p.engine.refresh) p.engine.refresh();
+      await p.relearnAsync({ signal: sig });
+      toast(sig.aborted ? `Deep scan stopped: ${fmtNum(p.entries.length)} values` : `Deep scan done: ${fmtNum(p.entries.length)} values`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+    S.scanSignal = null;
+    S.status = null;
+    renderAll();
   }
 
   function viewEntries(v) {
@@ -493,9 +565,25 @@ export function mountTrainer(win, opts) {
   }
 
   function renderBody() {
+    // a background update (saves attached, learning) must not make the list jump
+    const oldList = bodyEl.querySelector('.list');
+    if (oldList && oldList._view === top()) top().scroll = oldList.scrollTop;
     clear(bodyEl);
     listRefresh = null; // the previous list is gone; renderList installs a new one
-    if (S.status?.loading) return bodyEl.append(h('div', { class: 'empty' }, S.status.loading)), setDesc('');
+    if (S.status?.loading) {
+      bodyEl.append(
+        h(
+          'div',
+          { class: 'empty' },
+          h('div', null, S.status.loading),
+          S.status.scanning ? h('div', { class: 'scanprog note' }, 'Starting…') : null,
+          S.status.scanning && opts.stopScan ? h('div', { class: 'btns', style: 'justify-content:center' }, h('button', { class: 'btn', onclick: () => (S.scanSignal ? S.scanSignal.abort() : opts.stopScan(), toast('Stopping: keeping what was read so far')) }, 'Stop scanning')) : null,
+          S.status.scanning ? h('p', { class: 'note' }, 'SaveForge reads the game in small steps so it keeps running. Stop keeps what was read so far; you can continue later.') : null,
+        ),
+      );
+      return setDesc('');
+    }
+    if (S.status?.choice) return renderStartupChoice();
     if (S.status?.error) {
       bodyEl.append(h('div', { class: 'sheet' }, h('div', { class: 'badbox' }, S.status.error), limitationsBlock()));
       return setDesc('');
@@ -541,6 +629,7 @@ export function mountTrainer(win, opts) {
     const spacer = h('div', { class: 'spacer', style: `height:${items.length * ROW_H}px` });
     list.append(spacer);
     list._items = items;
+    list._view = top();
     container.append(list);
     const rows = new Map();
     const v = top();
@@ -1249,6 +1338,27 @@ export function mountTrainer(win, opts) {
           }, 'While the trainer is open, SaveForge re-reads the game’s saves when they change (the same detection as the Save Editor). Pending save edits are never overwritten.')
         : null,
     );
+    if (opts.settingsP && store) {
+      const saved = (await store.get('perf', {})) || {};
+      const eff = await opts.settingsP;
+      const save = async (patch) => {
+        await store.set('perf', { ...saved, ...patch });
+        toast('Saved: applies to the next scan (Rescan game)');
+        renderAll();
+      };
+      const choice = (label, key, options, note) =>
+        h('div', null, h('b', null, label), note ? h('div', { class: 'note' }, note) : null, h('div', { class: 'btns' }, options.map(([v, t]) => h('button', { class: `btn mini${(saved[key] ?? null) === v ? ' go' : ''}`, onclick: () => save({ [key]: v }) }, t))));
+      sheet.append(
+        h('h3', null, 'Performance'),
+        h('p', { class: 'note' }, `Now: ${eff.name}${eff.lowMemoryAuto ? ` (automatic: ${eff.lowMemory ? 'this looks like a phone' : 'not a phone'})` : ''} · up to ${fmtNum(eff.maxNodes)} values, ${eff.depth} levels deep · background ${eff.learnEveryMs ? `every ${eff.learnEveryMs / 1000} s` : 'off'}.`),
+        choice('Low Memory Mode', 'lowMemory', [[null, 'Automatic'], [true, 'On'], [false, 'Off']], 'Smart Scan: reads gameplay values first with small limits, skips script files and IndexedDB until you ask, and does less in the background. Nothing is hidden: what was not read is listed, with Deep scan.'),
+        choice('Scan depth', 'depth', [[null, 'Default'], [6, '6'], [8, '8'], [10, '10'], [14, '14']]),
+        choice('Variable limit (first scan)', 'maxNodes', [[null, 'Default'], [10000, '10k'], [25000, '25k'], [90000, '90k'], [300000, '300k']]),
+        choice('Background scanning', 'background', [[null, 'Automatic'], ['slow', 'Slow'], ['off', 'Off']], 'Learning which values change while you play, and save sync. Always paused while SaveForge is minimized or the page is hidden.'),
+        choice('Read IndexedDB saves automatically', 'readIndexedDB', [[null, 'Default (no)'], [true, 'Yes'], [false, 'No']], 'Some engines keep whole game files there (Unity, Godot). Saves in storage reads it when you open it.'),
+        choice('Keep scan results when closed', 'keepResults', [[null, 'Yes'], [false, 'No']], 'Reopening shows the last results immediately instead of scanning again (paused while closed).'),
+      );
+    }
     if (opts.siteMode) {
       const mode = await opts.siteMode.get();
       sheet.append(
@@ -1273,8 +1383,11 @@ export function mountTrainer(win, opts) {
       if (opts.engineInfoRefresh) opts.engineInfo = opts.engineInfoRefresh();
     }
     const p = S.provider;
-    if (p?.kind === 'live') p.rescan();
-    else if (p?.kind === 'storage') return reread();
+    if (p?.kind === 'live') {
+      if (p.engine.refresh) p.engine.refresh();
+      if (p.relearnAsync) await p.relearnAsync();
+      else p.rescan();
+    } else if (p?.kind === 'storage') return reread();
     renderSources();
     renderAll();
     toast(`Rescanned: ${S.provider?.entries.length ?? 0} variable(s) in ${S.provider?.title || 'this source'}`);
@@ -1629,6 +1742,7 @@ export function mountTrainer(win, opts) {
       d.engines.length ? h('ul', null, d.engines.map((e) => h('li', null, h('b', null, e.name), ` — ${e.channel === 'live' ? 'live' : e.channel === 'live-generic' ? 'live (generic)' : e.channel}${e.evidence ? ` · ${e.evidence}` : ''}`))) : h('p', null, 'No supported engine globals on this page.'),
       d.limitations.length ? h('div', null, d.limitations.map((l) => h('div', { class: 'warnbox' }, h('b', null, l.name), ' — ', l.reason))) : null,
       d.sugarcube && (d.sugarcube.connected || d.sugarcube.verdict !== 'none') ? sugarCubeBlock(d.sugarcube) : null,
+      perfBlock(),
       h('h3', null, `Frames on this page (${d.frames.length})`),
       d.frames.length
         ? d.frames.map((f) =>
@@ -1653,6 +1767,40 @@ export function mountTrainer(win, opts) {
         ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
         : null,
     ));
+  }
+
+  /** Performance Diagnostics: what each stage cost, what was read, what runs in the background. */
+  function perfBlock() {
+    const pl = opts.perf;
+    if (!pl) return null;
+    const p = S.provider;
+    const r = p?.engine?.scanReport?.();
+    const mem = pl.memory();
+    const hubR = hub ? hub.reads : null;
+    const notRead = hub?.provider?.dump?.indexedDBNotRead || [];
+    const skippedVals = hub?.provider?.dump?.skippedValues || 0;
+    const last = pl.lastCompleted();
+    const rows = [
+      ['Profile', `${p?.engine?.profile?.name || '?'}${p?.engine?.profile ? ` · up to ${fmtNum(p.engine.profile.maxNodes)} values, ${p.engine.profile.depth} levels` : ''}${S.safe ? ' · Safe Mode' : ''}`],
+      ['Last completed stage', last ? `${last.name} (${last.ms} ms)` : '—'],
+      ['Running now', pl.current ? pl.current.name : 'nothing'],
+      ['Values read', r ? `${fmtNum(r.count)}${r.truncated ? ' (limits reached)' : ''}${r.stopped ? ' (stopped by you)' : ''}` : p ? fmtNum(p.entries.length) : '—'],
+      ['Variables listed', p ? fmtNum(p.entries.length) : '—'],
+      ['Memory', mem ? `${mem.usedMB} MB JavaScript heap (limit ${mem.limitMB} MB)` : 'not available in this browser (Safari does not report it)'],
+      ['Background', p?.kind === 'live' ? `${p.paused ? 'paused' : 'running'} · learning ${p.engine?.profile?.learnEveryMs ? `every ${p.engine.profile.learnEveryMs / 1000} s` : 'off'} · full re-scan at most every ${Math.round((p.relearnMinMs || 0) / 1000)} s` : '—'],
+      ['Save reads', hubR ? `${hubR.count} read(s), last ${hubR.lastMs} ms, ${fmtNum(Math.round(hubR.lastBytes / 1024))} KB${hub.isPaused() ? ' · sync paused' : ''}` : '—'],
+      ['Button Linker', linkerUI ? `${linkerUI.linker.listenerCount?.() ?? 0} page listeners` : 'not started'],
+    ];
+    return h(
+      'div',
+      { class: 'perfdiag' },
+      h('h3', null, 'Performance'),
+      h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
+      notRead.length ? h('div', { class: 'warnbox' }, `IndexedDB not read (to save memory): ${notRead.slice(0, 6).join(', ')}${notRead.length > 6 ? '…' : ''}.`, h('div', { class: 'btns' }, h('button', { class: 'btn mini', onclick: async () => { toast('Reading IndexedDB…'); await hub.readIndexedDB(); renderAll(); } }, 'Read IndexedDB saves'))) : null,
+      skippedVals ? h('p', { class: 'note' }, `${skippedVals} large binary value(s) in storage were not read (over ${fmtNum(Math.round((hub.profile.maxBinary || 0) / 1024))} KB); they are never written back.`) : null,
+      h('details', null, h('summary', null, `Stages (${pl.stages.length})`), h('ul', null, pl.stages.slice(-20).map((st) => h('li', null, `${st.name}: ${st.done ? `${st.ms} ms` : 'running…'}${st.nodes !== undefined ? ` · ${fmtNum(st.nodes)} values` : ''}${st.variables !== undefined ? ` · ${fmtNum(st.variables)} listed` : ''}${st.error ? ` · error: ${st.error}` : ''}`)))),
+      p?.kind === 'live' && opts.deepScan ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => runDeepScan() }, 'Deep scan')) : null,
+    );
   }
 
   /** Can the trainer reach the running SugarCube State, and why (not)? Plus an exact path lookup. */
@@ -1901,6 +2049,28 @@ export function mountTrainer(win, opts) {
     }
   }
 
+  // ---------- interrupted start → Safe Mode offer
+  function renderStartupChoice() {
+    const rec = S.status.choice;
+    bodyEl.append(
+      h(
+        'div',
+        { class: 'sheet' },
+        h('h2', null, 'SaveForge did not finish starting last time'),
+        h('div', { class: 'warnbox' }, `The last start on this tab stopped during “${rec.stage}” (${new Date(rec.at).toLocaleTimeString()}). The page may have run out of memory or been reloaded. This does not prove SaveForge caused it, but Safe Mode avoids the heavy steps.`),
+        h('h3', null, 'Safe Mode'),
+        h('ul', null, [h('li', null, 'No automatic scan: open a source when you want it (smallest limits).'), h('li', null, 'No save reading, no background learning or save sync, no Button Linker at start.'), h('li', null, 'Everything stays available on request.')]),
+        h(
+          'div',
+          { class: 'btns' },
+          h('button', { class: 'btn go', onclick: () => { opts.enterSafeMode?.(); S.safe = true; S.status = null; opts.onReady?.(); renderSources(); renderAll(); toast('Safe Mode: tap a source above to scan it'); } }, 'Open in Safe Mode'),
+          h('button', { class: 'btn', onclick: () => { S.status = null; selectSource(firstSource()); } }, 'Start normally'),
+        ),
+      ),
+    );
+    setDesc('Choose how to start.');
+  }
+
   // ---------- about / limitations
   function limitationsBlock() {
     if (!opts.limitations?.length) return null;
@@ -1992,9 +2162,13 @@ export function mountTrainer(win, opts) {
       win.clearInterval(poll);
       linkerUI?.dispose();
       scSavesUI?.dispose();
-      for (const pr of S.providers.values()) pr.dispose?.();
+      doc.removeEventListener('visibilitychange', syncPaused);
+      for (const u of unsubs.splice(0)) u();
+      // keep the scan results (paused) so reopening does not scan again, unless turned off
+      const keep = S.providers.size && opts.keepOnClose ? opts.keepOnClose(new Map([...S.providers].filter(([k]) => k !== 'imported'))) : false;
+      if (!keep) for (const pr of S.providers.values()) pr.dispose?.();
       host.remove();
-      opts.onClose?.();
+      opts.onClose?.(keep);
     },
     provider: () => S.provider,
     /** New sources found after opening (e.g. a SugarCube story that started late). */
@@ -2023,10 +2197,22 @@ export function mountTrainer(win, opts) {
   })();
   renderSources();
   setMinimized(S.minimized);
-  if (store) getLinkerUI(); // saved Linker mappings apply only if the user chose "apply automatically"
+  if (store && !opts.interrupted && !opts.safeMode?.()) getLinkerUI(); // saved Linker mappings apply only if the user chose "apply automatically"
   if (store) getScSavesUI(); // a SugarCube save written before a page reload is verified again
-  if (opts.sources.length) selectSource((opts.sources.find((x) => x.id !== 'raw') || opts.sources[0]).id); // the unclassified raw scan only opens on request
-  else {
+  if (opts.prefilled) {
+    for (const [k, pr] of opts.prefilled) {
+      if (!opts.sources.some((x) => x.id === k)) continue;
+      S.providers.set(k, pr);
+      listen(pr);
+    }
+  }
+  const firstSource = () => ([...S.providers.keys()].find((k) => k !== 'raw') || (opts.sources.find((x) => x.id !== 'raw') || opts.sources[0]).id);
+  if (opts.interrupted) {
+    S.status = { choice: opts.interrupted };
+    renderAll();
+  } else if (opts.sources.length) {
+    selectSource(firstSource()); // the unclassified raw scan only opens on request
+  } else {
     S.status = { error: 'No editable game data was found on this page.' };
     renderAll();
   }

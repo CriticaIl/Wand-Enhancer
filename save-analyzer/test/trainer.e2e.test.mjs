@@ -71,8 +71,21 @@ const T = (page) => ({
   rowByName: (label) => page.locator('saveforge-trainer .row').filter({ has: page.locator('.name', { hasText: label }) }).first(),
   async nav(label) {
     const row = page.locator('saveforge-trainer .row .lbl', { hasText: label }).first();
-    // the list is virtualised: rows below the fold exist only after scrolling to them
-    if (!(await row.count())) await page.locator('saveforge-trainer .list').first().evaluate((el) => (el.scrollTop = el.scrollHeight));
+    // the list is virtualised: only rows near the scroll position exist, so scroll to the item's
+    // index (the list may be re-rendered once while sources finish loading: try again briefly)
+    for (let i = 0; i < 20 && !(await row.count()); i++) {
+      await page
+        .locator('saveforge-trainer .list')
+        .first()
+        .evaluate((el, text) => {
+          const items = el._items || [];
+          const idx = items.findIndex((it) => typeof it.label === 'string' && it.label.includes(text));
+          const rowH = items.length ? el.firstChild.offsetHeight / items.length : 56;
+          el.scrollTop = idx >= 0 ? Math.max(0, idx * rowH - 60) : el.scrollHeight;
+        }, label)
+        .catch(() => {});
+      await page.waitForTimeout(200);
+    }
     await row.click();
   },
   tool: (label) => page.locator(`saveforge-trainer .tool[aria-label="${label}"]`).click(),
@@ -1399,6 +1412,7 @@ test('SugarCube save workflow: edit → backup → write to a free slot → load
   assert.equal(await moneyOf(saves.autosave), 20480799, 'the game’s own autosave now carries the edit');
   await page.locator('saveforge-trainer .orb').click();
   await t.home();
+  await page.locator('saveforge-trainer .list').first().evaluate((el) => (el.scrollTop = 0)); // the status is the first row
   await page.locator('saveforge-trainer .row .lbl', { hasText: 'Edited save loaded ✓' }).waitFor();
   // the backup is listed with the other save snapshots
   await t.nav('Backups & restore');

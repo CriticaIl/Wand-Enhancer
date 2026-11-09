@@ -37,8 +37,8 @@ function skippable(v) {
  *   report: {roots: {key: {nodes, strings, skippedStrings, cut, depthLimited}}, getters: [id], gettersCount,
  *            depthLimited, skipped: {tag: n}}  — what was NOT reached and why (Diagnostics)
  */
-export function buildLiveTree(rootObj, opts = {}) {
-  const { rootKeys = null, maxNodes = 60000, maxDepth = 14, skipKey = null, prefix = '$', rootLabel = '(live)', rootBudget = Infinity, maxStrings = Infinity, rootGetters = null } = opts;
+export function createLiveTreeWalker(rootObj, opts = {}) {
+  const { rootKeys = null, maxNodes = 60000, maxDepth = 14, skipKey = null, prefix = '$', rootLabel = '(live)', rootBudget = Infinity, maxStrings = Infinity, rootGetters = null, priorityRoots = null } = opts;
   const refs = new Map();
   const seen = new Map();
   let count = 0;
@@ -50,16 +50,42 @@ export function buildLiveTree(rootObj, opts = {}) {
 
   // iterative BFS so depth-first deep chains cannot starve shallow, useful values
   const queue = [{ obj: rootObj, node: root, depth: 0, keys: rootKeys, rk: null }];
-  for (let qi = 0; qi < queue.length; qi++) {
-    const { obj, node, depth, keys, rk } = queue[qi];
-    queue[qi] = null; // release for GC
-    let names;
-    try {
-      names = keys || Object.keys(obj);
-    } catch {
-      continue;
-    }
-    for (const key of names) {
+  // resumable: step(deadline) walks until the deadline and continues where it stopped,
+  // so a big game can be scanned in small slices while it keeps running
+  let qi = 0;
+  let cur = null;
+  // items of very large arrays (NPC lists, tile maps…) are read after everything else, so
+  // named game state (player, inventory, stats) is reached first within the same budget
+  // order: priority roots (likely game state) → other roots → items of very large arrays.
+  // Nothing is dropped by this ordering; it only decides what is read first within the budget.
+  const lowQ = [];
+  const bigQ = []; // large arrays inside priority roots
+  const bigLowQ = []; // large arrays elsewhere
+  const BIG_ARRAY = 256;
+  function step(deadline = Infinity, signal = null) {
+    let n = 0;
+    for (;;) {
+      if (!cur) {
+        if (qi >= queue.length) {
+          // game state → its large lists → other globals → their large lists
+          const next = bigQ.length ? bigQ : lowQ.length ? lowQ : bigLowQ;
+          if (next.length) queue.push(...next.splice(0));
+        }
+        if (qi >= queue.length) return true;
+        const item = queue[qi];
+        queue[qi++] = null; // release for GC
+        let names;
+        try {
+          names = item.keys || Object.keys(item.obj);
+        } catch {
+          continue;
+        }
+        cur = { ...item, names, ki: 0 };
+      }
+      const { obj, node, depth, rk, names } = cur;
+      while (cur.ki < names.length) {
+        if ((++n & 63) === 0 && (now() > deadline || (signal && signal.aborted))) return false;
+        const key = names[cur.ki++];
       if (count >= maxNodes) {
         truncated = true;
         break;
@@ -147,7 +173,8 @@ export function buildLiveTree(rootObj, opts = {}) {
             const ctor = proto && proto !== Object.prototype && proto !== Array.prototype && proto.constructor && proto.constructor.name;
             if (ctor) child.meta.className = ctor;
           }
-          queue.push({ obj: v, node: child, depth: depth + 1, keys: null, rk: r });
+          const low = priorityRoots && r !== null && !priorityRoots.has(r);
+          (Array.isArray(obj) && names.length > BIG_ARRAY ? (low ? bigLowQ : bigQ) : low ? lowQ : queue).push({ obj: v, node: child, depth: depth + 1, keys: null, rk: r });
           break;
         default:
           continue; // functions, symbols, undefined, bigint
@@ -156,10 +183,47 @@ export function buildLiveTree(rootObj, opts = {}) {
       node.children.push(child);
       count++;
       if (st) st.nodes++;
+      }
+      cur = null;
     }
   }
-  return { root, refs, count, truncated, report };
+  return {
+    step,
+    result: () => ({ root, refs, count, truncated, report }),
+    progress: () => ({ count, pending: queue.length - qi + lowQ.length + bigQ.length + bigLowQ.length + (cur ? 1 : 0) }),
+  };
 }
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+/** Synchronous walk (small trees, tests). */
+export function buildLiveTree(rootObj, opts = {}) {
+  const w = createLiveTreeWalker(rootObj, opts);
+  w.step(Infinity);
+  return w.result();
+}
+
+/**
+ * Time-sliced walk: works for at most `sliceMs` at a time, then yields so the game can
+ * render frames. `signal.aborted` (Stop scanning) ends it early with what was found so far
+ * (marked stopped, never silently).
+ */
+export async function buildLiveTreeAsync(rootObj, opts = {}, { sliceMs = 8, signal = null, yieldFn = defaultYield, onProgress = null } = {}) {
+  const w = createLiveTreeWalker(rootObj, opts);
+  for (;;) {
+    const done = w.step(now() + sliceMs, signal);
+    if (onProgress) onProgress(w.progress());
+    if (done) return w.result();
+    if (signal && signal.aborted) {
+      const r = w.result();
+      r.truncated = true;
+      r.stopped = true;
+      return r;
+    }
+    await yieldFn();
+  }
+}
+const defaultYield = () => new Promise((r) => setTimeout(r, 0));
 
 /** Converts user input to a JS value for a live node (JS has a single number type). */
 export function coerceLive(node, input) {

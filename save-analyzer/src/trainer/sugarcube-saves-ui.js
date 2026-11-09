@@ -60,7 +60,7 @@ export function createSugarCubeSavesUI(ctx) {
 
   function render(v) {
     if (pending && !v.fresh) return renderLoad(v);
-    const sc = readSugarCubeStorage(win);
+    const sc = readSugarCubeStorage(win, { fresh: true });
     const sheet = h('div', { class: 'sheet scsave' }, h('h2', null, 'Edit a SugarCube save'));
     bodyEl.append(sheet);
     if (!sc.saves.length) {
