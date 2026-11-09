@@ -9,6 +9,7 @@ import { backupOriginal, deleteBackup, listBackups } from './backups.js';
 import { add, clear, displayValue, draggable, fmtBytes, h, icon } from './dom.js';
 import { SAMPLES } from './sample-data.js';
 import { openTrainer } from '../trainer/inject.js';
+import { BUILD, VERSION } from '../version.js';
 import { decodeShare, encodeShare, SHARE_PREFIX } from '../core/share.js';
 import { FileProvider } from '../trainer/providers.js';
 import { createStore } from '../trainer/store.js';
@@ -81,7 +82,7 @@ export function start(root) {
       'div',
       { class: 'brand' },
       h('div', { class: 'logo' }, icon('logo')),
-      h('div', null, h('h1', null, 'SAVEFORGE'), h('small', null, 'Save analyzer · mod menu')),
+      h('div', null, h('h1', null, 'SAVEFORGE'), h('small', null, 'Save analyzer · mod menu'), h('small', { class: 'appversion', title: `Build ${BUILD}` }, ` · v${VERSION}`)),
       h('button', { class: 'btn icon small ghost', style: { marginLeft: 'auto' }, 'aria-label': 'Help and supported formats', onclick: () => showHelp() }, icon('info')),
     ),
     toolbarEl,
@@ -1353,8 +1354,29 @@ function showHelp() {
         'The original file is backed up automatically before the first change.',
         'Every export is re-decoded and compared field by field before you download it.',
       ].map((t) => h('li', null, t))),
-      h('div', { class: 'row', style: { marginTop: '14px' } }, h('button', { class: 'btn', onclick: () => back.remove() }, 'Close')),
+      h('h3', null, 'Version'),
+      h('p', { class: 'muted appversion-full' }, `SaveForge ${VERSION} · build ${BUILD}`),
+      h('p', { class: 'muted' }, 'The build is a fingerprint of the code: the floating trainer (header and Diagnostics) and the userscript show the same build when they are the same code. After an update, a page can show the previous version for a few minutes (browser cache).'),
+      h(
+        'div',
+        { class: 'row', style: { marginTop: '14px' } },
+        h('button', { class: 'btn', onclick: () => reloadLatest() }, 'Reload latest version'),
+        h('button', { class: 'btn', onclick: () => back.remove() }, 'Close'),
+      ),
     ),
   );
   document.body.append(back);
+}
+
+/** Drops this site's offline copies and reloads from the server (after a deploy). */
+async function reloadLatest() {
+  try {
+    if ('serviceWorker' in navigator) for (const r of await navigator.serviceWorker.getRegistrations()) await r.update().catch(() => {});
+    if (typeof caches !== 'undefined') for (const k of await caches.keys()) if (/^saveforge/.test(k)) await caches.delete(k);
+  } catch {
+    /* nothing cached */
+  }
+  const u = new URL(location.href);
+  u.searchParams.set('v', Date.now().toString(36));
+  location.replace(u.href);
 }

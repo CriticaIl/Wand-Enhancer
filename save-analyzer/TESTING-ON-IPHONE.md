@@ -1,5 +1,24 @@
 # SaveForge 2.2 on iPhone: install, test and what to expect
 
+## Which version am I running? (2.2.2)
+Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
+
+| Where | How to see it |
+| --- | --- |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.2.2**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.2.2 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.2.2**. Diagnostics → *This copy: SaveForge 2.2.2 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.2.2** |
+
+**If the website still shows an older version:**
+- **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
+- **The Userscripts app.** It checks for updates on its own schedule. Open the install link again (USERSCRIPT.md) and tap **Update**, then reload the game page.
+
+**What changed in 2.2.2:**
+- **Why "2.2.1" never appeared on the website:** the website never showed a version anywhere. It does now, and the trainer and userscript read the same version file.
+- **The main page** now loads one bundled file whose address changes with every build. Safari can no longer mix cached old parts with new ones after an update.
+- **The offline copy** (service worker) is replaced with each build and checks with the server instead of reusing cached copies.
+- **A test fails** if the published files were not rebuilt from the current code.
+
 ## Fixed in 2.2.1
 - **Timers left running after closing.** When the trainer was opened by the userscript, closing it skipped SaveForge's own cleanup: the userscript's close handler replaced it instead of running alongside. Each close left a timer behind (on SugarCube games, a check every second), and they added up with every reopen. Fixed; a test opens and closes SaveForge three times and checks nothing keeps running.
 - **No more second menu.** If two SaveForge copies run on a page (two installed scripts, an old and a new copy, or the userscript plus the Safari extension), each used to open its own panel. Now the second copy shows the existing panel, and **Diagnostics** says how many copies are running.
@@ -117,7 +136,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.2.1** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.2.2** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -168,7 +187,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 182 tests)
+### Verified by the automated tests (Chromium, 184 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -257,7 +276,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.2.1 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.2.2 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

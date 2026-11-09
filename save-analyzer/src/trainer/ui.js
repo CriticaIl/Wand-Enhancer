@@ -1777,7 +1777,7 @@ export function mountTrainer(win, opts) {
   /** More than one SaveForge copy on this page (two installed scripts, old + new, extension + script). */
   function copiesBlock() {
     const list = opts.copies ? opts.copies() : [];
-    const text = `This copy: SaveForge ${opts.sfVersion || '?'}`;
+    const text = `This copy: SaveForge ${opts.sfVersion || '?'} (build ${opts.sfBuild || '?'})`;
     if (list.length <= 1) return h('p', { class: 'note' }, `${text}. No other SaveForge copy opened on this page.`);
     return h(
       'div',

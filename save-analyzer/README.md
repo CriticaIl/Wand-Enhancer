@@ -110,6 +110,9 @@ The **Game** tab opens any http(s) game URL in a frame, with the floating mod me
 
 ## Development
 
+- `npm run build` regenerates `src/version.js` (version from `package.json` + a build fingerprint of `src/`), the bundles in `standalone/`, the userscripts, `standalone/sw.js` and `index.html`. The published site's `index.html` loads `standalone/app.js?v=<build>`; open `dev.html` to run the unbundled source modules. `test/version.test.mjs` fails when the published files are not built from the current source.
+
+
 ```sh
 cd save-analyzer
 npm install          # esbuild (build), lz-string + pako (reference implementations for tests)

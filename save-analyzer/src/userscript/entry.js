@@ -12,7 +12,7 @@
 import { openTrainer } from '../trainer/inject.js';
 import { getMode, looksLikeGame, probeContext, setMode } from './activation.js';
 
-const VERSION = typeof __SAVEFORGE_VERSION__ === 'string' ? __SAVEFORGE_VERSION__ : 'dev';
+import { BUILD, VERSION } from '../version.js';
 // 'auto' for the normal script; the "always visible" variant is built with 'always'
 const DEFAULT_MODE = typeof __SAVEFORGE_DEFAULT_MODE__ === 'string' ? __SAVEFORGE_DEFAULT_MODE__ : 'auto';
 // re-check for games that appear late (lazy loaders, "Play" buttons, ads before the game)
@@ -28,6 +28,7 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
 
   const api = {
     version: VERSION,
+    build: BUILD,
     open,
     openHere: () => openHere(),
     frameReports: () => [...reports.values()],

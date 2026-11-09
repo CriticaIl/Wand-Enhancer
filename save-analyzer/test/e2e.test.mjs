@@ -113,3 +113,39 @@ test('bookmarklet: export from the game page, edit, import back', { skip, timeou
     server.close();
   }
 });
+
+test('the website shows its version and build, the same as the trainer it opens', { skip, timeout: 60000 }, async () => {
+  const server = await serve();
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const browser = await playwright.chromium.launch();
+  const { readFileSync } = await import('node:fs');
+  const v = readFileSync(join(ROOT, 'src/version.js'), 'utf8');
+  const VERSION = /VERSION = '([^']+)'/.exec(v)[1];
+  const BUILD = /BUILD = '([^']+)'/.exec(v)[1];
+  try {
+    for (const path of ['/index.html', '/standalone/SaveForge.html']) {
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(`${base}${path}`);
+      assert.equal((await page.locator('.brand .appversion').innerText()).trim(), `· v${VERSION}`, path);
+      await page.click('button[aria-label="Help and supported formats"]');
+      assert.equal(await page.locator('.appversion-full').innerText(), `SaveForge ${VERSION} · build ${BUILD}`, path);
+      // the trainer opened from this site is the same build
+      await page.click('.modal .btn:has-text("Close")');
+      await page.click('.tabbar button:has-text("Game")');
+      await page.fill('input[type=url]', `${base}/test/fixtures/demo-game/`);
+      await page.click('button:has-text("Launch")');
+      await page.frameLocator('iframe').locator('#coins').waitFor();
+      await page.click('button:has-text("Open trainer over game")');
+      const frame = page.frameLocator('iframe');
+      await frame.locator('saveforge-trainer .row').first().waitFor();
+      assert.equal(await frame.locator('saveforge-trainer .title small').innerText(), `TRAINER ${VERSION}`, `${path}: trainer header`);
+      assert.deepEqual(errors, [], path);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+    server.close();
+  }
+});

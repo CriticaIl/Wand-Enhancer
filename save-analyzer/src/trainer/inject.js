@@ -7,6 +7,7 @@ import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
 import { frameLabel, LiveProvider } from './providers.js';
 import { createStore } from './store.js';
 import { SaveHub } from './save-hub.js';
+import { BUILD, VERSION } from '../version.js';
 import { createSignal, finishStartup, interruptedStartup, PerfLog, PROFILES, resolveSettings } from './perf.js';
 import { probeSugarCube, sugarCubeBridge, storyMarkers, pageBridge } from './sugarcube-live.js';
 import { sugarCubeDirect } from './engines.js';
@@ -42,7 +43,8 @@ export function listGameFrames(win, reports = []) {
 }
 
 /** This copy of SaveForge (userscript, bookmarklet, extension…): version + an id per JS world. */
-export const SF_VERSION = typeof __SAVEFORGE_VERSION__ === 'string' ? __SAVEFORGE_VERSION__ : 'dev';
+export const SF_VERSION = VERSION;
+export const SF_BUILD = BUILD;
 const SF_ID = Math.random().toString(36).slice(2, 8);
 
 /** Every SaveForge copy that opened a trainer on this page (shared through the DOM). */
@@ -355,6 +357,7 @@ export function openTrainer(win, extra = {}) {
     saveHub: hub,
     store: uiStore,
     sfVersion: SF_VERSION,
+    sfBuild: SF_BUILD,
     sfId: SF_ID,
     copies: () => saveforgeCopies(win),
     onClose: (kept) => {
