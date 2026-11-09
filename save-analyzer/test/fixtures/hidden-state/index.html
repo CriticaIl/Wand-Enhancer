@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hidden state</title>
+<!-- Regression fixture (SaveForge 1.8): game state in places a window walk misses.
+       - script-level `let` / `const` (globals, but not window properties)
+       - a state global created later (after "Start"), which only a real rescan finds
+       - a SugarCube-shaped engine: story variables behind State.variables (a getter)
+         and story data in setup
+       - a getter on window and a Map (reported as not reachable, never invoked) -->
+<style>body { margin: 0; font: 16px system-ui, sans-serif; background: #111827; color: #f9fafb; } button { font: inherit; padding: 10px; }</style>
+<script>
+  let save = { gold: 777, chapter: 2, flags: { metKing: true } };
+  let coins = 10;
+  const shopPrices = { potion: 15, sword: 120 };
+  var registry = new Map([['money', 555]]);
+  Object.defineProperty(window, 'secretGold', { get: function () { return 999; }, configurable: true });
+  (function () {
+    var vars = { money: 3200, affection: { olivia: 12, emily: 7 }, inventory: { phone: true } };
+    window.SugarCube = {
+      State: { get variables() { return vars; }, get passage() { return 'Start'; } },
+      setup: { shop: { prices: { laptop: 900, desktop: 1500 } }, npcs: { olivia: { maxAffection: 100 } } },
+      Engine: { show: function () {} },
+    };
+  })();
+  function start() {
+    window.lateState = { computerStore: { money: 4321, customers: 2 } };
+    document.getElementById('st').textContent = 'Started: ' + lateState.computerStore.money;
+  }
+  function show() {
+    document.getElementById('g').textContent = 'Gold ' + save.gold + ' · coins ' + coins;
+  }
+  addEventListener('DOMContentLoaded', show);
+</script>
+</head>
+<body>
+<p id="g"></p>
+<button id="start" onclick="start()">Start</button>
+<p id="st"></p>
+</body>
+</html>

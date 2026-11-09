@@ -885,3 +885,120 @@ test('Linker: SugarCube-style story links can be inspected and relinked to anoth
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+// ---------------------------------------------------------------- 1.8: discoverability regressions
+// 1.6/1.7 walked every global with one shared breadth-first budget: a large
+// dialogue/translation table used it up and deeper money was never reached, not
+// even with "Include website globals" or a value search (seen on a real game).
+
+test('regression: money deep in a game global stays discoverable next to a huge dialogue table', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/test/fixtures/dialogue-heavy/?lines=12000');
+  await inject(page);
+  await page.waitForTimeout(1200);
+  const paths = await page.evaluate(() => window.__saveforgeTrainer.provider().entries.map((e) => `${e.path}@${e.section}`));
+  assert.ok(paths.includes('window › game › state › player › wallet › computerStoreMoney@money'), paths.slice(0, 20).join(' | '));
+  const t = T(page);
+  // the exact value search finds it
+  await t.search('28480799');
+  assert.deepEqual(await page.locator('saveforge-trainer .row .name').allTextContents(), ['Computer Store Money']);
+  await t.setNumber('Computer Store Money', 99999999);
+  assert.equal(await page.evaluate(() => window.game.state.player.wallet.computerStoreMoney), 99999999);
+  // Diagnostics full scan: the value is reached and listed; the dialogue cap is reported, not hidden
+  await t.home();
+  await t.nav('Diagnostics');
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('button', { hasText: 'Run full scan' }).click();
+  await sheet.locator('.fullscan dl').waitFor({ timeout: 10000 });
+  assert.match(await sheet.locator('.fullscan').innerText(), /dialogues \(\d+ texts skipped\)/);
+  await sheet.locator('.fullscan input').fill('99,999,999');
+  await sheet.locator('.fullscan .btn', { hasText: 'Find' }).click();
+  assert.match(await sheet.locator('.fullscan .lookup').innerText(), /game\.state\.player\.wallet\.computerStoreMoney = 99999999\s+Listed \(game variable/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('hidden state: script-level let/const, state created later (Rescan), SugarCube setup, and an honest full scan', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame('/test/fixtures/hidden-state/');
+  await inject(page);
+  const t = T(page);
+  // SugarCube story variables and setup objects
+  const sc = await page.evaluate(() => window.__saveforgeTrainer.provider().entries.map((e) => e.path).join('|'));
+  assert.match(sc, /State\.variables\.money/);
+  assert.match(sc, /setup › shop › prices › laptop/);
+  // script-level variables are found and edited for real
+  await t.chip('Other game state');
+  await page.waitForTimeout(1200);
+  const g = await page.evaluate(() => window.__saveforgeTrainer.provider().entries.map((e) => e.path).join('|'));
+  for (const want of ['window › coins', 'window › save › gold', 'window › shopPrices › sword']) assert.ok(g.includes(want), `${want}: ${g}`);
+  await t.search('coins');
+  await t.setNumber('Coins', 50);
+  assert.equal(await page.evaluate(() => coins), 50, 'let coins changed in the game');
+  await t.search('gold');
+  await t.setNumber('Gold', 800);
+  assert.equal(await page.evaluate(() => save.gold), 800);
+  // state created after the trainer opened is found by Rescan
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#start').click();
+  await page.locator('saveforge-trainer .orb').click();
+  await t.home();
+  await t.nav('Rescan game');
+  await page.waitForFunction(() => window.__saveforgeTrainer.provider().entries.some((e) => /lateState › computerStore › money/.test(e.path)), null, { timeout: 4000 });
+  // full scan: what cannot be reached is named, never invented
+  await t.home();
+  await t.nav('Diagnostics');
+  const sheet = page.locator('saveforge-trainer .sheet');
+  await sheet.locator('button', { hasText: 'Run full scan' }).click();
+  await sheet.locator('.fullscan dl').waitFor({ timeout: 10000 });
+  const full = await sheet.locator('.fullscan').innerText();
+  assert.match(full, /getter propert(y|ies) \(never called\): .*secretGold/);
+  assert.match(full, /1 Map/);
+  assert.match(full, /Script-level let\/const variables: .*save/);
+  await sheet.locator('.fullscan input').fill('999');
+  await sheet.locator('.fullscan .btn', { hasText: 'Find' }).click();
+  assert.match(await sheet.locator('.fullscan .lookup').innerText(), /not in any variable SaveForge can reach/);
+  await sheet.locator('.fullscan input').fill('3200');
+  await sheet.locator('.fullscan .btn', { hasText: 'Find' }).click();
+  assert.match(await sheet.locator('.fullscan .lookup').innerText(), /SugarCube\.State\.variables\.money = 3200\s+Listed by the engine source/);
+  // search across everything reachable, regardless of classification
+  await t.home();
+  await t.search('olivia');
+  await page.locator('saveforge-trainer .raw-search').click();
+  await page.locator('saveforge-trainer .chip[aria-pressed=true]', { hasText: 'All variables (raw)' }).waitFor();
+  await page.locator('saveforge-trainer .row .name').nth(1).waitFor({ timeout: 10000 }); // the raw source loads first
+  const raw = await page.evaluate(() => window.__saveforgeTrainer.provider().entries.filter((e) => /olivia/i.test(e.path)).map((e) => e.path).join('|'));
+  assert.match(raw, /SugarCube\.State\.variables › affection › olivia/);
+  assert.match(raw, /SugarCube\.setup › npcs › olivia › maxAffection/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('regression: variables that were editable in earlier versions are still discoverable and editable', { skip, timeout: 120000 }, async () => {
+  const cases = [
+    ['/demo-games/neon-courier/', /window › game › credits$/],
+    ['/demo-games/boutique/', /window › jeu › magasin › argent$/],
+    ['/demo-games/sakura-market/', /window › データ › 所持金$/],
+    ['/demo-games/sakura-market/', /window › estado › monedas$/],
+    ['/demo-games/lantern-tale/', /State\.variables\.gold$/],
+    ['/demo-games/crystal-quest/', /party › _gold$/],
+    ['/demo-games/tap-miner/', /globals › Ore$/],
+    ['/demo-games/star-runner/', /registry › stars$/],
+    ['/test/fixtures/generic-app/', /window › argent$/],
+    ['/test/fixtures/linker-game/', /window › joueur › argent$/],
+    ['/test/fixtures/dialogue-heavy/', /computerStoreMoney$/],
+  ];
+  for (const [path, re] of cases) {
+    const { page, ctx, errors } = await openGame(path);
+    await inject(page);
+    await page.waitForTimeout(900);
+    const found = await page.evaluate((src) => {
+      const p = window.__saveforgeTrainer.provider();
+      const e = p.entries.find((x) => new RegExp(src).test(x.path));
+      return e ? { path: e.path, editable: p.node(e.nodeId).editable, value: p.value(e.nodeId) } : { missing: p.entries.slice(0, 12).map((x) => x.path) };
+    }, re.source);
+    assert.ok(!found.missing, `${path}: ${re} not found; have ${JSON.stringify(found.missing)}`);
+    assert.equal(found.editable, true, `${path}: ${found.path} editable`);
+    assert.equal(typeof found.value, 'number', `${path}: ${found.path} live value`);
+    assert.deepEqual(errors, [], path);
+    await ctx.close();
+  }
+});

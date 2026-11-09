@@ -256,6 +256,30 @@ test('Linker code reader: finds written variables and called functions without r
   assert.deepEqual(callsIn('if (ok) { buy(1); render(); } else alert("x")').sort(), ['alert', 'buy', 'render']);
 });
 
+test('scan budgets: one huge global cannot hide values in another; skipped text and getters are reported', () => {
+  const dialogues = {};
+  for (let i = 0; i < 15000; i++) dialogues[`line ${i}`] = { De: `Text ${i}`, Fr: `Texte ${i}` };
+  const win = { dialogues, game: { a: { b: { c: { money: 28480799 } } } } };
+  Object.defineProperty(win, 'secret', { get: () => 1, enumerable: true });
+  // the 1.6/1.7 shape: one shared budget, dialogue first → money never reached
+  const old = buildLiveTree(win, { rootKeys: ['dialogues', 'game'], maxNodes: 40000, maxDepth: 7 });
+  assert.ok(!JSON.stringify(old.root).includes('28480799'), 'reproduces the regression');
+  const t = buildLiveTree(win, { rootKeys: ['dialogues', 'game', 'secret'], maxNodes: 90000, maxDepth: 10, rootBudget: 20000, maxStrings: 4000 });
+  assert.ok(JSON.stringify(t.root).includes('28480799'), 'money reached');
+  assert.equal(t.report.roots.dialogues.strings, 4000);
+  assert.equal(t.report.roots.dialogues.skippedStrings, 26000);
+  assert.equal(t.report.roots.dialogues.cut, false);
+  // a global bigger than its own budget is cut — and only that global
+  const big = buildLiveTree(win, { rootKeys: ['dialogues', 'game'], maxNodes: 90000, maxDepth: 10, rootBudget: 10000, maxStrings: 4000 });
+  assert.equal(big.report.roots.dialogues.cut, true);
+  assert.ok(JSON.stringify(big.root).includes('28480799'));
+  assert.equal(t.report.gettersCount, 1);
+  assert.deepEqual(t.report.getters, ['$/secret']);
+  // explicit engine getters are read on purpose (SugarCube.State.variables)
+  const g = buildLiveTree({}, { rootKeys: ['SugarCube.State.variables'], rootGetters: { 'SugarCube.State.variables': () => ({ money: 5 }) } });
+  assert.equal(g.root.children[0].children[0].value, 5);
+});
+
 // ---------------------------------------------------------------- translation (offline)
 test('translation: dictionary words are translations, abbreviations are guesses, unknown text is not invented', async () => {
   const { toEnglish, englishLabel } = await import('../src/core/translate.js');

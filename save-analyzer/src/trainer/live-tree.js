@@ -29,22 +29,29 @@ function skippable(v) {
 
 /**
  * @param rootObj  object to walk
- * @param opts {rootKeys?: string[], maxNodes?, maxDepth?, skipKey?(key, depth, obj) => bool, prefix?}
- * @returns {root, refs: Map<id, {obj, key}>, count, truncated}
+ * @param opts {rootKeys?: string[], maxNodes?, maxDepth?, skipKey?(key, depth, obj) => bool, prefix?,
+ *              rootBudget?: max nodes under one root key (so one huge global cannot starve the others),
+ *              maxStrings?: max text values under one root key (numbers and switches are never skipped for text),
+ *              rootGetters?: {key: () => value} explicit roots read through a documented engine getter}
+ * @returns {root, refs: Map<id, {obj, key}>, count, truncated, report}
+ *   report: {roots: {key: {nodes, strings, skippedStrings, cut, depthLimited}}, getters: [id], gettersCount,
+ *            depthLimited, skipped: {tag: n}}  — what was NOT reached and why (Diagnostics)
  */
 export function buildLiveTree(rootObj, opts = {}) {
-  const { rootKeys = null, maxNodes = 60000, maxDepth = 14, skipKey = null, prefix = '$', rootLabel = '(live)' } = opts;
+  const { rootKeys = null, maxNodes = 60000, maxDepth = 14, skipKey = null, prefix = '$', rootLabel = '(live)', rootBudget = Infinity, maxStrings = Infinity, rootGetters = null } = opts;
   const refs = new Map();
   const seen = new Map();
   let count = 0;
   let truncated = false;
+  const report = { roots: {}, getters: [], gettersCount: 0, depthLimited: 0, skipped: {} };
+  const rs = (k) => report.roots[k] || (report.roots[k] = { nodes: 0, strings: 0, skippedStrings: 0, cut: false, depthLimited: 0 });
   const root = makeNode(prefix, rootLabel, Array.isArray(rootObj) ? 'array' : 'object', { children: [] });
   seen.set(rootObj, prefix);
 
   // iterative BFS so depth-first deep chains cannot starve shallow, useful values
-  const queue = [{ obj: rootObj, node: root, depth: 0, keys: rootKeys }];
+  const queue = [{ obj: rootObj, node: root, depth: 0, keys: rootKeys, rk: null }];
   for (let qi = 0; qi < queue.length; qi++) {
-    const { obj, node, depth, keys } = queue[qi];
+    const { obj, node, depth, keys, rk } = queue[qi];
     queue[qi] = null; // release for GC
     let names;
     try {
@@ -57,36 +64,70 @@ export function buildLiveTree(rootObj, opts = {}) {
         truncated = true;
         break;
       }
-      if (skipKey && skipKey(key, depth, obj)) continue;
-      let desc;
-      try {
-        desc = Object.getOwnPropertyDescriptor(obj, key);
-      } catch {
-        continue;
+      const r = rk ?? (depth === 0 ? String(key) : null);
+      const st = r !== null ? rs(r) : null;
+      if (st && st.nodes >= rootBudget) {
+        st.cut = true;
+        truncated = true;
+        break;
       }
-      if (!desc || !('value' in desc)) continue; // accessor: never invoke getters
-      const v = desc.value;
+      if (skipKey && skipKey(key, depth, obj)) continue;
+      let v;
+      let writable = true;
+      const getter = depth === 0 && rootGetters && Object.prototype.hasOwnProperty.call(rootGetters, key) ? rootGetters[key] : null;
+      if (getter) {
+        try {
+          v = getter();
+        } catch {
+          continue;
+        }
+      } else {
+        let desc;
+        try {
+          desc = Object.getOwnPropertyDescriptor(obj, key);
+        } catch {
+          continue;
+        }
+        if (!desc) continue;
+        if (!('value' in desc)) {
+          // accessor: never invoke getters, but say where they are
+          report.gettersCount++;
+          if (report.getters.length < 60) report.getters.push(childId(node.id, key));
+          continue;
+        }
+        v = desc.value;
+        writable = desc.writable !== false;
+      }
       const id = childId(node.id, key);
       let child = null;
       switch (typeof v) {
         case 'number':
           if (!Number.isFinite(v)) continue;
-          child = makeNode(id, key, Number.isInteger(v) ? 'int' : 'float', { value: v, editable: desc.writable !== false });
+          child = makeNode(id, key, Number.isInteger(v) ? 'int' : 'float', { value: v, editable: writable });
           child.meta.jsNumber = true;
           break;
         case 'boolean':
-          child = makeNode(id, key, 'bool', { value: v, editable: desc.writable !== false });
+          child = makeNode(id, key, 'bool', { value: v, editable: writable });
           break;
         case 'string':
           if (v.length > 4096) continue;
-          child = makeNode(id, key, 'string', { value: v, editable: desc.writable !== false });
+          if (st && st.strings >= maxStrings) {
+            st.skippedStrings++;
+            continue;
+          }
+          if (st) st.strings++;
+          child = makeNode(id, key, 'string', { value: v, editable: writable });
           break;
         case 'object':
           if (v === null) {
             child = makeNode(id, key, 'null', { value: null });
             break;
           }
-          if (skippable(v)) continue;
+          if (skippable(v)) {
+            const tag = tagOf(v);
+            if (/^(Map|Set|WeakMap|WeakSet|Promise)$/.test(tag) || (/Array$/.test(tag) && tag !== 'Array')) report.skipped[tag] = (report.skipped[tag] || 0) + 1;
+            continue;
+          }
           if (seen.has(v)) {
             child = makeNode(id, key, 'ref', { value: seen.get(v) });
             child.meta.refTo = seen.get(v);
@@ -95,6 +136,8 @@ export function buildLiveTree(rootObj, opts = {}) {
           }
           if (depth + 1 >= maxDepth) {
             truncated = true;
+            report.depthLimited++;
+            if (st) st.depthLimited++;
             continue;
           }
           seen.set(v, id);
@@ -104,7 +147,7 @@ export function buildLiveTree(rootObj, opts = {}) {
             const ctor = proto && proto !== Object.prototype && proto !== Array.prototype && proto.constructor && proto.constructor.name;
             if (ctor) child.meta.className = ctor;
           }
-          queue.push({ obj: v, node: child, depth: depth + 1, keys: null });
+          queue.push({ obj: v, node: child, depth: depth + 1, keys: null, rk: r });
           break;
         default:
           continue; // functions, symbols, undefined, bigint
@@ -112,9 +155,10 @@ export function buildLiveTree(rootObj, opts = {}) {
       if (!child.children) refs.set(id, { obj, key });
       node.children.push(child);
       count++;
+      if (st) st.nodes++;
     }
   }
-  return { root, refs, count, truncated };
+  return { root, refs, count, truncated, report };
 }
 
 /** Converts user input to a JS value for a live node (JS has a single number type). */

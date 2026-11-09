@@ -130,4 +130,11 @@ On many portals (game catalogue sites), the page you see is the *portal*. The ga
 - **The trainer opens but says no data was found:**
   - Open **Diagnostics**. The game may be in a frame (see above).
   - Otherwise the game keeps its state somewhere Safari won't let pages reach: inside closures, in WebAssembly (Unity, Godot, Ren'Py web), or on a server. Try the *Saves in storage* source after saving in-game.
+- **A number on screen can't be found:** open **Diagnostics → Run full scan → Look up a value**, and type the number as shown (`28,480,799` is fine). It tells you whether the value is:
+  - **listed**
+  - **excluded** (tap *Mark as game*)
+  - **not reached** by the normal scan (it's in **All variables (raw)**)
+  - **not reachable at all** (and why)
+
+  In Search, *Search all accessible variables* repeats your search over everything reachable.
 - **A game value is missing:** open **Diagnostics → Why was this excluded?**, find it and tap *Mark as game* (remembered for that site). Or play for a few seconds: values that change are promoted automatically. *Include website globals (advanced)* is still there, but should not be needed.

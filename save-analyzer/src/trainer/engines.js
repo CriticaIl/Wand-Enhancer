@@ -158,16 +158,27 @@ function sugarCube(win) {
   return {
     id: 'sugarcube',
     name: 'SugarCube (Twine)',
-    evidence: 'window.SugarCube.State.variables is present',
+    evidence: 'window.SugarCube.State.variables is present (story variables and setup objects)',
     channel: 'live',
     note: 'Connected to SugarCube.State.variables (the active moment). Story logic sees changes immediately; text already on screen updates when the passage is re-rendered. Save in-game to keep them.',
     root() {
       // mirror SugarCube's save layout so the existing SugarCube profile labels apply ($name).
       // State.variables is read on every access: SugarCube makes a new copy on each passage.
-      return { state: { history: [{ title: safe(() => SC.State.passage) || 'current', variables: SC.State.variables }], index: 0 } };
+      // setup: the story's own objects (item tables, shops, NPC data…), often edited by
+      // story code through setup.* — data properties only, functions are skipped
+      const root = { state: { history: [{ title: safe(() => SC.State.passage) || 'current', variables: SC.State.variables }], index: 0 } };
+      const setup = safe(() => SC.setup);
+      if (setup && typeof setup === 'object') root.setup = setup;
+      return root;
     },
     snapshot() {
-      return buildLiveTree(this.root(), { maxNodes: 60000, maxDepth: 14, rootLabel: 'SugarCube' });
+      // story variables and setup get separate budgets so a large setup table cannot hide $variables
+      const t = buildLiveTree(this.root(), { maxNodes: 90000, maxDepth: 14, rootBudget: 45000, maxStrings: 8000, rootLabel: 'SugarCube' });
+      this.lastReport = { ...t.report, count: t.count, truncated: t.truncated };
+      return t;
+    },
+    scanReport() {
+      return this.lastReport || null;
     },
     actions: [
       {
@@ -232,39 +243,55 @@ function genericGlobals(win, hasEngine) {
   } catch {
     baseline = new Set(Object.getOwnPropertyNames(Object.getPrototypeOf(win) || {}));
   }
-  let names;
-  try {
-    names = Object.getOwnPropertyNames(win);
-  } catch {
-    return null;
-  }
   const pageGlobals = [];
   const prefiltered = []; // shown in Diagnostics as excluded, never scanned
-  for (const k of names) {
-    if (baseline.has(k) || /^on[a-z]+$/.test(k) || /^__saveforge/.test(k)) continue;
-    if (LIB_GLOBALS.test(k)) {
-      if (prefiltered.length < 200) prefiltered.push(k);
-      continue;
-    }
-    let d;
+  const lexical = lexicalGlobals(win);
+  /** (Re)lists the page's own globals. Called again by Rescan: games often create their state after the first look. */
+  const collect = () => {
+    let names;
     try {
-      d = Object.getOwnPropertyDescriptor(win, k);
+      names = Object.getOwnPropertyNames(win);
     } catch {
-      continue;
+      return false;
     }
-    if (!d || !('value' in d)) continue;
-    const v = d.value;
-    if (typeof v === 'function' || v === undefined) continue;
-    // DOM nodes, windows and frames (an <iframe id="x"> creates a global that is
-    // the frame's window; reading anything from a cross-origin one throws)
-    if (typeof v === 'object' && v !== null && isNodeOrWindow(v, win)) continue;
-    // engine objects handled by a dedicated adapter (Phaser game instances)
-    if (safe(() => v && typeof v === 'object' && v.registry && v.scene && Array.isArray(v.scene.scenes))) continue;
-    pageGlobals.push(k);
-  }
+    pageGlobals.length = 0;
+    prefiltered.length = 0;
+    for (const k of names) {
+      if (baseline.has(k) || /^on[a-z]+$/.test(k) || /^__saveforge/.test(k)) continue;
+      if (LIB_GLOBALS.test(k)) {
+        if (prefiltered.length < 200) prefiltered.push(k);
+        continue;
+      }
+      let d;
+      try {
+        d = Object.getOwnPropertyDescriptor(win, k);
+      } catch {
+        continue;
+      }
+      if (!d || !('value' in d)) continue;
+      const v = d.value;
+      if (typeof v === 'function' || v === undefined) continue;
+      // DOM nodes, windows and frames (an <iframe id="x"> creates a global that is
+      // the frame's window; reading anything from a cross-origin one throws)
+      if (typeof v === 'object' && v !== null && isNodeOrWindow(v, win)) continue;
+      // engine objects handled by a dedicated adapter (Phaser game instances)
+      if (safe(() => v && typeof v === 'object' && v.registry && v.scene && Array.isArray(v.scene.scenes))) continue;
+      pageGlobals.push(k);
+    }
+    // script-level let/const/class bindings are globals too, but never window properties
+    for (const k of lexical.names()) {
+      if (pageGlobals.includes(k) || LIB_GLOBALS.test(k)) continue;
+      const v = lexical.get(k);
+      if (typeof v === 'function' || v === undefined || (v && typeof v === 'object' && isNodeOrWindow(v, win))) continue;
+      pageGlobals.push(k);
+    }
+    return true;
+  };
+  if (!collect()) return null;
   if (!pageGlobals.length) return null;
 
   const read = (k) => {
+    if (lexical.has(k)) return lexical.get(k);
     try {
       return Object.getOwnPropertyDescriptor(win, k)?.value;
     } catch {
@@ -277,6 +304,7 @@ function genericGlobals(win, hasEngine) {
   let marks = {}; // id (or id prefix) -> 'game' | 'not', remembered per website
   let store = null;
   let leafReport = []; // every scored leaf of the last snapshot (Diagnostics)
+  let lastReport = null; // what the last scan could not reach, and why
   let lastSample = null;
   let learnTimer = null;
   const learnListeners = new Set();
@@ -307,7 +335,8 @@ function genericGlobals(win, hasEngine) {
       if (!v || typeof v !== 'object') return false;
       return gameObjs.some((g) => g !== v && safe(() => Object.keys(g).some((x) => Object.getOwnPropertyDescriptor(g, x)?.value === v)));
     };
-    return keys.filter((k) => !alias(k));
+    const kindOf = new Map(cls.map((r) => [r.name, r.kind]));
+    return keys.filter((k) => kindOf.get(k) === 'game' || !alias(k));
   };
   /** Numeric leaves of the candidate globals, keyed by tree id (own data properties only). */
   const sampleIds = (keys, limit = 6000) => {
@@ -371,6 +400,8 @@ function genericGlobals(win, hasEngine) {
     note: 'Game variables found in the page’s global JavaScript. Each variable is judged on its own (name, type, where it sits, whether it changes while you play, whether its value is on screen), so game state inside a generic object is still found while analytics, ads and page data stay hidden. Edits are written directly; whether the game uses them immediately depends on how it was programmed. Save in-game to keep them.',
     /** Samples values twice so state that changes while the game runs counts as evidence. */
     async prepare(ms = 500) {
+      await Promise.race([lexical.fetchExternal(), new Promise((r) => win.setTimeout(r, 1500))]);
+      collect();
       const first = new Map(pageGlobals.map((k) => [k, sampleNumbers(read(k))]));
       learn();
       await new Promise((r) => win.setTimeout(r, ms));
@@ -426,6 +457,7 @@ function genericGlobals(win, hasEngine) {
       return leafReport.find((l) => l.id === id) || null;
     },
     leaves: () => leafReport,
+    scanReport: () => lastReport,
     classification() {
       if (!results) classifyAll(null);
       return results;
@@ -438,11 +470,29 @@ function genericGlobals(win, hasEngine) {
         .map((r) => r.name);
     },
     root: () => win,
+    resolve: (id) => resolveFrom(win, id, lexical),
+    lexical: () => lexical.info(),
+    /** Rescan: list globals again (new ones appear after title screens / loading), keep session evidence. */
+    refresh() {
+      lexical.refresh();
+      collect();
+      classifyAll(null);
+    },
+    /** Reads same-site game scripts once to find script-level let/const variables (no code is run). */
+    async discover() {
+      await lexical.fetchExternal();
+      collect();
+      classifyAll(null);
+    },
     snapshot() {
       const cls = this.classification();
       const kindOf = new Map(cls.map((r) => [r.name, r.kind]));
       const keys = candidateKeys();
-      const t = buildLiveTree(win, { rootKeys: keys, maxNodes: 40000, maxDepth: 7, rootLabel: 'window' });
+      // each global gets its own budget and text is capped separately, so a huge dialogue or
+      // translation table can no longer use up the scan before deeper game values are reached
+      // (1.6/1.7 regression: one shared breadth-first budget of 40,000 nodes)
+      const t = buildLiveTree(win, { rootKeys: keys, maxNodes: 90000, maxDepth: 10, rootBudget: 20000, maxStrings: 4000, rootLabel: 'window', rootGetters: lexical.getters(keys) });
+      lastReport = { ...t.report, keys, count: t.count, truncated: t.truncated };
       const screen = safe(() => screenNumbers(win)) || new Set();
       const report = [];
       // text inside game-state globals, or next to detected game variables (item names,
@@ -507,7 +557,7 @@ function genericGlobals(win, hasEngine) {
       const r = this.classification().find((x) => x.name === top);
       const d = this.detection(id);
       const conf = d ? `${d.tier === 'game' ? 'game variable' : d.tier === 'potential' ? 'potential game variable' : d.tier === 'text' ? 'text next to game variables' : 'excluded'}, confidence ${d.score}` : r ? `object score ${r.score}` : '';
-      return `window.${top}${conf ? ` (${conf}${this.includeAll && d?.tier === 'excluded' ? ', shown because “include website globals” is on' : ''})` : ''}`;
+      return `${lexical.has(top) ? `script variable ${top}` : `window.${top}`}${conf ? ` (${conf}${this.includeAll && d?.tier === 'excluded' ? ', shown because “include website globals” is on' : ''})` : ''}`;
     },
   };
   return engine;
@@ -636,4 +686,228 @@ function safe(fn) {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------- script-level variables
+
+const IDENT = /^[A-Za-z_$][\w$]*$/;
+const RESERVED = new Set('break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof let new null return super switch this throw true try typeof var void while with yield await async of static get set undefined NaN Infinity eval arguments'.split(' '));
+
+/**
+ * Script-level `let` / `const` / `class` bindings are globals that are NOT window
+ * properties, so no window walk can see them. Names are read from the page's
+ * classic scripts (inline, and same-site files on request) and confirmed with
+ * `typeof name` evaluated in the page; values are read with the name itself.
+ * Nothing else is run. Blocked by a Content-Security-Policy without
+ * 'unsafe-eval' — that is reported, not hidden.
+ */
+export function lexicalGlobals(win) {
+  const found = new Map(); // name -> source
+  const unprobed = new Set();
+  const ext = { started: false, done: null, files: [], failed: [] };
+  let blocked = '';
+  const ev = (code) => (0, win.eval)(code);
+  const own = (n) => {
+    try {
+      return Object.prototype.hasOwnProperty.call(win, n);
+    } catch {
+      return true;
+    }
+  };
+  const add = (name, from) => {
+    if (!IDENT.test(name) || RESERVED.has(name) || found.has(name) || own(name) || name.startsWith('__saveforge')) return;
+    if (blocked) return void unprobed.add(name);
+    try {
+      if (ev(`typeof ${name}`) !== 'undefined') found.set(name, from);
+    } catch (e) {
+      if (/eval|Content.Security|CSP/i.test(`${e && e.name} ${e && e.message}`)) {
+        blocked = String(e.message || e);
+        unprobed.add(name);
+      }
+    }
+  };
+  const parse = (text, from) => {
+    let n = 0;
+    for (const m of text.matchAll(/(?:^|[;{}\n])\s*(?:let|const|class)\s+([A-Za-z_$][\w$]*)/g)) if (n++ < 400) add(m[1], from);
+    for (const m of text.matchAll(/(?:^|[;{}\n])\s*(?:let|const)\s+[A-Za-z_$][\w$]*\s*=[^;\n]*?(?:,\s*([A-Za-z_$][\w$]*)\s*=)/g)) if (m[1]) add(m[1], from);
+  };
+  const scanInline = () => {
+    try {
+      for (const sc of win.document.scripts) {
+        if (sc.src) continue;
+        const type = (sc.type || '').toLowerCase();
+        if (type && !/^(text|application)\/(javascript|ecmascript|x-javascript)$/.test(type)) continue; // modules are not global
+        parse((sc.textContent || '').slice(0, 2e6), 'inline script');
+      }
+    } catch {
+      /* no document */
+    }
+  };
+  scanInline();
+  return {
+    names: () => [...found.keys()],
+    has: (n) => found.has(n),
+    get(n) {
+      try {
+        return ev(n);
+      } catch {
+        return undefined;
+      }
+    },
+    set(n, v) {
+      if (!found.has(n)) throw new Error('Not a script variable');
+      win.__saveforgeLexTmp = v;
+      try {
+        ev(`${n} = window.__saveforgeLexTmp`);
+      } finally {
+        delete win.__saveforgeLexTmp;
+      }
+    },
+    holder(n) {
+      const self = this;
+      return Object.defineProperty({}, n, { enumerable: true, get: () => self.get(n), set: (v) => self.set(n, v) });
+    },
+    getters(keys) {
+      const out = {};
+      for (const k of keys) if (found.has(k)) out[k] = () => this.get(k);
+      return out;
+    },
+    refresh: scanInline,
+    /** Reads same-site classic script files (once) to find their script-level variables. */
+    fetchExternal() {
+      if (ext.done) return ext.done;
+      ext.done = (async () => {
+        let list = [];
+        try {
+          list = [...win.document.querySelectorAll('script[src]')].filter((sc) => sc.type !== 'module').map((sc) => sc.src);
+        } catch {
+          return;
+        }
+        const origin = safe(() => win.location.origin);
+        for (const src of list.slice(0, 12)) {
+          let u;
+          try {
+            u = new URL(src, win.location.href);
+          } catch {
+            continue;
+          }
+          if (u.origin !== origin || typeof win.fetch !== 'function') continue;
+          try {
+            const r = await win.fetch(u.href, { cache: 'force-cache', credentials: 'same-origin' });
+            const text = (await r.text()).slice(0, 5e6);
+            parse(text, u.pathname.split('/').pop() || u.pathname);
+            ext.files.push(u.pathname);
+          } catch {
+            ext.failed.push(u.pathname);
+          }
+        }
+      })();
+      return ext.done;
+    },
+    info: () => ({ names: [...found].map(([name, from]) => ({ name, from })), unprobed: [...unprobed].slice(0, 50), blocked, files: ext.files, failed: ext.failed }),
+  };
+}
+
+function ownData(obj, key) {
+  if (obj === null || typeof obj !== 'object') return undefined;
+  try {
+    const d = Object.getOwnPropertyDescriptor(obj, key);
+    return d && 'value' in d ? d.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const unesc = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~');
+
+/** Live path resolution from the window, script variables, or documented engine getters. */
+function resolveFrom(win, id, lexical, special = null) {
+  const segs = id.split('/').slice(1).map(unesc);
+  if (!segs.length) return null;
+  const first = segs[0];
+  let obj;
+  let i = 1;
+  if (special && Object.prototype.hasOwnProperty.call(special, first)) {
+    if (segs.length === 1) return null;
+    obj = safe(special[first]);
+  } else if (lexical && lexical.has(first)) {
+    if (segs.length === 1) return { obj: lexical.holder(first), key: first };
+    obj = lexical.get(first);
+  } else {
+    obj = win;
+    i = 0;
+  }
+  for (; i < segs.length - 1; i++) {
+    obj = ownData(obj, segs[i]);
+    if (obj === null || typeof obj !== 'object') return null;
+  }
+  if (obj === null || typeof obj !== 'object') return null;
+  return { obj, key: segs[segs.length - 1] };
+}
+
+function baselineOf(win) {
+  try {
+    const f = win.document.createElement('iframe');
+    f.style.display = 'none';
+    win.document.documentElement.appendChild(f);
+    const b = new Set(Object.getOwnPropertyNames(f.contentWindow));
+    f.remove();
+    return b;
+  } catch {
+    return new Set(Object.getOwnPropertyNames(Object.getPrototypeOf(win) || {}));
+  }
+}
+
+/**
+ * Every variable SaveForge can reach, without any classification: all page
+ * globals (libraries and website globals included), script-level variables and
+ * documented engine getters (SugarCube.State.variables, SugarCube.setup). Used
+ * by "All variables (raw)" and the Diagnostics full scan.
+ */
+export function rawGlobals(win) {
+  const baseline = baselineOf(win);
+  const lexical = lexicalGlobals(win);
+  const special = {};
+  const SC = safe(() => win.SugarCube);
+  if (SC && safe(() => SC.State && typeof SC.State.variables === 'object')) {
+    special['SugarCube.State.variables'] = () => SC.State.variables;
+    if (safe(() => SC.setup && typeof SC.setup === 'object')) special['SugarCube.setup'] = () => SC.setup;
+  }
+  const keys = () => {
+    let names = [];
+    try {
+      names = Object.getOwnPropertyNames(win);
+    } catch {
+      names = [];
+    }
+    const own = names.filter((k) => !baseline.has(k) && !/^on[a-z]+$/.test(k) && !/^__saveforge/.test(k) && k !== 'SugarCube');
+    return [...Object.keys(special), ...own, ...lexical.names().filter((k) => !own.includes(k)), ...(names.includes('SugarCube') ? ['SugarCube'] : [])];
+  };
+  let last = null;
+  return {
+    id: 'raw',
+    name: 'All variables (raw)',
+    channel: 'live-generic',
+    note: 'Everything SaveForge can reach on this page, with no game/website classification: page globals (libraries and website data included), script-level variables and documented engine objects. Use it to search for any value. Edits are written directly.',
+    root: () => win,
+    resolve: (id) => resolveFrom(win, id, lexical, special),
+    async prepare() {
+      await Promise.race([lexical.fetchExternal(), new Promise((r) => win.setTimeout(r, 2500))]);
+    },
+    refresh() {
+      lexical.refresh();
+    },
+    snapshot() {
+      const ks = keys();
+      const t = buildLiveTree(win, { rootKeys: ks, rootGetters: { ...lexical.getters(ks), ...special }, maxNodes: 80000, maxDepth: 12, rootBudget: 25000, maxStrings: 3000, rootLabel: 'window' });
+      last = { ...t.report, keys: ks, count: t.count, truncated: t.truncated };
+      return t;
+    },
+    scanReport: () => last,
+    lexical: () => lexical.info(),
+    special: () => Object.keys(special),
+    sourceOf(id) {
+      const top = unesc(id.split('/')[1] || '');
+      return special[top] ? top : lexical.has(top) ? `script variable ${top}` : `window.${top}`;
+    },
+  };
 }

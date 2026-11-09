@@ -1,6 +1,16 @@
-# SaveForge 1.7 on iPhone: install, test and what to expect
+# SaveForge 1.8 on iPhone: install, test and what to expect
 
-## What's new in 1.7
+## What's new in 1.8
+- **Fixed: values hidden by large dialogue tables.** Since 1.6, one shared scan budget could be used up by a big dialogue/translation table before deeper game values (such as money) were reached. Each global now has its own budget and text is capped separately.
+- **Rescan finds state created later** (after a title screen or "Start").
+- **Script-level `let`/`const` variables** and **SugarCube `setup` objects** are found.
+- **All variables (raw):** a source with every reachable variable and no classification. Search → *Search all accessible variables* repeats a search there.
+- **Diagnostics → Run full scan:**
+  - reached vs. listed vs. excluded vs. not reached, with reasons
+  - what cannot be reached (getters, Map/Set, closures, modules, WebAssembly…)
+  - **Look up a value or name**, e.g. `28,480,799`
+
+## What was new in 1.7
 - **Button & Textbox Linker (advanced, optional):** Main menu → *Button & Textbox Linker* → **Inspect element**, then tap a game control. The tap is swallowed, so nothing is bought or changed.
   - **What you see:** confirmed handlers, the functions they call, the variables their code changes, and possible links (labelled as such), plus what cannot be seen and why.
   - **Watch one tap / Detect by typing:** runs the element once for real and shows exactly which variables changed.
@@ -49,7 +59,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **1.7.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **1.8.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -100,7 +110,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 155 tests)
+### Verified by the automated tests (Chromium, 159 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -108,6 +118,16 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**Discoverability (1.8):**
+- The 1.6/1.7 regression is reproduced and fixed. A money value 5 levels deep next to a 12,000-line multilingual dialogue table:
+  - is listed under Money
+  - is found by searching `28480799`
+  - can be edited
+  - shows as *Listed* in the full-scan lookup
+- `let`/`const` script variables are found and edited for real. A global created after the trainer opened is found by Rescan. SugarCube `setup` and story variables are both listed.
+- The full scan names a getter and a Map instead of inventing values, says when a number is not reachable, and the raw search finds variables the classified scan does not list.
+- Variables that were editable in earlier versions (all demo games and fixtures) are still found, editable and live.
 
 **Button & Textbox Linker (1.7):**
 - Inspecting Buy, Reset and a name field runs nothing: money, items and focus are unchanged, so no keyboard opens.
@@ -143,7 +163,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 1.7.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 1.8.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

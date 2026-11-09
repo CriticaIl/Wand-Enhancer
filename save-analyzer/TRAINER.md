@@ -67,6 +67,19 @@ Many pages expose website globals that have nothing to do with the game.
 
 Tiers: **≥ 0.5 game variable** (listed in its normal section), **≥ 0.3 potential** (listed under *Potential game variables*), otherwise excluded. Text next to detected game variables (item names, dialogue) is kept for search and translation; URLs and website fields are not. Each tier and its reasons are shown in ⓘ → *Detection* and in Diagnostics. Diagnostics also says whether the game state is *inaccessible* (isolated script context) or simply *not detected*, lists excluded variables with *Mark as game*, and can copy a report (names, types and reasons, never values).
 
+**How far the scan reaches (1.8).** The generic scan walks the page's globals breadth-first:
+- **Budgets:** every global gets its own budget (20,000 values), text gets a separate cap (4,000 per global), and the scan goes 10 levels deep.
+- **Why this changed:** in 1.6 and 1.7 one shared budget of 40,000 meant a large dialogue or translation table could use up the scan before a deeper value like `game.state.player.wallet.money` was reached. That value then stayed invisible even to *Include website globals* and value search. That regression is fixed and covered by tests (`test/fixtures/dialogue-heavy/`).
+- **Also reached:**
+  - **Script-level `let` / `const` / `class` variables.** These are globals, but not window properties. Names come from the page's inline scripts and its same-site script files; each is confirmed with `typeof name` and read by name. No other code is run. A Content-Security-Policy without `unsafe-eval` blocks this, and Diagnostics says so.
+  - **SugarCube `setup` objects,** next to `State.variables`, with separate budgets.
+- **Rescan game** lists the page's globals again, so state created after a title screen is found. (Before, the list from the first look was reused.)
+- **All variables (raw)** is a source with no game/website classification: every global, library and website data included, script variables, `SugarCube.State.variables` and `SugarCube.setup`. Search offers *Search all accessible variables* to repeat a query there.
+- **Diagnostics → Full scan** walks everything reachable and compares it with what the trainer lists:
+  - each value is reported as *listed*, *reached but excluded* (with the reasons and *Mark as game*) or *not reached by the classified scan* (with the reason: budget, depth, library global, text cap)
+  - **Look up a value or name** answers "where is 28,480,799?"
+  - the report names what cannot be reached: getters (listed, never called), Map/Set containers, depth limits, and closures, modules, WebAssembly, workers, other frames and servers
+
 **3. Frames.** Portals run games in (often cross-origin, often nested) iframes.
 - **Userscript:** runs in every frame. The frame with the game reports to its parent through namespaced `postMessage`; frames without a game stay silent unless the user opens SaveForge. "Open" is routed down to the game frame.
 - **Bookmarklet/extension on a portal page:** Diagnostics lists game-sized frames with their origin and offers "Open trainer in this frame" (same site) or "Open game frame directly".

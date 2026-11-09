@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dialogue-heavy game</title>
+<!-- Regression fixture (SaveForge 1.8): a story game whose money sits a few
+     levels deep while a large multilingual dialogue table lives in another
+     global. 1.5 found the money (only game-like globals were walked); 1.6/1.7
+     walked every global with one shared breadth-first budget, the dialogue
+     table used it up, and the money was never reached — not even with
+     "Include website globals" or a value search. ?lines=N sets the table size. -->
+<style>body { margin: 0; font: 16px system-ui, sans-serif; background: #0f172a; color: #e2e8f0; } .hud { padding: 10px; background: #7f1d1d; }</style>
+<script>
+  var LINES = Number(new URLSearchParams(location.search).get('lines') || 9000);
+  var dialogues = {};
+  var speakers = ['Olivia Livingroom Phone', 'Emily Bedroom Talk', 'Anna Kitchen Morning', 'Mia Garden Evening'];
+  for (var i = 0; i < LINES; i++) {
+    dialogues[speakers[i % 4] + ' ' + i] = { En: 'Well... I am not sure about that ' + i, De: 'Naja... Ich weiß nicht ' + i, Es: 'No sé... no es para tanto ' + i, Fr: 'Je ne sais pas... ' + i };
+  }
+  var game = {
+    state: {
+      player: {
+        stats: { lust: 40, hygiene: 40, happiness: 98, cleaning: 3 },
+        wallet: { computerStoreMoney: 28480799 },
+      },
+      calendar: { day: 2, weekday: 'Tue', night: true },
+    },
+  };
+  function hud() {
+    var s = game.state.player;
+    document.getElementById('hud').textContent = '😈 ' + s.stats.lust + ' % | 🛁 ' + s.stats.hygiene + ' % | 💵 ' + s.wallet.computerStoreMoney + ' | 😊 ' + s.stats.happiness + ' % | 🧹 ' + s.stats.cleaning + ' | ' + game.state.calendar.weekday + '.';
+  }
+  addEventListener('DOMContentLoaded', hud);
+</script>
+</head>
+<body>
+<div class="hud" id="hud"></div>
+<p style="padding:10px">Story text…</p>
+</body>
+</html>

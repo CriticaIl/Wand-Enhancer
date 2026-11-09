@@ -769,12 +769,14 @@ export function mountTrainer(win, opts) {
       const info = [];
       if (S.search.aliases.length) info.push(`Also matching: ${S.search.aliases.slice(0, 6).join(', ')}${S.search.aliases.length > 6 ? '…' : ''}`);
       if (S.search.hidden) info.push(h('button', { class: 'linkbtn', onclick: () => ((S.search.gameplayOnly = false), saveSearch(), fillFilters(), run()) }, `${S.search.hidden} text/dialogue match(es) hidden — show`));
+      const everywhere = S.sourceId !== 'raw' && opts.sources.some((x) => x.id === 'raw') ? h('button', { class: 'linkbtn raw-search', onclick: () => searchEverywhere() }, 'Search all accessible variables (no classification) →') : null;
       if (info.length) results.append(h('div', { class: 'sinfo' }, info.map((x) => h('div', null, x))));
       if (!items.length) {
-        results.append(h('div', { class: 'empty' }, 'No matches.'));
+        results.append(h('div', { class: 'empty' }, `No matches in ${p.title}.`, everywhere ? h('div', null, everywhere) : null));
         setDesc('');
         return;
       }
+      if (everywhere) results.append(h('div', { class: 'sinfo' }, everywhere));
       renderList(items, null, results);
       results.querySelector('.list').style.height = S.compact ? 'min(38vh, 420px)' : 'min(34vh, 380px)';
     };
@@ -787,6 +789,16 @@ export function mountTrainer(win, opts) {
     fillFilters();
     run();
     if (!S.query) win.setTimeout(() => input.focus(), 50);
+  }
+  /** Same query over every reachable variable (the unclassified raw source). */
+  async function searchEverywhere() {
+    const q = S.query;
+    const keep = { ...S.search };
+    await selectSource('raw');
+    S.query = q;
+    Object.assign(S.search, keep, { gameplayOnly: false });
+    S.stack = [{ type: 'home' }, { type: 'search' }];
+    renderAll();
   }
   function saveSearch() {
     store?.set('search', { query: S.query, filter: S.search.filter, gameplayOnly: S.search.gameplayOnly, mode: S.search.mode });
@@ -1160,7 +1172,11 @@ export function mountTrainer(win, opts) {
     toast('Rescanning…');
     if (opts.rescanSources) {
       const fresh = opts.rescanSources();
-      for (const src of fresh) if (!opts.sources.some((x) => x.id === src.id)) opts.sources.splice(opts.sources.length - 1, 0, src);
+      for (const src of fresh) {
+        if (opts.sources.some((x) => x.id === src.id)) continue;
+        const at = opts.sources.findIndex((x) => x.id === 'raw' || x.id === 'storage');
+        opts.sources.splice(at < 0 ? opts.sources.length : at, 0, src);
+      }
       if (opts.engineInfoRefresh) opts.engineInfo = opts.engineInfoRefresh();
     }
     const p = S.provider;
@@ -1328,6 +1344,7 @@ export function mountTrainer(win, opts) {
           )
         : h('p', null, 'No game-sized frames.'),
       detectionBlock(d, generic),
+      opts.fullScan ? fullScanBlock(generic) : null,
       h('h3', null, `Page globals: ${included.length} game state, ${excluded.length} website/other`),
       h('p', { class: 'note' }, 'Whole objects are scored too, but they are only context: variables inside a website-looking object are still checked one by one above.'),
       included.length ? h('ul', null, included.slice(0, 40).map((g) => h('li', null, h('b', null, g.name), ` — score ${g.score}: ${g.reasons.join('; ')}`))) : null,
@@ -1336,6 +1353,113 @@ export function mountTrainer(win, opts) {
         ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
         : null,
     ));
+  }
+
+  /**
+   * Full scan: everything reachable, unclassified, compared with what the trainer lists.
+   * Tells "not reached" (and why) apart from "reached but excluded" (and why).
+   */
+  function fullScanBlock(generic) {
+    const out = h('div', { class: 'fullscan' });
+    const q = h('input', { class: 'field', type: 'search', inputmode: 'search', enterkeyhint: 'search', placeholder: 'A value you see (e.g. 28480799) or a name', autocapitalize: 'none', autocorrect: 'off', spellcheck: false, 'aria-label': 'Find in full scan' });
+    let scan = null;
+    const run = async () => {
+      clear(out).append(h('p', { class: 'note' }, 'Scanning everything reachable…'));
+      try {
+        scan = await opts.fullScan([...S.providers.values()].filter((p) => p.kind === 'live' && p.engine?.id !== 'raw'));
+      } catch (e) {
+        clear(out).append(h('div', { class: 'badbox' }, `Full scan failed: ${e.message}`));
+        return;
+      }
+      show();
+    };
+    const sugarEquiv = (id) => (id.startsWith('$/SugarCube.State.variables/') ? `$/state/history/0/variables/${id.slice(28)}` : id.startsWith('$/SugarCube.setup/') ? `$/setup/${id.slice(18)}` : id);
+    const rootOf = (id) => (id.split('/')[1] || '').replace(/~1/g, '/').replace(/~0/g, '~');
+    const statusOf = (leaf) => {
+      const gl = new Map((scan.generic?.leaves || []).map((l) => [l.id, l]));
+      if (scan.listed.has(leaf.id) || scan.listed.has(sugarEquiv(leaf.id))) {
+        const g = gl.get(leaf.id);
+        return { cls: 'okbox', text: g ? `Listed (${g.tier === 'potential' ? 'potential game variable' : g.tier === 'text' ? 'text' : 'game variable'}, confidence ${g.score})` : 'Listed by the engine source' };
+      }
+      const g = gl.get(leaf.id);
+      if (g) return { cls: 'warnbox', text: `Reached but excluded by classification (confidence ${g.score}): ${g.reasons.join('; ') || 'no game evidence'}`, mark: leaf.id };
+      const root = rootOf(leaf.id);
+      const gr = scan.generic?.report?.roots?.[root];
+      let why;
+      if (scan.special.includes(root)) why = 'reached through the engine’s own getter; the engine source lists it under its own path';
+      else if (!scan.generic) why = 'no classified scan on this page';
+      else if (!gr) why = 'this global is not walked by the classified scan (a known library, analytics/ad or engine global)';
+      else if (gr.cut) why = 'the classified scan’s budget for this global ran out before this value';
+      else if (gr.depthLimited) why = 'deeper than the classified scan goes in this global';
+      else if (leaf.type === 'string' && gr.skippedStrings) why = 'text limit for this global reached';
+      else why = 'not reached by the classified scan';
+      return { cls: 'badbox', text: `Not reached by the classified scan: ${why}. It is in “All variables (raw)”.` };
+    };
+    const show = () => {
+      const r = scan.report || { roots: {}, getters: [], gettersCount: 0, depthLimited: 0, skipped: {}, keys: [] };
+      const gIds = new Set((scan.generic?.leaves || []).map((l) => l.id));
+      const notReached = scan.leaves.filter((l) => !gIds.has(l.id) && !scan.listed.has(l.id) && !scan.listed.has(sugarEquiv(l.id)));
+      const byRoot = new Map();
+      for (const l of notReached) byRoot.set(rootOf(l.id), (byRoot.get(rootOf(l.id)) || 0) + 1);
+      const cuts = Object.entries(r.roots).filter(([, v]) => v.cut || v.skippedStrings || v.depthLimited);
+      const lex = scan.lexical || { names: [], unprobed: [], blocked: '', files: [], failed: [] };
+      const skipped = Object.entries(r.skipped || {});
+      const genericCuts = Object.entries(scan.generic?.report?.roots || {}).filter(([, v]) => v.cut);
+      clear(out).append(
+        h('dl', { class: 'kv' },
+          h('dt', null, 'Reached'), h('dd', null, `${scan.leaves.length} values in ${r.keys.length} globals${lex.names.length ? ` (incl. ${lex.names.length} script variable(s))` : ''}${scan.special.length ? ` + ${scan.special.join(', ')}` : ''}`),
+          h('dt', null, 'Listed'), h('dd', null, `${scan.listed.size} in the trainer’s sources`),
+          h('dt', null, 'Excluded'), h('dd', null, `${(scan.generic?.leaves || []).filter((l) => l.tier === 'excluded').length} reached but classified as website/other`),
+          h('dt', null, 'Not reached'), h('dd', null, `${notReached.length} only reachable in the full scan`),
+        ),
+        genericCuts.length ? h('div', { class: 'warnbox' }, `Classified scan budget ran out in: ${genericCuts.map(([k]) => k).join(', ')}.`) : null,
+        notReached.length ? h('details', null, h('summary', null, `Only in the full scan, by global (${byRoot.size})`), h('ul', null, [...byRoot].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, n]) => h('li', null, h('b', null, k), ` — ${n} value(s)`)))) : null,
+        h('h3', null, 'What could not be reached'),
+        h('ul', null, [
+          h('li', null, `${r.gettersCount} getter propert${r.gettersCount === 1 ? 'y' : 'ies'} (never called)${r.getters.length ? `: ${r.getters.slice(0, 8).map((g) => g.slice(2).replace(/\//g, '.')).join(', ')}${r.getters.length > 8 ? '…' : ''}` : ''}`),
+          skipped.length ? h('li', null, `Map/Set/typed-array containers skipped: ${skipped.map(([k, n]) => `${n} ${k}`).join(', ')}`) : null,
+          r.depthLimited ? h('li', null, `${r.depthLimited} object(s) deeper than 12 levels`) : null,
+          cuts.length ? h('li', null, `Limits hit: ${cuts.slice(0, 6).map(([k, v]) => `${k} (${v.cut ? 'size limit' : ''}${v.skippedStrings ? `${v.skippedStrings} texts skipped` : ''}${v.depthLimited ? ' depth' : ''})`).join(', ')}`) : null,
+          h('li', null, lex.blocked ? `Script-level let/const variables: blocked by the page’s security policy (${lex.blocked.slice(0, 80)}). ${lex.unprobed.length} name(s) could not be checked.` : `Script-level let/const variables: ${lex.names.length ? lex.names.map((x) => x.name).slice(0, 10).join(', ') : 'none found'}${lex.files.length ? ` (read ${lex.files.length} script file(s))` : ''}`),
+          h('li', null, 'Never reachable from a web page: variables inside functions (closures), ES modules, WebAssembly memory, Web Workers, other sites’ frames, and server-side state.'),
+        ]),
+        h('h3', null, 'Look up a value or name'),
+        h('div', { class: 'btns' }, q, h('button', { class: 'btn go', onclick: lookup }, 'Find')),
+        h('div', { class: 'lookup' }),
+      );
+      q.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), lookup(), q.blur()));
+    };
+    const norm = (x) => String(x).replace(/[\s  ,']/g, '');
+    function lookup() {
+      const box = out.querySelector('.lookup');
+      if (!box || !scan) return;
+      const raw = q.value.trim();
+      if (!raw) return;
+      const n = norm(raw);
+      const asNum = /^-?\d+(\.\d+)?$/.test(n) ? Number(n) : null;
+      const lower = raw.toLowerCase();
+      const hits = scan.leaves.filter((l) => (asNum !== null && typeof l.value === 'number' && (l.value === asNum || Math.round(l.value) === asNum)) || (typeof l.value === 'string' && l.value === raw) || l.path.toLowerCase().includes(lower)).slice(0, 30);
+      clear(box);
+      if (!hits.length) {
+        box.append(h('div', { class: 'badbox' }, `“${raw}” is not in any variable SaveForge can reach. The game keeps it somewhere a web page cannot read (inside functions, a module, WebAssembly, a worker, another frame or a server), or the screen shows a formatted/derived number. Try Find a value with a smaller number you can change.`));
+        return;
+      }
+      for (const l of hits) {
+        const st = statusOf(l);
+        box.append(
+          h('div', { class: st.cls }, h('b', null, l.path), ` = ${typeof l.value === 'string' ? JSON.stringify(l.value.slice(0, 40)) : l.value}`, h('div', null, st.text),
+            st.mark && S.provider?.mark ? h('button', { class: 'btn mini', onclick: (ev) => { S.provider.mark(st.mark, 'game'); ev.target.textContent = '✓ Marked as game'; ev.target.disabled = true; } }, 'Mark as game') : null),
+        );
+      }
+    }
+    return h(
+      'div',
+      null,
+      h('h3', null, 'Full scan (everything reachable)'),
+      h('p', { class: 'note' }, 'Walks every variable a web page can reach, ignoring game/website classification, and compares it with what the trainer lists. Finds values that were never reached (and why) versus values that were reached but excluded.'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: run }, 'Run full scan')),
+      out,
+    );
   }
 
   /** Per-variable detection: what was found, why zero, and what was excluded (with a way to correct it). */
@@ -1553,7 +1677,7 @@ export function mountTrainer(win, opts) {
   renderSources();
   setMinimized(S.minimized);
   if (store) getLinkerUI(); // saved Linker mappings apply only if the user chose "apply automatically"
-  if (opts.sources.length) selectSource(opts.sources[0].id);
+  if (opts.sources.length) selectSource((opts.sources.find((x) => x.id !== 'raw') || opts.sources[0]).id); // the unclassified raw scan only opens on request
   else {
     S.status = { error: 'No editable game data was found on this page.' };
     renderAll();

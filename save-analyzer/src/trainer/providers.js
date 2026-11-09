@@ -189,6 +189,14 @@ export class LiveProvider extends BaseProvider {
   }
 
   rescan() {
+    // list the game's globals again first: state created after the first look must be found too
+    if (this.engine.refresh) {
+      try {
+        this.engine.refresh();
+      } catch {
+        /* keep the previous list */
+      }
+    }
     const snap = this.engine.snapshot();
     this.refs = snap.refs;
     this.truncated = snap.truncated;

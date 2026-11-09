@@ -3,7 +3,7 @@
 //   - the userscript (in whichever frame actually holds the game)
 //   - the SaveForge app, for games loaded same-origin in its Game tab
 
-import { detectLiveEngines, liveLimitations } from './engines.js';
+import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
 import { frameLabel, LiveProvider, StorageProvider } from './providers.js';
 import { createStore } from './store.js';
 import { mountTrainer } from './ui.js';
@@ -73,6 +73,21 @@ export function openTrainer(win, extra = {}) {
     limitations = liveLimitations(win);
     return added.map(sourceFor);
   };
+  // every reachable variable, unclassified — created only when the user opens it
+  let rawEngine = null;
+  const getRaw = async () => {
+    if (!rawEngine) {
+      rawEngine = rawGlobals(win);
+      await rawEngine.prepare();
+    }
+    return rawEngine;
+  };
+  sources.push({
+    id: 'raw',
+    label: 'All variables (raw)',
+    channel: 'live-generic',
+    create: async () => new LiveProvider(win, await getRaw(), createStore(win, `${origin}|raw`)),
+  });
   sources.push({
     id: 'storage',
     label: 'Saves in storage',
@@ -103,6 +118,31 @@ export function openTrainer(win, extra = {}) {
     };
   };
 
+  /**
+   * Full diagnostic scan: walks everything reachable (unclassified) and compares it
+   * with what the classified sources list, so "not reached" and "reached but
+   * excluded" are told apart. Also says what could not be reached at all, and why.
+   */
+  const fullScan = async (providers = []) => {
+    const raw = await getRaw();
+    raw.refresh();
+    const t = raw.snapshot();
+    const rep = raw.scanReport();
+    const leaves = [];
+    const walk = (n, path) => {
+      for (const c of n.children || []) {
+        const p = [...path, c.key];
+        if (c.children) walk(c, p);
+        else if (['int', 'float', 'bool', 'string'].includes(c.type)) leaves.push({ id: c.id, path: p.join('.'), type: c.type, value: c.value });
+      }
+    };
+    walk(t.root, []);
+    const generic = engines.find((e) => e.id === 'generic');
+    const listed = new Set();
+    for (const p of providers) for (const e of p.entries || []) listed.add(e.nodeId);
+    return { leaves, report: rep, lexical: raw.lexical(), special: raw.special(), generic: generic ? { leaves: generic.leaves(), report: generic.scanReport ? generic.scanReport() : null } : null, listed };
+  };
+
   function frameActions(f) {
     const acts = [];
     if (f.report && openInFrame) acts.push({ label: 'Open trainer in this frame', run: () => openInFrame(f.report) });
@@ -115,6 +155,7 @@ export function openTrainer(win, extra = {}) {
     sources,
     limitations,
     diagnostics,
+    fullScan,
     engineInfo: engineInfo(),
     engineInfoRefresh: engineInfo,
     rescanSources,
