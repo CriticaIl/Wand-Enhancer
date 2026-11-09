@@ -208,6 +208,31 @@ When it cannot connect, it says why:
 - **Live + Save links** for SugarCube use the current moment of the autosave (or the newest save).
 - **Storage format:** saves stored with LZString `compressToUTF16`, as SugarCube does in localStorage, are decoded. The trailing space of that format used to be trimmed away.
 
+**Editing SugarCube saves so they stick (2.1).** SugarCube keeps the running playthrough in **sessionStorage** (`<prefix>.state`, written on every passage), and a page reload *resumes* it. Saves (autosave, slots) in localStorage are used only when the player **loads** one, and the autosave is rewritten from the running playthrough on later passages. Editing the autosave and reloading the page therefore reverts:
+1. The reload resumes the old session.
+2. The next autosave writes the old values back.
+
+*Edit SugarCube save* (main menu, Diagnostics, or ⓘ on a `$variable` from the saves) does it the way the game loads saves:
+1. **Edit:** pick the save to start from and the new values. Each value is shown next to the save's value and the running game's (session) value.
+2. **Where:**
+   - **a copy in an empty slot** (default)
+   - overwrite a manual slot
+   - the autosave (warned against)
+   - the session state, which applies when the page is reloaded
+3. **Back up & write:**
+   - The original storage values (and the session state) are stored as a snapshot first, and the rebuilt save is decoded again and compared before writing.
+   - Only the current moment is changed, and the history is re-encoded like SugarCube's own delta encoding. Variables that do not exist are never created.
+   - Writing is refused if the game saved after the screen was opened.
+4. **Warnings:** when the running game differs from the chosen save, or the target is the autosave, SaveForge explains what the game will do and asks for confirmation.
+5. **Load:**
+   - With a public `window.SugarCube.Save` API, SaveForge can load it for you (*Load Slot N in the game now*).
+   - Otherwise it guides you through the game's own Saves menu, and says plainly that reloading the page does not load a save.
+6. **Verify:** after the game loads the save, it writes the loaded state to its session state. SaveForge reads that and shows *✓ Verified* (also after a reload, for the session option). *Undo this write* puts the storage back exactly.
+
+*Apply & Reload* of SugarCube save fields now warns about this first and offers the workflow.
+
+**Diagnostics wording:** SaveForge only reports what it checked. *"window.SugarCube is not defined in this page, neither in SaveForge's context nor in the page's own context"* means the public API is absent. SaveForge does not claim that nothing can read the state. It also lists the session state and the saves it found.
+
 **Import from Save Editor.** The editor (criticail.github.io) and the trainer (the game's site) cannot see each other's data.
 1. In the editor: Export → **Copy share code** (`SAVEFORGE-SHARE-1:…`).
 2. In the trainer: **Import from Save Editor** → paste → a preview shows the format, the variable count and the current moment → confirm.

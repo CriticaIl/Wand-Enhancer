@@ -17,7 +17,11 @@
      Query parameters:
        ?init=ms   publish window.SugarCube only after this delay (late start)
        ?hidden=1  never publish window.SugarCube (builds that keep State private)
-       ?go=Shop,Street  play these passages after the start -->
+       ?go=Shop,Street  play these passages after the start (only on a fresh session)
+     Like SugarCube, the running playthrough is kept in sessionStorage
+     ("(Saved Games)<id>.state", written on every passage) and a page reload
+     RESUMES that session state — it never loads a save slot. Saves are loaded
+     only from the Saves menu (or Save.slots.load / Save.autosave.load). -->
 <style>
   body { margin: 0; font: 16px system-ui, sans-serif; background: #111; color: #eee; display: flex; }
   #ui-bar { width: 140px; padding: 10px; background: #222; font-size: 14px; }
@@ -65,6 +69,20 @@
     });
     return Object.keys(out).length ? out : null;
   }
+  // SugarCube's patch() / historyDeltaDecode
+  function patch(orig, d) {
+    var out = clone(orig);
+    Object.keys(d || {}).forEach(function (key) {
+      var x = d[key];
+      if (x === 0) delete out[key];
+      else if (Array.isArray(x)) {
+        if (x[0] === 1) out.splice(x[1], 1 + (x[2] - x[1]));
+        else if (x[0] === 2) out[key] = clone(x[1]);
+      } else out[key] = patch(out[key], x);
+    });
+    return out;
+  }
+  function deltaDecode(d) { var h = [clone(d[0])]; for (var i = 1; i < d.length; i++) h.push(patch(h[i - 1], d[i])); return h; }
   function deltaEncode(h) { var d = [clone(h[0])]; for (var i = 1; i < h.length; i++) d.push(diff(h[i - 1], h[i]) || {}); return d; }
 
   var passages = {
@@ -90,6 +108,16 @@
     var v = history[active].variables;
     document.getElementById('passages').innerHTML = '<div class="passage">' + passages[history[active].title].html + '</div>';
     document.getElementById('hud').textContent = '💵 ' + v.player.money + ' · Day ' + v.day;
+    sessionStorage.setItem(SKEY, LZString.compressToUTF16(JSON.stringify(marshal())));
+  }
+  function loadSave(save) {
+    if (!save) return false;
+    history = deltaDecode(save.state.delta);
+    active = save.state.index;
+    temporary = {};
+    passages[history[active].title].html = 'Loaded. <a class="link-internal" data-passage="Street">Continue</a>';
+    render();
+    return true;
   }
   function play(title) {
     var vars = active >= 0 ? clone(history[active].variables) : {};
@@ -104,13 +132,14 @@
   }
   function marshal() { return { delta: deltaEncode(history), index: active }; }
   var KEY = '(Saved Games)' + STORY_ID + '.saves';
+  var SKEY = '(Saved Games)' + STORY_ID + '.state';
   function readSaves() { var raw = localStorage.getItem(KEY); return raw ? JSON.parse(LZString.decompressFromUTF16(raw)) : { autosave: null, slots: [null, null, null] }; }
   function writeSaves(s) { localStorage.setItem(KEY, LZString.compressToUTF16(JSON.stringify(s))); }
   function saveObj() { return { id: STORY_ID, state: marshal(), title: history[active].title, date: Date.now(), metadata: {}, version: 1 }; }
   function autosave() { var s = readSaves(); s.autosave = saveObj(); writeSaves(s); }
   var Save = {
-    slots: { save: function (i) { var s = readSaves(); s.slots[i] = saveObj(); writeSaves(s); }, get: function (i) { return readSaves().slots[i]; } },
-    autosave: { get: function () { return readSaves().autosave; } },
+    slots: { save: function (i) { var s = readSaves(); s.slots[i] = saveObj(); writeSaves(s); }, get: function (i) { return readSaves().slots[i]; }, load: function (i) { return loadSave(readSaves().slots[i]); } },
+    autosave: { get: function () { return readSaves().autosave; }, load: function () { return loadSave(readSaves().autosave); } },
     // SugarCube's "Save to Disk" file content: LZString base64 of the save JSON
     exportText: function () { return LZString.compressToBase64(JSON.stringify(readSaves().autosave)); },
   };
@@ -132,8 +161,36 @@
     var p = e.target.getAttribute && e.target.getAttribute('data-passage');
     if (p) { e.preventDefault(); play(p); }
   });
-  play('Start');
-  (params.get('go') || '').split(',').filter(Boolean).forEach(play);
+  // the game's own Saves menu (like SugarCube's UI.saves dialog)
+  function savesMenu() {
+    var dlg = document.getElementById('saves-dialog');
+    var s = readSaves();
+    var row = function (label, save, i) {
+      return '<div class="save-row">' + label + ': ' + (save ? save.title + ' (' + new Date(save.date).toISOString() + ')' : 'empty') +
+        (i >= 0 ? ' <button data-save="' + i + '">Save</button>' : '') + (save ? ' <button data-load="' + (i < 0 ? 'auto' : i) + '">Load</button>' : '') + '</div>';
+    };
+    dlg.innerHTML = row('Autosave', s.autosave, -1) + s.slots.map(function (x, i) { return row('Slot ' + (i + 1), x, i); }).join('');
+    dlg.hidden = false;
+  }
+  document.getElementById('ui-bar').insertAdjacentHTML('beforeend', '<button id="saves-btn">Saves</button><div id="saves-dialog" hidden></div>');
+  document.getElementById('saves-btn').addEventListener('click', savesMenu);
+  document.getElementById('saves-dialog').addEventListener('click', function (e) {
+    var sv = e.target.getAttribute('data-save'), ld = e.target.getAttribute('data-load');
+    if (sv !== null) { Save.slots.save(Number(sv)); savesMenu(); }
+    if (ld !== null) { if (ld === 'auto') Save.autosave.load(); else Save.slots.load(Number(ld)); document.getElementById('saves-dialog').hidden = true; }
+  });
+  // page reload: resume the session state (SugarCube does this, it does NOT load a save)
+  var sess = sessionStorage.getItem(SKEY);
+  if (sess) {
+    var st = JSON.parse(LZString.decompressFromUTF16(sess));
+    history = deltaDecode(st.delta);
+    active = st.index;
+    passages[history[active].title].html = 'Resumed. <a class="link-internal" data-passage="Street">Continue</a>';
+    render();
+  } else {
+    play('Start');
+    (params.get('go') || '').split(',').filter(Boolean).forEach(play);
+  }
   window.__fixture = { Save: Save, play: play, history: function () { return history; } }; // test hook (not part of SugarCube)
   if (params.get('hidden') === '1') return;
   var publish = function () {

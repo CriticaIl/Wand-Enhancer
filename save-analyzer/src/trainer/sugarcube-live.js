@@ -14,6 +14,7 @@
 // in another site's frame).
 
 import { buildLiveTree } from './live-tree.js';
+import { currentVariables, readSugarCubeStorage } from './sugarcube-saves.js';
 
 const REQ = 'data-saveforge-sc-req';
 const RES = 'data-saveforge-sc-res';
@@ -222,11 +223,19 @@ export function probeSugarCube(win, { contextInfo = null, tryBridge = true } = {
   if (!markers.started && !page) {
     return { verdict: 'not-started', reason: 'The SugarCube story has not started yet (no passage rendered). SaveForge keeps checking for a while.', steps, markers, page, frames };
   }
+  // what the story keeps in storage: evidence that does not need the live State
+  const st = readSugarCubeStorage(win);
+  if (st.session) {
+    const vars = currentVariables(st.session.state);
+    steps.push({ ok: true, text: `SugarCube session state found in sessionStorage (“${st.session.key}”, ${vars ? Object.keys(vars).length : 0} top-level variables). A page reload resumes this, not a save.` });
+  } else steps.push({ ok: false, text: 'No SugarCube session state in sessionStorage.' });
+  steps.push({ ok: st.saves.length > 0, text: st.saves.length ? `SugarCube saves in localStorage: ${st.saves.map((x) => x.label).join(', ')}${st.free.length ? ` (+${st.free.length} empty slot(s))` : ''}` : 'No SugarCube saves in localStorage.' });
+  const saveHint = st.saves.length ? ' Its saves are readable: use Edit SugarCube save (edit → write to a slot → load it from the game’s Saves menu).' : '';
   if (!page) {
     const ctx = contextInfo && contextInfo.world ? ` Script context: ${contextInfo.world}.` : '';
-    return { verdict: 'blocked', reason: `The SugarCube story is here, but SaveForge cannot see window.SugarCube and the page blocks the page-world bridge.${ctx} Live values cannot be reached; use its saves (Saves in storage) or Import from Save Editor.`, steps, markers, page, frames };
+    return { verdict: 'blocked', reason: `The SugarCube story is here, but window.SugarCube is not visible to SaveForge and the page blocked SaveForge’s page-world check, so it cannot tell whether the page publishes it.${ctx} No live access.${saveHint}`, steps, markers, page, frames, storage: st };
   }
-  return { verdict: 'hidden', reason: 'This SugarCube build does not expose window.SugarCube (its State is private to the story’s code), so no web page or extension can read the live variables. Use its saves (Saves in storage) or Import from Save Editor.', steps, markers, page, frames };
+  return { verdict: 'hidden', reason: `window.SugarCube is not defined in this page — neither in SaveForge’s context nor in the page’s own context — so SugarCube’s public API is not available here and SaveForge has no supported way to read or change the running story’s variables. (The story’s own code may still hold its State internally; SaveForge does not try to break into it.)${saveHint}`, steps, markers, page, frames, storage: st };
 }
 
 // ---------------------------------------------------------------- bridge engine

@@ -9,6 +9,8 @@ import { checkDisplay, detectRenderer, engineRedraw, patchVisibleNumber, redrawC
 import { searchEntries, SUGGESTIONS } from './search.js';
 import { LiveProvider, SECTIONS, STATUS } from './providers.js';
 import { createLinkerUI } from './linker-ui.js';
+import { createSugarCubeSavesUI } from './sugarcube-saves-ui.js';
+import { readSugarCubeStorage } from './sugarcube-saves.js';
 import { analyzeFile } from '../core/document.js';
 import { decodeShare, encodeShare } from '../core/share.js';
 import { ImportedProvider, matchImported } from './imported.js';
@@ -204,6 +206,23 @@ export function mountTrainer(win, opts) {
   const savesOf = (p = S.provider) => (p?.kind === 'storage' ? p : p?.saveProvider?.() || null);
   const hub = opts.saveHub || null;
   const liveProvider = () => (S.provider?.kind === 'live' ? S.provider : [...S.providers.values()].find((p) => p.kind === 'live') || null);
+  let scSavesUI = null;
+  function getScSavesUI() {
+    if (!scSavesUI) {
+      scSavesUI = createSugarCubeSavesUI({
+        win, h, bodyEl, back, top, toast, setDesc, renderAll, store,
+        backupStore: opts.saveHub?.store || null,
+        minimize: () => setMinimized(true),
+      });
+    }
+    return scSavesUI;
+  }
+  /** SugarCube save workflow, prefilled from pending save edits ($player.money → 20480799). */
+  function openScSave() {
+    const sp = savesOf();
+    const d = sp?.diff ? sp.diff().map((x) => ({ x, e: sp.entryById.get(x.id) })).find(({ e }) => e && /^\$/.test(e.label)) : null;
+    push({ type: 'scsave', fresh: true, prefill: d ? { expr: d.e.label.slice(1), value: String(d.x.after) } : null });
+  }
   function getLinkerUI() {
     if (!linkerUI) {
       linkerUI = createLinkerUI({
@@ -420,6 +439,12 @@ export function mountTrainer(win, opts) {
       if (hub.stale) items.push({ kind: 'nav', label: 'The game saved new progress', icon: 'info', count: '', hint: 'Your pending save edits were made on older save data. Open to write them anyway is refused; sync to discard them and read the new save.', view: { type: 'apply' } });
       items.push({ kind: 'action', label: 'Sync save variables', icon: 'refresh', hint: `Read the game’s saves again with the Save Editor’s detection (${savesOf(p)?.entries.length || 0} save variables now${hub.auto ? ', synced automatically while the trainer is open' : ''}).`, run: () => (syncSaves(), undefined) });
     }
+    const scUI = getScSavesUI();
+    if (scUI.pending() || scUI.hasSaves()) {
+      const st = scUI.status();
+      // an edited save waiting to be loaded (or just verified) is shown first
+      (st ? items.unshift.bind(items) : items.push.bind(items))({ kind: 'nav', label: st ? (st.state === 'verified' ? 'Edited save loaded ✓' : 'Edited save: load it in the game') : 'Edit SugarCube save', icon: 'shield', count: '', hint: st ? st.text : 'Edit a save, back it up, write it to a manual slot, then load it from the game’s Saves menu. SaveForge verifies it after the game loads it.', view: { type: 'scsave' } });
+    }
     items.push({ kind: 'nav', label: 'Import from Save Editor', icon: 'shield', count: '', hint: 'Bring a save decoded by the SaveForge Save Editor (share code or pasted save text) into the trainer as SAVE variables. You confirm first.', view: { type: 'import' } });
     items.push({ kind: 'nav', label: 'Button & Textbox Linker', icon: 'link', count: linkerUI ? linkerUI.linker.list().length || '' : '', hint: 'Advanced: inspect what a game button or field is connected to, and link it to another action (only after you confirm).', view: { type: 'linker' } });
     items.push({ kind: 'nav', label: 'Settings', icon: 'gear', count: '', hint: 'English labels, launcher visibility on this site.', view: { type: 'settings' } });
@@ -457,7 +482,7 @@ export function mountTrainer(win, opts) {
       clear(compatEl).append(h('span', { class: `cdot ${c.level}` }), c.label);
     }
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : v.type === 'import' ? 'Import from Save Editor' : v.type === 'impexport' ? 'Export imported save' : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : v.type === 'scsave' ? 'SugarCube save' : v.type === 'import' ? 'Import from Save Editor' : v.type === 'impexport' ? 'Export imported save' : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -498,6 +523,7 @@ export function mountTrainer(win, opts) {
     if (v.type === 'settings') return renderSettings();
     if (/^link/.test(v.type)) return getLinkerUI().render(v);
     if (v.type === 'import') return renderImport(v);
+    if (v.type === 'scsave') return getScSavesUI().render(v);
     if (v.type === 'impexport') return renderImportExport();
     if (v.type === 'locks') {
       const p = S.provider;
@@ -894,6 +920,7 @@ export function mountTrainer(win, opts) {
       rows.push(h('p', null, `Linked to the save field ${sp.sourceOf(link.saveId)}.`), h('p', { class: 'note' }, `How: ${link.how === 'engine' ? 'the engine’s documented save layout' : 'verified observation'} — ${link.detail}.`), h('p', { class: 'note' }, 'Editing changes the running game right away (verified). The save keeps the old value until the game saves, or until you tap “Also write to save” and Write saves.'));
       if (link.how === 'observed') rows.push(h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { hub.unlink(p.engine.id, id); toast('Link removed'); back(); } }, 'Remove this link')));
     } else if (o === 'save') {
+      if (/^\$/.test(p.entryById.get(id)?.label || '') && /\/state\/(delta|history)\//.test(id)) rows.push(h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => push({ type: 'scsave', fresh: true, prefill: { expr: p.entryById.get(id).label.slice(1), value: String(p.value(id)) } }) }, 'Edit with the SugarCube save workflow')));
       const possible = hub ? hub.possibleFor(p.isSave(id) ? id.slice(5) : id) : [];
       rows.push(h('p', null, `Only in the save: ${sp.sourceOf(id.slice(5))}.`), h('p', { class: 'note' }, 'Not linked to a running-game variable. Edits are written to the save (Write saves) and used when the game loads it, or exported.'));
       if (possible.length) rows.push(h('p', { class: 'note' }, `Possibly the same as: ${possible.map((x) => p.entryById.get(x)?.path || x).join(', ')} — not verified (several live values changed the same way), so not merged.`));
@@ -1263,6 +1290,7 @@ export function mountTrainer(win, opts) {
       'div',
       { class: 'sheet' },
       h('h2', null, `Write ${diff.length} save change(s)`),
+      sugarCubeReloadWarning(sp),
       hub?.stale ? h('div', { class: 'badbox' }, 'The game saved new progress after these edits were made. Writing is refused so that progress is not overwritten: Sync save variables (discards the pending save edits) and edit again.') : null,
       h('ul', null, diff.slice(0, 50).map((d) => h('li', null, `${label(d)}: ${show(d.before)} → ${show(d.after)}`))),
       h('div', { class: 'okbox' }, 'Before writing, SaveForge checks that the game has not saved meanwhile, re-decodes the rebuilt save to verify every value, and stores a backup you can restore from “Backups & restore”.'),
@@ -1404,6 +1432,22 @@ export function mountTrainer(win, opts) {
     } catch (e) {
       toast(e.message, true);
     }
+  }
+
+  /** SugarCube resumes its session state on reload: say so before an Apply & Reload of SugarCube saves. */
+  function sugarCubeReloadWarning(sp) {
+    if (!sp?.diff) return null;
+    const touchesSugarCube = sp.diff().some((d) => /\/state\/(delta|history)\//.test(d.id));
+    if (!touchesSugarCube) return null;
+    const sc = readSugarCubeStorage(win);
+    if (!sc.session) return null;
+    return h(
+      'div',
+      { class: 'badbox' },
+      h('b', null, 'SugarCube does not load saves on a page reload. '),
+      'A reload resumes the running game from its session state, so edits written into the autosave or a slot are not loaded — and the next autosave writes the old values back (money reverts). Use the SugarCube save workflow: write to a manual slot, then load it from the game’s Saves menu.',
+      h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => openScSave() }, 'Use the SugarCube save workflow')),
+    );
   }
 
   async function doWriteNow() {
@@ -1614,7 +1658,7 @@ export function mountTrainer(win, opts) {
   /** Can the trainer reach the running SugarCube State, and why (not)? Plus an exact path lookup. */
   function sugarCubeBlock(sc) {
     const cls = sc.connected ? 'okbox' : ['not-started', 'frame', 'other-site-frame'].includes(sc.verdict) ? 'warnbox' : 'badbox';
-    const label = { direct: 'Live: connected directly', bridge: 'Live: connected through the page bridge', frame: 'In a child frame', 'other-site-frame': 'Game in another site’s frame', 'not-started': 'Story not started yet', hidden: 'Live state not reachable', blocked: 'Live state not reachable', none: 'Not a SugarCube story' }[sc.verdict] || sc.verdict;
+    const label = { direct: 'Live: connected directly', bridge: 'Live: connected through the page bridge', frame: 'In a child frame', 'other-site-frame': 'Game in another site’s frame', 'not-started': 'Story not started yet', hidden: 'No public SugarCube API', blocked: 'Live access not possible', none: 'Not a SugarCube story' }[sc.verdict] || sc.verdict;
     const q = h('input', { class: 'field', type: 'search', value: 'player.money', autocapitalize: 'none', autocorrect: 'off', spellcheck: false, 'aria-label': 'State path' });
     const out = h('div', { class: 'sclookup' });
     const look = () => {
@@ -1635,6 +1679,7 @@ export function mountTrainer(win, opts) {
       sc.steps?.length ? h('ul', null, sc.steps.map((st) => h('li', null, `${st.ok ? '✓' : '✕'} ${st.text}`))) : null,
       h('div', { class: 'btns' }, q, h('button', { class: 'btn go', onclick: look }, 'Look up')),
       out,
+      !sc.connected && sc.storage?.saves?.length ? h('div', { class: 'btns' }, h('button', { class: 'btn go', onclick: () => push({ type: 'scsave', fresh: true }) }, 'Edit SugarCube save')) : null,
     );
   }
 
@@ -1946,6 +1991,7 @@ export function mountTrainer(win, opts) {
     destroy() {
       win.clearInterval(poll);
       linkerUI?.dispose();
+      scSavesUI?.dispose();
       for (const pr of S.providers.values()) pr.dispose?.();
       host.remove();
       opts.onClose?.();
@@ -1978,6 +2024,7 @@ export function mountTrainer(win, opts) {
   renderSources();
   setMinimized(S.minimized);
   if (store) getLinkerUI(); // saved Linker mappings apply only if the user chose "apply automatically"
+  if (store) getScSavesUI(); // a SugarCube save written before a page reload is verified again
   if (opts.sources.length) selectSource((opts.sources.find((x) => x.id !== 'raw') || opts.sources[0]).id); // the unclassified raw scan only opens on request
   else {
     S.status = { error: 'No editable game data was found on this page.' };

@@ -53,6 +53,11 @@ So it doesn't depend on anything one particular manager offers.
 
 - **`$player.money` and the other story variables** are LIVE when SaveForge can reach SugarCube's `State`: directly, or through its page bridge if the userscript runs isolated. Search accepts exact paths: `player.money`, `$player.money` or `State.variables.player.money`.
 - **Diagnostics → SugarCube** shows whether the live State is reachable and, if not, why. **Look up** checks one exact path.
+- **No public SugarCube API?** Use **Edit SugarCube save**. A page reload does *not* load a SugarCube save: the game resumes its running session, which is why Apply & Reload reverted money. Instead:
+  1. Edit the value.
+  2. SaveForge backs up and writes a copy into an empty slot.
+  3. Open the game's **Saves** menu and **Load** that slot.
+  4. SaveForge shows ✓ when the game has loaded it.
 - **From the online Save Editor:**
   1. In the editor: Export → **Copy share code**.
   2. In the trainer: **Import from Save Editor** → paste → confirm.

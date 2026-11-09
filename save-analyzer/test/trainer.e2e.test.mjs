@@ -1281,7 +1281,10 @@ test('SugarCube that keeps State private: the reason is reported, saves stay edi
   let sheet = page.locator('saveforge-trainer .sheet');
   await sheet.locator('h3', { hasText: 'SugarCube' }).waitFor();
   const diag = await sheet.innerText();
-  assert.match(diag, /Live state not reachable — This SugarCube build does not expose window\.SugarCube/);
+  assert.match(diag, /No public SugarCube API — window\.SugarCube is not defined in this page — neither in SaveForge’s context nor in the page’s own context/);
+  assert.doesNotMatch(diag, /no web page or extension can read/, 'no unsupported claims');
+  assert.match(diag, /✓ SugarCube session state found in sessionStorage/);
+  assert.match(diag, /✓ SugarCube saves in localStorage: Autosave \(\+3 empty slot\(s\)\)/);
   assert.match(diag, /✓ SugarCube story in this frame: <tw-storydata format="SugarCube" format-version="2\.36\.1">/);
   assert.match(diag, /✕ In the page’s own world window\.SugarCube is undefined too/);
   await sheet.locator('.btn', { hasText: 'Look up' }).click();
@@ -1322,6 +1325,155 @@ test('SugarCube that keeps State private: the reason is reported, saves stay edi
   const { decodeDelta } = await import('../src/adapters/sugarcube-moments.js');
   const save = await page.evaluate(() => JSON.parse(LZString.decompressFromUTF16(localStorage.getItem('(Saved Games)fixture.saves'))).autosave);
   assert.equal(decodeDelta(save.state.delta)[save.state.index].variables.player.money, 777);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// ---------------------------------------------------------------- 2.1: SugarCube save editing that survives
+// SugarCube keeps the running playthrough in sessionStorage and a page reload
+// resumes it; saves are used only when loaded. Editing the autosave and reloading
+// therefore reverts (the user's money 20480799 → 28480799). These tests reproduce
+// that and check the guided Edit → Backup → Write → Load → Verify workflow.
+const scSaves = (page) =>
+  page.evaluate(() => {
+    const raw = localStorage.getItem('(Saved Games)fixture.saves');
+    return JSON.parse(LZString.decompressFromUTF16(raw));
+  });
+const moneyOf = async (save) => {
+  const { decodeDelta } = await import('../src/adapters/sugarcube-moments.js');
+  return decodeDelta(save.state.delta)[save.state.index].variables.player.money;
+};
+const hudMoney = (page) => page.evaluate(() => Number(/💵 (\d+)/.exec(document.getElementById('hud').textContent)[1]));
+
+test('regression: editing the SugarCube autosave + Apply & Reload reverts the money; SaveForge now warns before writing', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?hidden=1&go=Shop`);
+  await inject(page);
+  const t = T(page);
+  await t.chip('Saves in storage');
+  await t.search('player.money');
+  await t.setNumber('$player.money', 20480799);
+  await page.locator('saveforge-trainer .tool.primary', { hasText: 'Apply & Reload' }).click();
+  const warn = await t.sheetText();
+  assert.match(warn, /SugarCube does not load saves on a page reload/);
+  assert.match(warn, /money reverts/);
+  // doing it anyway reproduces the report
+  await Promise.all([page.waitForEvent('load'), page.locator('saveforge-trainer .btn.warn', { hasText: 'Apply & Reload' }).click()]);
+  assert.equal(await hudMoney(page), 28470000, 'the reload resumed the session state, not the edited autosave');
+  await page.locator('a[data-passage="Street"]').click();
+  assert.equal(await moneyOf((await scSaves(page)).autosave), 28470000, 'the next autosave wrote the old money back');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('SugarCube save workflow: edit → backup → write to a free slot → load from the game’s Saves menu → verified', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?hidden=1&go=Shop`);
+  await inject(page);
+  const t = T(page);
+  await t.nav('Edit SugarCube save');
+  let sheet = await t.sheetText();
+  assert.match(sheet, /reloading the web page does not load it/);
+  assert.match(sheet, /In this save: 28,470,000 · running game \(session\): 28,470,000/);
+  assert.match(sheet, /Copy into empty Slot 1 \(recommended\)/);
+  await page.locator('saveforge-trainer .scedit input').nth(1).fill('20480799');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Back up & write' }).click();
+  await page.locator('saveforge-trainer .sheet h2', { hasText: 'Load the edited save' }).waitFor();
+  sheet = await t.sheetText();
+  assert.match(sheet, /Not loaded yet/);
+  assert.match(sheet, /Open the game’s Saves menu/);
+  assert.match(sheet, /Do not reload the web page/);
+  // written to Slot 1 as a copy; the autosave is untouched
+  let saves = await scSaves(page);
+  assert.equal(await moneyOf(saves.slots[0]), 20480799);
+  assert.match(saves.slots[0].title, /SaveForge edit/);
+  assert.equal(await moneyOf(saves.autosave), 28470000);
+  assert.equal(await hudMoney(page), 28470000, 'writing alone does not change the running game');
+  // the player loads it from the game's own menu
+  await page.locator('saveforge-trainer .hbtn[aria-label="Minimize"]').click();
+  await page.locator('#saves-btn').click();
+  await page.locator('#saves-dialog button[data-load="0"]').click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'Verified: the game loaded your edited save' }).waitFor({ timeout: 4000 });
+  assert.equal(await hudMoney(page), 20480799);
+  // it sticks: the next passage autosaves the edited money
+  await page.locator('a[data-passage="Street"]').click();
+  saves = await scSaves(page);
+  assert.equal(await moneyOf(saves.autosave), 20480799, 'the game’s own autosave now carries the edit');
+  await page.locator('saveforge-trainer .orb').click();
+  await t.home();
+  await page.locator('saveforge-trainer .row .lbl', { hasText: 'Edited save loaded ✓' }).waitFor();
+  // the backup is listed with the other save snapshots
+  await t.nav('Backups & restore');
+  await page.locator('saveforge-trainer .sheet .okbox', { hasText: 'change(s) were applied after it' }).first().waitFor();
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('SugarCube save workflow: warns when the running game differs from the save, refuses when the game saved meanwhile, undo restores', { skip, timeout: 60000 }, async () => {
+  const { page, ctx, errors } = await openGame(`${SC_URL}?hidden=1`);
+  // an older manual save (money 28480799), then the game moves on (session 28470000)
+  await page.locator('#saves-btn').click();
+  await page.locator('#saves-dialog button[data-save="0"]').click();
+  await page.locator('a[data-passage="Shop"]').click();
+  await inject(page);
+  const t = T(page);
+  await t.nav('Edit SugarCube save');
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'Slot 1' }).first().locator('input').check();
+  await page.locator('saveforge-trainer .scedit input').nth(1).fill('99');
+  const sheet = await t.sheetText();
+  assert.match(sheet, /The running game \(session\) has \$player\.money = 28,470,000, but this save has 28,480,799/);
+  const go = page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Back up & write' });
+  assert.equal(await go.isDisabled(), true, 'needs “I understand”');
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'I understand' }).locator('input').check();
+  // the game autosaves before the write → refused, nothing written
+  const before = await page.evaluate(() => localStorage.getItem('(Saved Games)fixture.saves'));
+  await page.evaluate(() => document.querySelector('a[data-passage="Street"]').click());
+  await page.locator('saveforge-trainer .scedit input').nth(1).fill('99');
+  await go.click();
+  await page.locator('saveforge-trainer .toast', { hasText: 'The game saved to this storage after you started' }).waitFor();
+  assert.notEqual(await page.evaluate(() => localStorage.getItem('(Saved Games)fixture.saves')), before, 'only the game’s own autosave changed it');
+  assert.equal(await moneyOf((await scSaves(page)).slots[0]), 28480799);
+  // start again: writes, then Undo puts the storage back exactly
+  await t.home();
+  await t.nav('Edit SugarCube save');
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'Overwrite Slot 1' }).locator('input').check();
+  await page.locator('saveforge-trainer .scedit input').nth(1).fill('99');
+  const ack = page.locator('saveforge-trainer .sheet label', { hasText: 'I understand' }).locator('input');
+  if (await ack.count()) await ack.check();
+  const raw = await page.evaluate(() => localStorage.getItem('(Saved Games)fixture.saves'));
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Back up & write' }).click();
+  await page.locator('saveforge-trainer .sheet h2', { hasText: 'Load the edited save' }).waitFor();
+  assert.equal(await moneyOf((await scSaves(page)).slots[0]), 99);
+  await page.locator('saveforge-trainer .sheet .btn', { hasText: 'Undo this write' }).click();
+  assert.equal(await page.evaluate(() => localStorage.getItem('(Saved Games)fixture.saves')), raw);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('SugarCube save workflow: public Save API loads it for you; the session option applies on reload and is verified after it', { skip, timeout: 60000 }, async () => {
+  let { page, ctx, errors } = await openGame(`${SC_URL}?go=Shop`);
+  await inject(page);
+  let t = T(page);
+  await t.nav('Edit SugarCube save');
+  await page.locator('saveforge-trainer .scedit input').nth(1).fill('123456');
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Back up & write' }).click();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Load Slot 1 in the game now' }).click();
+  await page.locator('saveforge-trainer .sheet h2', { hasText: 'Edited save loaded' }).waitFor({ timeout: 4000 });
+  assert.equal(await page.evaluate(() => SugarCube.State.variables.player.money), 123456);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+
+  ({ page, ctx, errors } = await openGame(`${SC_URL}?hidden=1&go=Shop`));
+  await inject(page);
+  t = T(page);
+  await t.nav('Edit SugarCube save');
+  await page.locator('saveforge-trainer .sheet label', { hasText: 'session state, then reload' }).locator('input').check();
+  await page.locator('saveforge-trainer .scedit input').nth(1).fill('777777');
+  const ack = page.locator('saveforge-trainer .sheet label', { hasText: 'I understand' }).locator('input');
+  if (await ack.count()) await ack.check();
+  await page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Back up & write' }).click();
+  await Promise.all([page.waitForEvent('load'), page.locator('saveforge-trainer .sheet .btn.go', { hasText: 'Reload the page now' }).click()]);
+  assert.equal(await hudMoney(page), 777777, 'the reload resumed the edited session state');
+  await inject(page);
+  await page.locator('saveforge-trainer .row .lbl', { hasText: 'Edited save loaded ✓' }).waitFor({ timeout: 4000 });
   assert.deepEqual(errors, []);
   await ctx.close();
 });

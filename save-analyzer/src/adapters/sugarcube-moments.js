@@ -210,3 +210,41 @@ function patch(orig, diffed) {
 function clone(v) {
   return v === undefined ? v : JSON.parse(JSON.stringify(v));
 }
+
+/** SugarCube's historyDeltaEncode (lib/helpers.js diff): first moment in full, then diffs. */
+export function encodeDelta(history) {
+  if (!history.length) return [];
+  const out = [clone(history[0])];
+  for (let i = 1; i < history.length; i++) out.push(diff(history[i - 1], history[i]) || {});
+  return out;
+}
+function diff(orig, dest) {
+  const origIsArray = Array.isArray(orig);
+  const keys = [...Object.keys(orig), ...Object.keys(dest)].sort().filter((v, i, a) => i === 0 || a[i - 1] !== v);
+  const out = {};
+  let aOpRef;
+  for (const key of keys) {
+    const o = orig[key];
+    const d = dest[key];
+    if (Object.prototype.hasOwnProperty.call(orig, key)) {
+      if (Object.prototype.hasOwnProperty.call(dest, key)) {
+        if (o === d) continue;
+        if (typeof o === typeof d && typeof o === 'object' && o !== null && d !== null && Array.isArray(o) === Array.isArray(d)) {
+          const r = diff(o, d);
+          if (r !== null) out[key] = r;
+        } else out[key] = [OP_COPY, clone(d)];
+      } else if (origIsArray && /^\d+$/.test(key)) {
+        const n = Number(key);
+        if (!aOpRef) {
+          aOpRef = '';
+          do aOpRef += '~';
+          while (keys.includes(aOpRef));
+          out[aOpRef] = [OP_SPLICE, n, n];
+        }
+        if (n < out[aOpRef][1]) out[aOpRef][1] = n;
+        if (n > out[aOpRef][2]) out[aOpRef][2] = n;
+      } else out[key] = OP_DELETE;
+    } else out[key] = [OP_COPY, clone(d)];
+  }
+  return Object.keys(out).length ? out : null;
+}

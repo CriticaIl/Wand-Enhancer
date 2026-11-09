@@ -635,3 +635,49 @@ test('share codes carry a save between the Save Editor and the trainer; exact Su
   };
   for (const q of ['player.money', '$player.money', 'State.variables.player.money']) assert.equal(searchEntries(p, q).results[0].entry.nodeId, 'b', q);
 });
+
+test('SugarCube save writer: edits only the current moment, keeps the encoding, refuses stale writes, never invents variables', async () => {
+  const { historyDeltaEncode } = await import('./sugarcube-diff.mjs');
+  const { decodeDelta } = await import('../src/adapters/sugarcube-moments.js');
+  const LZ = await import('../src/core/lzstring.js');
+  const M = await import('../src/trainer/sugarcube-saves.js');
+  const h = [
+    { title: 'A', variables: { player: { money: 28480799, name: 'Max' }, day: 1 } },
+    { title: 'B', variables: { player: { money: 28470000, name: 'Max' }, day: 1 } },
+    { title: 'C', variables: { player: { money: 1, name: 'Max' }, day: 2 } },
+  ];
+  const state = { delta: historyDeltaEncode(h), index: 1 };
+  const out = M.editState(state, [{ path: ['player', 'money'], value: '20480799' }]);
+  const dec = decodeDelta(out.delta);
+  assert.equal(dec[1].variables.player.money, 20480799, 'current moment edited');
+  assert.equal(dec[0].variables.player.money, 28480799, 'earlier moment untouched');
+  assert.equal(dec[2].variables.player.money, 1, 'future moment untouched');
+  assert.equal(out.index, 1);
+  assert.throws(() => M.editState(state, [{ path: ['player', 'gems'], value: 5 }]), /does not exist/);
+  assert.throws(() => M.editState(state, [{ path: ['player', 'money'], value: 'lots' }]), /needs a number/);
+  assert.deepEqual(M.parseVarPath('State.variables.player.money'), ['player', 'money']);
+  assert.deepEqual(M.parseVarPath('$player.money'), ['player', 'money']);
+  // storage: a 2.36 bundle in UTF-16 LZString + session state
+  const bundle = { autosave: { id: 'x', state, title: 'B', date: 2 }, slots: [null, { id: 'x', state, title: 'B', date: 1 }] };
+  const ls = new Map([['(Saved Games)x.saves', LZ.compressToUTF16(JSON.stringify(bundle))], ['other', 'not a save']]);
+  const ss = new Map([['(Saved Games)x.state', LZ.compressToUTF16(JSON.stringify(state))]]);
+  const fake = (m) => ({ get length() { return m.size; }, key: (i) => [...m.keys()][i], getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) });
+  const win = { localStorage: fake(ls), sessionStorage: fake(ss) };
+  const sc = M.readSugarCubeStorage(win);
+  assert.deepEqual(sc.saves.map((x) => x.label), ['Autosave', 'Slot 2']);
+  assert.deepEqual(sc.free.map((x) => x.label), ['Slot 1']);
+  assert.equal(M.currentVariables(sc.session.state).player.money, 28470000);
+  const target = sc.free[0];
+  const saveObj = { ...sc.saves[0].save, state: out };
+  M.writeSave(win, target, saveObj, target.raw);
+  const after = JSON.parse(LZ.decompressFromUTF16(ls.get('(Saved Games)x.saves')));
+  assert.equal(decodeDelta(after.slots[0].state.delta)[1].variables.player.money, 20480799);
+  assert.equal(decodeDelta(after.autosave.state.delta)[1].variables.player.money, 28470000, 'autosave untouched');
+  // stale: the game saved after the workflow read it
+  assert.throws(() => M.writeSave(win, target, saveObj, target.raw), (e) => e.conflict === true);
+  // the session state the game writes after loading is what verifies it
+  assert.equal(M.checkLoaded(win, [{ path: ['player', 'money'], value: '20480799' }]).state, 'waiting');
+  ss.set('(Saved Games)x.state', LZ.compressToUTF16(JSON.stringify(out)));
+  assert.equal(M.checkLoaded(win, [{ path: ['player', 'money'], value: '20480799' }]).state, 'verified');
+  for (const codec of ['json', 'base64', 'utf16']) assert.deepEqual(M.decodeStored(M.encodeStored(bundle, codec)), { obj: bundle, codec });
+});

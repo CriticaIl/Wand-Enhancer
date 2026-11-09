@@ -1,6 +1,25 @@
-# SaveForge 2.0 on iPhone: install, test and what to expect
+# SaveForge 2.1 on iPhone: install, test and what to expect
 
-## What's new in 2.0 (SugarCube)
+## What's new in 2.1: SugarCube saves that stick
+- **Why money reverted:** SugarCube resumes its *session state* when the page reloads; it never loads a save on reload. So the edited autosave was ignored, and the next autosave wrote the old money back.
+- **Edit SugarCube save** (main menu):
+  1. Choose a save and the new value. SaveForge shows the save's value and the running game's value.
+  2. **Back up & write.** By default this writes a copy into an empty slot.
+  3. Open the game's **Saves** menu and **Load** that slot.
+  4. SaveForge shows **✓ Verified** once the game has loaded it, and the next autosave keeps it.
+- **Warnings and safety:**
+  - It warns when the running game differs from the chosen save, and when you pick the autosave.
+  - It refuses to write if the game saved meanwhile.
+  - *Undo this write* restores the storage exactly.
+  - Apply & Reload of SugarCube saves now warns first.
+- **Diagnostics → SugarCube** no longer claims more than it checked. It also shows the session state and saves it found.
+
+**On tukann.itch.io:**
+1. Main menu → **Edit SugarCube save** → value `player.money` = what you want → **Back up & write**.
+2. Tap – to shrink SaveForge, then in the game open **Saves** → **Load** “… (SaveForge edit)”.
+3. Reopen SaveForge: the top line should read **Edited save loaded ✓**.
+
+## What was new in 2.0 (SugarCube)
 - **Live `State.variables`:** found directly, or through a page bridge when the userscript runs isolated from the page. It is also found when the story starts after SaveForge opened. `$player.money` is a LIVE variable; search `player.money` or `$player.money`.
 - **Diagnostics → SugarCube:** says step by step whether the live State is reachable and why not, with **Look up** for an exact path. Type `player.money` and you see its live value, or the reason it can't be read.
 - **Saves are read at their current moment:** for a delta-encoded save, `delta[0]` is only the first moment. The Save Editor and the trainer now show the value the game actually loads (`state.index`).
@@ -79,7 +98,7 @@
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.0.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.1.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -130,7 +149,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 170 tests)
+### Verified by the automated tests (Chromium, 175 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -138,6 +157,17 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Overwritten values are reported as "Reverted". Lock keeps re-applying, and unlocking stops it.
 - Apply & Reload is checked again after the reload.
 - Find a value narrows from many matches to the real variable, and editing the result changes the game.
+
+**SugarCube save editing (2.1)**, on a story that resumes its session state on reload like SugarCube:
+- **The money revert is reproduced:** editing the autosave + Apply & Reload brings back the old money, and the next autosave writes it back. SaveForge now warns before that write.
+- **The workflow:** write a copy to an empty slot (autosave untouched, running game unchanged) → load it from the game's Saves menu → verified → the next autosave carries the edit → the snapshot is listed in Backups.
+- **Warnings and refusals:** the running game differing from the chosen save, confirmation, refusal when the game autosaved meanwhile, and Undo restoring the exact storage.
+- **Loading paths:** the public Save API loads it for you, and the session-state option applies on reload and is verified only after the reload.
+- **Unit tests:**
+  - only the current moment changes and the delta history stays valid
+  - all storage encodings round-trip
+  - stale writes are refused
+  - missing variables are never created
 
 **SugarCube (2.0), on a realistic story:** sealed `window.SugarCube`, getter-based `State`, cloned moments, saves stored as SugarCube 2.36 does.
 - **Late start:** `State.variables.player.money` becomes LIVE once the story starts, is found by `player.money`, `$player.money` and `State.variables.player.money`, and is edited and verified. `_temp` variables are listed too.
@@ -201,7 +231,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.0.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.1.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

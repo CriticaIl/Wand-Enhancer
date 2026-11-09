@@ -769,6 +769,15 @@ export class StorageProvider extends BaseProvider {
   async restore(backup) {
     if (!backup?.dump) throw new Error('This backup has no storage snapshot.');
     await storageBridge(this.win, 'apply', backup.dump);
+    // SugarCube save edits also captured the running game's session state
+    if (backup.session?.key) {
+      try {
+        if (backup.session.raw === null || backup.session.raw === undefined) this.win.sessionStorage.removeItem(backup.session.key);
+        else this.win.sessionStorage.setItem(backup.session.key, backup.session.raw);
+      } catch {
+        /* sessionStorage blocked */
+      }
+    }
     this.win.location.reload();
   }
 }
