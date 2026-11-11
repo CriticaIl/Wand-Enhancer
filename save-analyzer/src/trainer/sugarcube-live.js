@@ -157,6 +157,81 @@ export function pageBridge(win) {
   return b;
 }
 
+// ---------------------------------------------------------------- read-only passage agent (2.3.4)
+// The Input Inspector reads passage SOURCE. When the story is not in the page as <tw-passagedata>
+// (removed by the story after loading, or added with Story.add), SugarCube still has every passage:
+// Story.has(name) / Story.get(name).text (src/story.js, src/passage.js). Isolated from the page,
+// SaveForge reaches them through this agent in the page world. It only reads: Story.has, then
+// Story.get(name).text (never for a name has() denied — get() would invent an empty passage), and
+// the text of Story.getWidgets()/getScripts(). It never renders or runs a passage, never touches
+// State. Separate markers from the State agent, so an agent left by an older SaveForge copy cannot
+// shadow it.
+const P_AGENT = 'data-saveforge-psg-agent';
+const P_REQ = 'data-saveforge-psg-req';
+const P_RES = 'data-saveforge-psg-res';
+const P_EVT = 'saveforge-psg-rpc';
+const PASSAGE_AGENT_SRC = `(function(){
+  var de = document.documentElement;
+  if (window.__saveforgePsgAgent) { de.setAttribute('${P_AGENT}', '1'); return; }
+  window.__saveforgePsgAgent = 1;
+  document.addEventListener('${P_EVT}', function(){
+    var res;
+    try {
+      var q = JSON.parse(de.getAttribute('${P_REQ}') || '{}');
+      var g = window.SugarCube;
+      var St = g && g.Story;
+      if (!g) res = { error: 'window.SugarCube is not exposed by this game' };
+      else if (!St || typeof St.has !== 'function' || typeof St.get !== 'function') res = { error: 'SugarCube.Story has no has()/get()' };
+      else {
+        var cap = q.cap || 300000, total = 0, out = {}, w = [], sc = [];
+        (q.names || []).forEach(function (n) {
+          if (total > cap) return;
+          if (!St.has(n)) { out[n] = null; return; }
+          var t = String(St.get(n).text || '');
+          total += t.length;
+          out[n] = t.slice(0, cap);
+        });
+        if (q.widgets && typeof St.getWidgets === 'function') St.getWidgets().slice(0, 5).forEach(function (p) { var t = String(p.text || ''); total += t.length; if (total < cap) w.push({ name: String(p.name), text: t }); });
+        if (q.scripts && typeof St.getScripts === 'function') St.getScripts().slice(0, 3).forEach(function (p) { var t = String(p.text || ''); total += t.length; if (total < cap) sc.push({ name: String(p.name), text: t }); });
+        res = { passages: out, widgets: w, scripts: sc };
+      }
+    } catch (e) { res = { error: String(e && e.message || e) }; }
+    de.setAttribute('${P_RES}', JSON.stringify(res));
+  });
+  de.setAttribute('${P_AGENT}', '1');
+})();`;
+
+/** rpc(args) → {passages, widgets, scripts} | {error}, or {rpc: null, why} when the page blocks inline scripts. */
+export function passageBridge(win) {
+  if (win.__saveforgePsgBridge) return win.__saveforgePsgBridge;
+  const doc = win.document;
+  const de = doc.documentElement;
+  try {
+    if (de.getAttribute(P_AGENT) !== '1') {
+      const s = doc.createElement('script');
+      s.textContent = PASSAGE_AGENT_SRC;
+      (doc.head || de).appendChild(s);
+      s.remove();
+    }
+  } catch (e) {
+    return { rpc: null, why: `adding the page agent failed: ${e.message}` };
+  }
+  if (de.getAttribute(P_AGENT) !== '1') return { rpc: null, why: 'the page blocked SaveForge’s inline page script (Content-Security-Policy without inline scripts)' };
+  const rpc = (args = {}) => {
+    de.setAttribute(P_REQ, JSON.stringify(args));
+    de.removeAttribute(P_RES);
+    doc.dispatchEvent(new win.CustomEvent(P_EVT));
+    const raw = de.getAttribute(P_RES);
+    de.removeAttribute(P_REQ);
+    de.removeAttribute(P_RES);
+    if (raw === null) throw new Error('the page agent did not answer');
+    return JSON.parse(raw);
+  };
+  const b = { rpc };
+  win.__saveforgePsgBridge = b;
+  return b;
+}
+
 // ---------------------------------------------------------------- probe
 
 /**

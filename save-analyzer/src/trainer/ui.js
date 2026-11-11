@@ -2416,11 +2416,21 @@ export function mountTrainer(win, opts) {
         ['Engine', r.engine],
         ['Connected to', [...vars].join(', ')],
         ['Value in the game now', f.value],
+        ['Passage', f.passage],
+        ['Belongs to', f.belongs],
         ['How it was matched', f.match],
         ['Before the check', (f.steps || []).join(' · ')],
       ]),
       r.found ? h('h3', null, `Answers the game checks for (${answers.length})`) : h('div', { class: 'badbox answer-not-found' }, h('b', null, 'Answer not found'), r.why ? ` — ${r.why}` : ''),
       answers.length ? answers : null,
+      r.sources && r.sources.length
+        ? h(
+            'div',
+            { class: 'passage-sources' },
+            h('h3', null, 'Passage sources'),
+            h('ul', null, r.sources.map((x) => h('li', null, h('b', null, x.source), ` — ${x.state === 'used' ? 'used' : x.state === 'not needed' ? 'not needed' : 'not available'}${x.why ? `: ${x.why}` : ''}`))),
+          )
+        : null,
       r.inspected && r.inspected.length ? h('details', null, h('summary', null, `What was read (${r.inspected.length})`), h('ul', null, r.inspected.map((x) => h('li', null, x)))) : null,
       h('p', { class: 'note' }, 'Nothing was typed into the game and nothing was submitted. Answers come only from comparisons in the game’s own code.'),
       v.others ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => ((v.choose = v.others), (v.result = null), renderAll()) }, 'Inspect another textbox')) : null,

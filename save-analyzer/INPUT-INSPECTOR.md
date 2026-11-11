@@ -29,7 +29,7 @@ when there is none. It never guesses, never types into the game and never submit
 
 | Engine | How a textbox is made | How the answer is checked | What SaveForge reads | Verified against |
 | --- | --- | --- | --- | --- |
-| **SugarCube 2** | `<<textbox "$var" "default" ["Passage"]>>`, `<<textarea>>`, `<<numberbox>>`. Element `<input class="macro-textbox" name="textbox-<slug>">`, id the same unless `id` is given (`src/macro/macros/textbox.js`). On change `State.setVar(varName, value)`; on Enter it also goes to the optional passage. | Passage code that follows, e.g. `<<if $answer is "swordfish">>`, `eq`/`==`/`===`, `isnot`/`neq`/`!==`, `.toLowerCase()`/`.trim()`, `<<switch $answer>><<case "a" "b">>`, `["a","b"].includes($answer)`, `/^a$/i.test($answer)`. | The current passage (`div.passage[data-passage]`, set by `Engine` in `src/engine.js`), its source (`tw-passagedata`, as `Passage.text` reads it), the textbox's target passage and passages it links to, and the story JavaScript (`#twine-user-script`). All are DOM, so this also works when the story keeps `State` private or SaveForge runs isolated. | SugarCube 2 source (tmedwards/sugarcube-2): textbox.js, createslug.js, engine.js, passage.js |
+| **SugarCube 2** (sources: see *Fixed in 2.3.4*) | `<<textbox "$var" "default" ["Passage"]>>`, `<<textarea>>`, `<<numberbox>>`. Element `<input class="macro-textbox" name="textbox-<slug>">`, id the same unless `id` is given (`src/macro/macros/textbox.js`). On change `State.setVar(varName, value)`; on Enter it also goes to the optional passage. | Passage code that follows, e.g. `<<if $answer is "swordfish">>`, `eq`/`==`/`===`, `isnot`/`neq`/`!==`, `.toLowerCase()`/`.trim()`, `<<switch $answer>><<case "a" "b">>`, `["a","b"].includes($answer)`, `/^a$/i.test($answer)`. | The current passage (`div.passage[data-passage]`, set by `Engine` in `src/engine.js`), its source (`tw-passagedata`, as `Passage.text` reads it), the textbox's target passage and passages it links to, and the story JavaScript (`#twine-user-script`). All are DOM, so this also works when the story keeps `State` private or SaveForge runs isolated. | SugarCube 2 source (tmedwards/sugarcube-2): textbox.js, createslug.js, engine.js, passage.js |
 | **Harlowe 3** | `(input-box: bind $var, …)`, `(force-input-box:)`, `(input:)`. | `(if: $var is "x")`, `(else-if:)`, `is in (a: "x", "y")`, `contains`, `(lowercase: $var) is "x"`. | Passage sources in `tw-passagedata`: the passage with the input macro. If the page does not say which passage is current, every passage with an input macro is listed as a candidate, and the evidence says so. | Harlowe 3's documented macro syntax only. Harlowe 3's source was not reachable from here (the GitHub fork found is Harlowe 2, with only `(prompt:)`), so its markup is not relied on. |
 | **Ren'Py web** | `$ answer = renpy.input("…")` (drawn on the canvas, with an HTML input on some devices). | Python conditions after it: `if answer.strip().lower() == "swordfish":`, `in ("a", "b")`, `"x" in answer`. | Through Ren'Py's own JavaScript channel (2.3.1, no store variables created): `renpy.game.context().current` → `renpy.game.script.lookup()` → the `Python` node's `code.source`, then the next statements via `node.next`. `If` nodes keep their conditions as source text (`entries`), and `While` nodes theirs (`condition`). Reassignments like `answer = answer.lower()` in between are noted. Only while Ren'Py waits for the input (it answers on its PERIODIC event). | Ren'Py source: `renpy/ast.py` (If, While, Python, PyCode), `renpy/execution.py` (`Context.current`), `renpy/game.py`, `renpy/script.py` |
 | **RPG Maker MV/MZ** | Event command 303 *Name Input Processing* (actor, max length), drawn on the canvas. | Event command 111 *Conditional Branch → Actor → Name is* (`[4, actorId, 1, "Name"]`), or a *Script* condition (`[12, "code"]`) comparing the actor's name. | `$dataMap.events` and `$dataCommonEvents` (already loaded game data): branches for the actor of the active `Scene_Name`, or of every 303 command found. | RPG Maker MV/MZ event command layout (`Game_Interpreter.command111`/`command303`) |
@@ -71,6 +71,41 @@ For the chosen field, SaveForge shows:
   - a story whose State is private
   - a Ren'Py `renpy.input` through the fixture
   - closing removes the focus listener
+
+## Fixed in 2.3.4: passages that are not in the page
+
+**Reported:** on a real game on mopoga.com, the trainer showed:
+- textbox `textbox--patroncode`, passage `CAH_PATRON_CODE_FORM`
+- *"Answer not found — The source of passage CAH_PATRON_CODE_FORM is not in the page (tw-passagedata)"*
+
+**Root cause:**
+- **SaveForge assumed passage source is always in `<tw-passagedata>`.** SugarCube itself never removes that element (`src/story.js` reads it and leaves it). But a story can remove `<tw-storydata>` after loading, as games that hide their passages do, or add passages at run time with `Story.add()`. SugarCube still has every passage: its `Passage` objects keep their own (detached) elements, so `Story.get(name).text` works (`src/passage.js`).
+- **It also took the first passage element on the page**, rather than the one containing the textbox.
+
+**Reproduced** with `test/fixtures/patron-code`: the same passage and textbox name, story data removed by the story. 2.3.3 gave the exact message from the report, while `SugarCube.Story.get` was visible to the page-world userscript.
+
+**Fix** (`sugarCubePassageSource` in `src/trainer/input-inspector.js`). Passage source is read from, in order:
+1. `<tw-passagedata>`
+2. SugarCube's Story API in SaveForge's JavaScript world. `Story.has(name)` comes first, and only then `Story.get(name).text`: `get()` of an unknown name returns a new, empty passage. Widget passages come from `Story.getWidgets()`, and the story JavaScript from `Story.getScripts()`.
+3. When SaveForge runs isolated (it cannot see `window.SugarCube`), a separate read-only page agent (`passageBridge` in `src/trainer/sugarcube-live.js`, with its own markers so an older agent cannot shadow it). It does the same reads in the page world.
+
+What the result shows:
+- **The passage of the textbox** is now the `[data-passage]` element around it.
+- **"Belongs to"** confirms a real SugarCube passage: the passage exists in a source, and has the `<<textbox>>` for that variable.
+- **"Passage sources"** lists every source checked, which one was used, and why each other one failed. For example: no `<tw-storydata>` in the page; `window.SugarCube` not exposed; the page blocked SaveForge's inline script.
+
+Nothing is rendered or run, and State is never touched. The tests count `render`/`processText` calls, `get()` of unconfirmed names, State changes and events dispatched: all zero.
+
+**Tests:** `test/input-inspector-sources.e2e.test.mjs`. Each case failed on 2.3.3:
+- the reported case (data removed, Story API)
+- no data and no API: *Answer not found*, with the reason of each source
+- data in the page (unchanged path)
+- an isolated world (page bridge)
+- the story in a cross-origin portal frame
+
+**Still unknown on the reported game:** whether it removes its story data or adds passages at run time, and whether `window.SugarCube` is exposed there. *Passage sources* will say.
+
+**Also possible:** if the game checks the code against a computed value (a hash, a value built elsewhere), the result stays *Answer not found*. Only literal comparisons count as answers.
 
 ## Status (2.3.3)
 

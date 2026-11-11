@@ -4,6 +4,7 @@
 // field and never submits anything. Login, password and other sensitive fields are not inspected.
 
 import { callsIn, recordedListeners } from './linker.js';
+import { passageBridge } from './sugarcube-live.js';
 
 export const LIMITS = { passages: 8, text: 300000, functions: 10, fnText: 20000, candidates: 30 };
 
@@ -471,21 +472,153 @@ function linkedPassages(text) {
   return [...out].filter(Boolean);
 }
 
-export function inspectSugarCube(win, el) {
+/**
+ * Where SugarCube passage SOURCE can be read, tried in this order (2.3.4), each one reported:
+ *   1. <tw-passagedata> in the page (the published story data)
+ *   2. SugarCube's Story API in this JavaScript world: Story.has(name), then Story.get(name).text.
+ *      A story can remove its <tw-storydata> after loading (or add passages with Story.add);
+ *      SugarCube's Passage objects keep their own elements, so the text is still there.
+ *      Story.get() is called only after Story.has() confirmed the name: for an unknown name it
+ *      would return a new, empty passage.
+ *   3. the page bridge, when SaveForge runs isolated from the page and cannot see window.SugarCube
+ * Only text is read: no passage is rendered or run, State is never touched.
+ */
+export function sugarCubePassageSource(win) {
   const doc = win.document;
-  const passageEl = doc.querySelector('#passages .passage[data-passage], .passage[data-passage]');
-  const current = passageEl ? passageEl.getAttribute('data-passage') : null;
+  const report = [];
+  const note = (source, state, why) => report.push({ source, state, why });
+  let domCount = 0;
+  let hasStoryData = false;
+  try {
+    hasStoryData = !!doc.querySelector('tw-storydata');
+    domCount = doc.querySelectorAll('tw-passagedata').length;
+  } catch {
+    /* no DOM */
+  }
+  let St = null;
+  let directWhy = '';
+  try {
+    const g = win.SugarCube;
+    if (!g) directWhy = 'window.SugarCube is not exposed in SaveForge’s JavaScript world';
+    else if (!g.Story || typeof g.Story.has !== 'function' || typeof g.Story.get !== 'function') directWhy = 'SugarCube.Story has no has()/get() (an unusual SugarCube build)';
+    else St = g.Story;
+  } catch (e) {
+    directWhy = `reading window.SugarCube threw: ${e.message}`;
+  }
+  let bridge;
+  const viaBridge = (args) => {
+    if (bridge === undefined) bridge = St || directWhy.startsWith('SugarCube.Story') ? null : passageBridge(win);
+    if (!bridge || !bridge.rpc) return { error: bridge ? bridge.why : 'not needed' };
+    try {
+      return bridge.rpc({ cap: LIMITS.text, ...args });
+    } catch (e) {
+      return { error: e.message };
+    }
+  };
+  const used = new Set();
+  const why = { dom: '', story: '', bridge: '' };
+  const get = (name) => {
+    if (domCount) {
+      const t = passageText(doc, name);
+      if (t !== null) return used.add('dom'), { text: t, via: 'tw-passagedata' };
+      why.dom ||= `no passage named “${name}” among its ${domCount} passages`;
+    } else why.dom ||= hasStoryData ? '<tw-storydata> is there but has no passages' : 'not in this page (no <tw-storydata>: the story removed its passage data after loading, or ships it another way)';
+    if (St) {
+      try {
+        if (St.has(name)) return used.add('story'), { text: String(St.get(name).text ?? ''), via: 'Story.get' };
+        why.story ||= `Story.has(“${name}”) is false`;
+      } catch (e) {
+        why.story ||= `Story.has/get threw: ${e.message}`;
+      }
+      return null;
+    }
+    why.story ||= directWhy;
+    const r = viaBridge({ names: [name] });
+    if (r.error) {
+      why.bridge ||= r.error === 'not needed' ? '' : r.error;
+      return null;
+    }
+    const t = r.passages ? r.passages[name] : null;
+    if (typeof t === 'string') return used.add('bridge'), { text: t, via: 'page bridge' };
+    why.bridge ||= `Story.has(“${name}”) is false in the page`;
+    return null;
+  };
+  return {
+    get,
+    /** Widget passages (tag "widget"): DOM, or Story.getWidgets(). */
+    widgets() {
+      const dom = passagesTagged(doc, 'widget');
+      if (dom.length) return dom;
+      try {
+        if (St && typeof St.getWidgets === 'function') return [...St.getWidgets()].slice(0, 5).map((p) => ({ name: String(p.name), text: String(p.text ?? '') }));
+      } catch {
+        return [];
+      }
+      if (!St && bridge !== null) {
+        const r = viaBridge({ widgets: true });
+        if (r.widgets) return r.widgets;
+      }
+      return [];
+    },
+    /** The story JavaScript: DOM, or Story.getScripts(). */
+    scripts() {
+      try {
+        const js = doc.querySelector('#twine-user-script, script[type="text/twine-javascript"]');
+        if (js) return [{ name: 'the story JavaScript', text: js.textContent }];
+        if (St && typeof St.getScripts === 'function') return [...St.getScripts()].slice(0, 3).map((p) => ({ name: 'the story JavaScript', text: String(p.text ?? '') }));
+      } catch {
+        return [];
+      }
+      if (!St && bridge !== null) {
+        const r = viaBridge({ scripts: true });
+        if (r.scripts) return r.scripts.map((x) => ({ name: 'the story JavaScript', text: x.text }));
+      }
+      return [];
+    },
+    /** Which sources were checked, which were used, and why the others failed. */
+    report() {
+      const out = [];
+      out.push({ source: 'tw-passagedata in this page', state: used.has('dom') ? 'used' : 'failed', why: used.has('dom') ? '' : why.dom });
+      if (!used.has('dom') || St) out.push({ source: 'SugarCube’s Story API (Story.has, Story.get(name).text)', state: used.has('story') ? 'used' : St ? (why.story ? 'failed' : 'not needed') : 'failed', why: used.has('story') ? '' : why.story || directWhy });
+      if (!St && bridge !== undefined) out.push({ source: 'the page bridge (SaveForge runs isolated from the page)', state: used.has('bridge') ? 'used' : 'failed', why: used.has('bridge') ? '' : why.bridge || (bridge && bridge.why) || '' });
+      return out.filter((x) => x.state !== 'not needed' || x.why);
+    },
+  };
+}
+
+/** The passage a textbox belongs to: the [data-passage] element around it, else the one on screen. */
+function sugarCubePassageOf(win, el) {
+  try {
+    const own = el.closest && el.closest('[data-passage]');
+    if (own) return { name: own.getAttribute('data-passage'), how: 'the passage element around the textbox' };
+    const shown = win.document.querySelector('#passages .passage[data-passage], .passage[data-passage]');
+    if (shown) return { name: shown.getAttribute('data-passage'), how: 'the passage on screen (the textbox is outside it, e.g. in a dialog)' };
+    const st = win.SugarCube && win.SugarCube.State && win.SugarCube.State.passage;
+    if (st) return { name: String(st), how: 'SugarCube.State.passage' };
+  } catch {
+    /* no DOM */
+  }
+  return null;
+}
+
+export function inspectSugarCube(win, el) {
+  const src = sugarCubePassageSource(win);
   const inspected = [];
-  if (!current) return { found: false, why: 'The current SugarCube passage could not be found on the page.', inspected };
-  const text = passageText(doc, current);
-  if (text === null) return { found: false, why: `The source of passage “${current}” is not in the page (tw-passagedata).`, inspected };
-  inspected.push(`passage “${current}”`);
+  const at = sugarCubePassageOf(win, el);
+  const done = (r) => ({ engine: 'SugarCube', inspected: [...new Set(inspected)], sources: src.report(), ...r });
+  if (!at) return done({ found: false, why: 'The SugarCube passage this textbox belongs to could not be found on the page.' });
+  const current = at.name;
+  const first = src.get(current);
+  if (!first) return done({ found: false, why: `The source of passage “${current}” could not be read from any source (see Passage sources).` , field: { passage: current, match: `passage from ${at.how}` } });
+  const text = first.text;
+  inspected.push(`passage “${current}” (${first.via})`);
   const boxes = sugarCubeTextboxes(text);
   const name = String(attr(el, 'name') || attr(el, 'id')).replace(/^(textbox|textarea|numberbox)-/, '');
   let box = boxes.find((b) => sugarCubeSlugs(b.receiver).includes(name.toLowerCase()) || sugarCubeSlugs(b.receiver).includes(name));
   let match = box ? `the textbox's name “${attr(el, 'name')}” is SugarCube's name for ${box.receiver}` : '';
   if (!box && boxes.length === 1) (box = boxes[0]), (match = `the only textbox macro in passage “${current}”`);
-  if (!box) return { found: false, why: boxes.length ? `Passage “${current}” has ${boxes.length} textboxes and this one could not be matched to its variable.` : `Passage “${current}” has no <<textbox>> macro (the field may come from a widget or JavaScript).`, inspected };
+  const belongs = box ? `a real SugarCube passage: “${current}” (${first.via === 'tw-passagedata' ? 'in the story data' : first.via === 'Story.get' ? 'Story.has() confirms it' : 'confirmed through the page bridge'}) has this <<${box.macro}>> for ${box.receiver}` : '';
+  if (!box) return done({ found: false, field: { passage: current, match: `passage from ${at.how}` }, why: boxes.length ? `Passage “${current}” has ${boxes.length} textboxes and this one could not be matched to its variable.` : `Passage “${current}” has no <<textbox>> macro (the field may come from a widget or JavaScript).` });
   const ref = sugarCubeRef(box.receiver);
   const sources = [{ where: `passage “${current}”`, text }];
   const names = new Set([current]);
@@ -494,24 +627,19 @@ export function inspectSugarCube(win, el) {
   for (const n of queue) {
     if (names.size >= LIMITS.passages || total > LIMITS.text) break;
     if (names.has(n)) continue;
-    const t = passageText(doc, n);
-    if (t === null) continue;
     names.add(n);
-    total += t.length;
-    sources.push({ where: `passage “${n}”${n === box.target ? ' (the textbox goes there)' : ''}`, text: t });
+    const t = src.get(n);
+    if (!t) continue;
+    total += t.text.length;
+    sources.push({ where: `passage “${n}”${n === box.target ? ' (the textbox goes there)' : ''}`, text: t.text });
   }
-  for (const w of passagesTagged(doc, 'widget').slice(0, 3)) if (total < LIMITS.text) (total += w.text.length), sources.push({ where: `widget passage “${w.name}”`, text: w.text });
-  try {
-    const js = doc.querySelector('#twine-user-script, script[type="text/twine-javascript"]');
-    if (js && total < LIMITS.text) sources.push({ where: 'the story JavaScript', text: js.textContent.slice(0, LIMITS.text - total), lang: 'js' });
-  } catch {
-    /* none */
-  }
+  for (const w of src.widgets().slice(0, 3)) if (total < LIMITS.text) (total += w.text.length), sources.push({ where: `widget passage “${w.name}”`, text: w.text });
+  for (const js of src.scripts().slice(0, 3)) if (total < LIMITS.text) sources.push({ where: js.name, text: js.text.slice(0, LIMITS.text - total), lang: 'js' }), (total += js.text.length);
   let answers = [];
-  for (const s of sources) {
-    inspected.push(s.where);
-    const lang = s.lang || 'sc';
-    answers.push(...answersFrom([...findComparisons(s.text, ref, lang), ...findCases(s.text, ref, lang)], s.text, s.where, lang));
+  for (const s2 of sources) {
+    inspected.push(s2.where);
+    const lang = s2.lang || 'sc';
+    answers.push(...answersFrom([...findComparisons(s2.text, ref, lang), ...findCases(s2.text, ref, lang)], s2.text, s2.where, lang));
   }
   answers = mergeAnswers(answers);
   let value;
@@ -522,14 +650,12 @@ export function inspectSugarCube(win, el) {
   } catch {
     value = undefined;
   }
-  return {
+  return done({
     found: answers.some((a) => a.value !== null),
-    engine: 'SugarCube',
-    field: { variable: box.receiver, macro: `<<${box.macro}>>`, target: box.target, match, value, passage: current },
+    field: { variable: box.receiver, macro: `<<${box.macro}>>`, target: box.target, match, belongs, value, passage: current },
     answers,
-    inspected: [...new Set(inspected)],
     why: answers.length ? '' : `The game never compares ${box.receiver} with a fixed text in the passages SaveForge read.`,
-  };
+  });
 }
 
 // ---------------------------------------------------------------- Harlowe

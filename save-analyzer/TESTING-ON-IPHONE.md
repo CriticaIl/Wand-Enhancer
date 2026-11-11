@@ -1,5 +1,24 @@
 # SaveForge 2.3 on iPhone: install, test and what to expect
 
+## Fixed in 2.3.4: Input Inspector on stories that hide their passages
+
+**What you saw:** on mopoga.com, *Answer not found — The source of passage CAH_PATRON_CODE_FORM is not in the page (tw-passagedata)*.
+
+**Why:** SaveForge only read passages from the story data in the page. That story data can be removed by the game after it loads, while SugarCube still has every passage.
+
+**Now:** SaveForge also reads the passage the way SugarCube offers it: `Story.has(name)` first, then `Story.get(name).text`. When SaveForge runs isolated from the page, it reads it through a small read-only page script. It never runs a passage and never changes the game.
+
+**New in the result:**
+- **Passage sources:** which source was used, and why the others failed.
+- **Belongs to:** confirms the textbox is part of a real SugarCube passage.
+
+**Please check on your iPhone:**
+1. Open the same game and passage, then Input Inspector → **Find Answers**.
+2. Look at **Passage sources**:
+   - If *SugarCube's Story API … used*, the passage was read. The answers listed are the ones the game compares the code with.
+   - If it says *window.SugarCube is not exposed*, this game hides SugarCube completely, and SaveForge cannot read its passages.
+3. If the passage was read but the result is still *Answer not found*, the game probably checks the code against a computed value (for example a hash), not a fixed text.
+
 ## New in 2.3.3: Input Inspector (optional, manual)
 
 When a game asks you to type something (a password for a door, a riddle's answer, a name), the **Input Inspector** shows which text the game itself checks for.
@@ -107,14 +126,14 @@ Both were reproduced with two games served from one origin inside a portal (a Su
 
 **Upgrading from 2.2:** older versions stored data per website. The **first game you open on each website after updating** keeps that data; other games there start fresh. Older save backups stay listed under Backups.
 
-## Which version am I running? (2.3.3)
+## Which version am I running? (2.3.4)
 Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
 
 | Where | How to see it |
 | --- | --- |
-| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.3**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.3 · build xxxxxxxx** |
-| Floating trainer | Header: **TRAINER 2.3.3**. Diagnostics → *This copy: SaveForge 2.3.3 (build xxxxxxxx)* |
-| Userscripts app | The SaveForge script shows **2.3.3** |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.4**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.4 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.3.4**. Diagnostics → *This copy: SaveForge 2.3.4 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.3.4** |
 
 **If the website still shows an older version:**
 - **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
@@ -243,7 +262,7 @@ Every part shows the same version **and build** (a fingerprint of the code; the 
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.3.3** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.3.4** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -373,6 +392,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Games in srcdoc frames and nested cross-origin frames are handled.
 - Ordinary websites still get no DOM changes, storage or errors.
 
+**Input Inspector passage sources (2.3.4):**
+- Passage data removed by the story: read through SugarCube's Story API, with the same answers (passage, linked passage, widget). The tests count passage code runs, unknown-name `Story.get()` calls, State changes and dispatched events: all zero.
+- No data and no SugarCube API: *Answer not found*, with the reason for each source.
+- Data in the page: read as before.
+- SaveForge isolated from the page: read through the page bridge.
+- The story in a cross-origin portal frame: inspected inside that frame.
+
 **Input Inspector (2.3.3):**
 - Nothing runs on focus or typing, only on Find Answers.
 - The tapped SugarCube textbox: answers with how they are compared, what happens, the connected variables, evidence and a working Copy. The game's textbox keeps your text, and no event is dispatched into the page.
@@ -448,7 +474,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.3.3 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.3.4 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Patron Code (SugarCube)</title>
+<!-- Regression fixture (SaveForge 2.3.4, Input Inspector): the reported case — SugarCube shows
+     passage CAH_PATRON_CODE_FORM with <<textbox "_patronCode" "">> (SugarCube names the input
+     "textbox--patroncode": the legacy slug of a temporary variable), but the story's own JavaScript
+     REMOVED <tw-storydata> after loading (as games hiding their passages do). SugarCube still has
+     every passage: its Passage objects keep their (now detached) elements, so Story.get(name).text
+     works (src/story.js, src/passage.js). Like the real Story.get, get() of an unknown name returns
+     a NEW empty passage.
+       ?private=1   window.SugarCube is not exposed (and the story data is gone): nothing to read
+       ?keepdata=1  tw-storydata stays in the page (control)
+     Counters for the tests: __rendered (passage code run), __getUnknown (get() of unknown names),
+     __events (events not made by the user). -->
+<style>body{margin:0;font:16px system-ui,sans-serif;background:#1b1020;color:#eee;padding:12px}</style>
+</head>
+<body>
+<tw-storydata name="Patron Code" startnode="1" ifid="C0FFEE00-0000-4000-8000-000000000004" format="SugarCube" format-version="2.37.3" hidden>
+<tw-passagedata pid="1" name="CAH_PATRON_CODE_FORM" tags="">Enter your patron code:
+&lt;&lt;textbox &quot;_patronCode&quot; &quot;&quot;&gt;&gt;
+&lt;&lt;link &quot;Unlock&quot;&gt;&gt;&lt;&lt;if _patronCode.trim().toUpperCase() is &quot;GOLDEN-KEY&quot;&gt;&gt;&lt;&lt;set $patron to true&gt;&gt;&lt;&lt;goto &quot;CAH_PATRON_THANKS&quot;&gt;&gt;&lt;&lt;else&gt;&gt;&lt;&lt;goto &quot;CAH_PATRON_WRONG&quot;&gt;&gt;&lt;&lt;/if&gt;&gt;&lt;&lt;/link&gt;&gt;
+&lt;&lt;checkCode&gt;&gt;</tw-passagedata>
+<tw-passagedata pid="2" name="CAH_PATRON_THANKS" tags="">Thank you!</tw-passagedata>
+<tw-passagedata pid="3" name="CAH_PATRON_WRONG" tags="">&lt;&lt;if _patronCode is &quot;letmein&quot;&gt;&gt;Nice try.&lt;&lt;/if&gt;&gt; [[CAH_PATRON_CODE_FORM]]</tw-passagedata>
+<tw-passagedata pid="4" name="Widgets" tags="widget">&lt;&lt;widget &quot;checkCode&quot;&gt;&gt;&lt;&lt;if _patronCode is &quot;BACKER2025&quot;&gt;&gt;&lt;&lt;set $patron to true&gt;&gt;&lt;&lt;/if&gt;&gt;&lt;&lt;/widget&gt;&gt;</tw-passagedata>
+<script type="text/twine-javascript">setup.patronTier = 'gold';</script>
+</tw-storydata>
+<div id="passages"><div id="passage-cah-patron-code-form" data-passage="CAH_PATRON_CODE_FORM" class="passage">
+  <p>Enter your patron code:</p>
+  <input id="textbox--patroncode" name="textbox--patroncode" type="text" class="macro-textbox" tabindex="0">
+  <a class="link-internal macro-link">Unlock</a>
+</div></div>
+<script>
+  (function () {
+    var q = new URLSearchParams(location.search);
+    window.__rendered = 0;
+    window.__getUnknown = 0;
+    // SugarCube's Story store: Passage objects keep a reference to their element
+    function Passage(name, el) { this.name = name; this._el = el || null; this.tags = el ? (el.getAttribute('tags') || '').split(/\s+/).filter(Boolean) : []; }
+    Object.defineProperty(Passage.prototype, 'text', { get: function () { return this._el ? this._el.textContent : ''; } });
+    Passage.prototype.processText = function () { window.__rendered++; return this.text; };
+    Passage.prototype.render = function () { window.__rendered++; };
+    var sd = document.querySelector('tw-storydata');
+    var passages = {}, widgets = [], scripts = [];
+    sd.querySelectorAll('tw-passagedata').forEach(function (el) {
+      var p = new Passage(el.getAttribute('name'), el);
+      if (p.tags.indexOf('widget') >= 0) widgets.push(p); else passages[p.name] = p;
+    });
+    sd.querySelectorAll('script').forEach(function (el, i) { scripts.push(new Passage('tw-user-script-' + i, el)); });
+    var Story = {
+      has: function (n) { return Object.prototype.hasOwnProperty.call(passages, String(n)); },
+      get: function (n) { if (!this.has(n)) { window.__getUnknown++; return new Passage(String(n)); } return passages[n]; },
+      getWidgets: function () { return widgets.slice(); },
+      getScripts: function () { return scripts.slice(); },
+    };
+    var variables = { patron: false }, temporary = { patronCode: '' };
+    if (q.get('private') !== '1') Object.defineProperty(window, 'SugarCube', { value: Object.seal({ Story: Story, State: { get variables() { return variables; }, get temporary() { return temporary; }, passage: 'CAH_PATRON_CODE_FORM' }, setup: {} }) });
+    // the story hides its passages: the story data leaves the page after loading
+    if (q.get('keepdata') !== '1') sd.remove();
+    window.__state = function () { return JSON.stringify({ variables: variables, temporary: temporary }); };
+    document.querySelector('.macro-textbox').addEventListener('change', function (e) { temporary.patronCode = e.target.value; });
+    window.__events = 0;
+    ['input', 'change', 'submit', 'click', 'keydown'].forEach(function (t) {
+      document.addEventListener(t, function (e) { if (!e.isTrusted) window.__events++; }, true);
+    });
+  })();
+</script>
+</body>
+</html>
