@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SaveForge Trainer (always visible)
 // @namespace    https://github.com/CriticaIl/Wand-Enhancer/save-analyzer
-// @version      2.3.5
+// @version      2.3.6
 // @description  GTA-style floating trainer for browser games: live editing, Apply & Reload, and an explanation for every variable. Shows the launcher on every site you allow (hide it per site with a long-press); add #saveforge to any address to open it.
 // @author       SaveForge
 // @icon         https://criticail.github.io/Wand-Enhancer/save-analyzer/safari-extension/extension/images/icon-128.png

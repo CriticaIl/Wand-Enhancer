@@ -477,6 +477,10 @@ export function mountTrainer(win, opts) {
       items.push({ kind: 'nav', label: p.engine?.emptyLabel || 'No game variables found here', icon: 'info', count: '', hint: p.engine?.emptyHint || 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
     }
     if (p.reloadSummary) items.push({ kind: 'nav', label: `After reload: ${p.reloadSummary.ok}/${p.reloadSummary.total} edits kept`, icon: p.reloadSummary.ok === p.reloadSummary.total ? 'shield' : 'info', count: '', hint: p.reloadSummary.ok === p.reloadSummary.total ? 'Every value written with Apply & Reload was still in storage after the game reloaded.' : 'The game overwrote some values when it reloaded (for example an autosave). Recent shows which.', view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
+    if (p.heldBack) {
+      const hb = p.heldBack;
+      items.push({ kind: 'nav', label: `Not confirmed as this game’s: ${hb.saves.length} save(s), not listed`, icon: 'info', count: '', hint: `${hb.saves.map((x) => `“${x.name}”: ${x.why}`).join(' · ')}. Their values are not mixed with the LIVE variables (Saves in storage still lists them). Diagnostics → Where the variables come from shows each save’s reason.`, view: { type: 'diagnostics' } });
+    }
     const lim = scanLimitItem(p);
     if (lim) items.unshift(lim);
     if (opts.cachedAt && p.kind === 'live') items.push({ kind: 'action', label: `Results from ${Math.max(1, Math.round((Date.now() - opts.cachedAt) / 60000))} min ago · Rescan`, icon: 'refresh', hint: 'Reopening reused the last scan instead of scanning again. Tap to read the game again.', run: () => (rescanGame(), undefined) });

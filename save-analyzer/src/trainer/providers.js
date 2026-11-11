@@ -314,16 +314,28 @@ export class LiveProvider extends BaseProvider {
       e.saveLink = l || null;
     }
     const extra = [];
+    // save values left out because their save is not confirmed as this game's (2.3.6: said in the
+    // main menu, with each save's reason, instead of disappearing silently)
+    const held = new Map();
+    let heldValues = 0;
     if (sp) {
       for (const se of sp.entries) {
         if (this.saveToLive.has(se.nodeId)) continue;
         // engine internals (e.g. superseded SugarCube moments) stay in “Saves in storage” only
         if (se.category === 'internal') continue;
         // saves not confirmed as this game's never sit next to its live variables (2.3.2)
-        if (this.saves.mergeable && !this.saves.mergeable(se.nodeId)) continue;
+        if (this.saves.mergeable && !this.saves.mergeable(se.nodeId)) {
+          if (se.category !== 'internal') {
+            heldValues++;
+            const o = this.saves.ownerOf ? this.saves.ownerOf(se.nodeId) : null;
+            if (o && o.state !== 'other' && !held.has(o.name)) held.set(o.name, o.why);
+          }
+          continue;
+        }
         extra.push({ ...se, nodeId: SAVE_PREFIX + se.nodeId, origin: 'save', saveId: se.nodeId, en: undefined });
       }
     }
+    this.heldBack = held.size ? { values: heldValues, saves: [...held].map(([name, why]) => ({ name, why })) } : null;
     this.entries = extra.length ? [...this.liveEntries, ...extra] : this.liveEntries;
     this.entryById = new Map(this.entries.map((e) => [e.nodeId, e]));
     this.refCounts = null;

@@ -197,8 +197,47 @@ export function currentStory(win) {
   } catch {
     /* no DOM */
   }
+  // 2.3.6: SugarCube rewrites "(Saved Games)<id>.state" in sessionStorage on every passage it
+  // shows. The story whose playthrough in this tab is at the passage ON SCREEN is the one running
+  // here; another story played earlier in the tab stays at its own last passage. Only a unique
+  // match counts (two playthroughs at the same passage name identify nothing).
+  const bySession = sessionMatch(win);
+  if (bySession) return out(bySession.id, `its playthrough in this tab (sessionStorage “${bySession.key}”) is at passage “${bySession.passage}”, the passage on screen`, true);
   if (ids.size === 1) return out([...ids][0], 'probably this story: the only SugarCube story with saves on this website (its id could not be read from the page)', false);
   return out(null, ids.size ? `${ids.size} SugarCube stories have saves on this website and the one on this page cannot be identified` : 'no SugarCube storage', false);
+}
+/** The passage SugarCube shows in this window (div.passage[data-passage]), or null. */
+export function passageOnScreen(win) {
+  try {
+    const el = win.document.querySelector('#passages > .passage[data-passage], #passages .passage[data-passage]');
+    const n = el && el.getAttribute('data-passage');
+    return n || null;
+  } catch {
+    return null;
+  }
+}
+/** {id, key, passage} of the ONE story whose session playthrough is at the passage on screen. */
+export function sessionMatch(win) {
+  const shown = passageOnScreen(win);
+  if (!shown) return null;
+  const hits = [];
+  try {
+    const st = win.sessionStorage;
+    for (let i = 0; i < st.length; i++) {
+      const key = st.key(i);
+      const id = storyIdOfKey(key);
+      if (!id || !/\.state$/.test(key)) continue;
+      const raw = st.getItem(key);
+      if (!raw || raw.length > 8 * 1024 * 1024) continue; // never decode huge values here
+      const d = decodeStored(raw);
+      if (!d || !isState(d.obj)) continue;
+      const { moments, index } = momentsOf(d.obj);
+      if (moments[index] && moments[index].title === shown) hits.push({ id, key, passage: shown });
+    }
+  } catch {
+    return null;
+  }
+  return hits.length === 1 ? hits[0] : null;
 }
 /** Cheap signature of both storages (keys, lengths, edges) — avoids decoding everything again. */
 function storageSig(win) {

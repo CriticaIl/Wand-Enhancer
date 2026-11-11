@@ -212,7 +212,7 @@ export function openTrainer(win, extra = {}) {
       if (!st.page) return { owner: `sugarcube:${id}`, title: `SugarCube story “${id}” (this page is not a SugarCube story)` };
       if (!st.current) return null; // several stories, this one unknown: not confirmed
       if (id !== st.current) return { owner: `sugarcube:${id}`, title: `SugarCube story “${id}”` };
-      return st.verified ? 'me' : 'probable';
+      return st.verified ? { mine: `the running SugarCube story’s own save (${st.how})` } : 'probable';
     };
     // the engines this page actually runs (a save of another engine is another game's)
     Object.defineProperty(hub.ownership, 'pageEngines', {

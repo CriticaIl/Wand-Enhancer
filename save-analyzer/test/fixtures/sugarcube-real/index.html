@@ -16,6 +16,8 @@
          state.delta (delta-encoded history) and state.index
      Query parameters:
        ?story=id  another story (its own story id, title and ifid) — two games on one host
+       ?globals=1  (2.3.6) the story also keeps some state in page globals of its own (like a game
+                  that the generic scanner partly reads), so SaveForge opens on generic page state
        ?init=ms   publish window.SugarCube only after this delay (late start)
        ?hidden=1  never publish window.SugarCube (builds that keep State private)
        ?go=Shop,Street  play these passages after the start (only on a fresh session)
@@ -44,6 +46,10 @@
   var params = new URLSearchParams(location.search);
   // ?story=<id>: a second, different story (another game on the same host, 2.3.2)
   var STORY_ID = params.get('story') || 'fixture';
+  if (params.get('globals') === '1') {
+    window.fightStats = { takedown: 3, chokeholdStamina: 40, grip: 12, round: 1, ticks: 0 };
+    setInterval(function () { window.fightStats.ticks++; }, 250);
+  }
   if (params.get('story')) {
     var sd = document.querySelector('tw-storydata');
     sd.setAttribute('name', 'Story ' + STORY_ID);
@@ -114,7 +120,7 @@
   };
   function render() {
     var v = history[active].variables;
-    document.getElementById('passages').innerHTML = '<div class="passage">' + passages[history[active].title].html + '</div>';
+    document.getElementById('passages').innerHTML = '<div id="passage-' + history[active].title.toLowerCase() + '" data-passage="' + history[active].title + '" class="passage">' + passages[history[active].title].html + '</div>';
     document.getElementById('hud').textContent = '💵 ' + v.player.money + ' · Day ' + v.day;
     sessionStorage.setItem(SKEY, LZString.compressToUTF16(JSON.stringify(marshal())));
   }

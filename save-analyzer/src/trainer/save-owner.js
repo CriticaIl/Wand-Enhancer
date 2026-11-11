@@ -172,6 +172,7 @@ export class SaveOwnership {
   classify(id, kind, name, recordKeys = [], unread = false) {
     const hint = this.hint ? this.hint(name, kind) : null;
     if (hint === 'me') return { state: 'mine', why: 'the running SugarCube story’s own save (its id was read from the page)' };
+    if (hint && typeof hint === 'object' && hint.mine) return { state: 'mine', why: hint.mine };
     if (hint && typeof hint === 'object') return { state: 'other', owner: hint.owner, ownerTitle: hint.title, why: hint.title, how: 'engine' };
     const rec = this.reg.keys[id];
     if (rec && rec.owner === this.me) return { state: 'mine', why: rec.how === 'written' ? 'this game wrote it while SaveForge was open' : rec.how === 'you' ? 'you marked it as this game’s save' : 'named after this game' };

@@ -72,6 +72,12 @@ For the chosen field, SaveForge shows:
   - a Ren'Py `renpy.input` through the fixture
   - closing removes the focus listener
 
+## 2.3.6: no new passage source (tukann.itch.io)
+
+2.3.5's diagnostics for this game: SugarCube 2.36.1 built with Tweego, `<tw-storydata>` without passages, no `window.SugarCube` / `window.Story` / `window.tale`, a ~271 KB runtime script without SugarCube's `window.SugarCube` export, and passages in the HTML file that are packed or encoded. The game deliberately ships its passages in a form that is not readable as text. That protects its supporter code, so SaveForge does not try to decode or run it, and 2.3.6 adds no further passage source. *Answer not found* with those lines is the correct, final result for this game.
+
+The Input Inspector stays separate from the main scan (tested in `test/sugarcube-shared-host.e2e.test.mjs`): until you press **Find Answers** it reads nothing, installs no page agent and fetches nothing; the listed variables are the same with or without it.
+
 ## Fixed in 2.3.5: SugarCube runtimes without window.SugarCube
 
 **Reported** on tukann.itch.io, passage `CAH_PATRON_CODE_FORM`, with 2.3.4's *Passage sources*:
