@@ -136,7 +136,8 @@ The script has `@version` and `@updateURL` pointing at GitHub Pages. The Userscr
 
 On many portals (game catalogue sites), the page you see is the *portal*. The game itself runs in an **iframe**, usually from another site and sometimes nested inside a second "wrapper" frame. Each of those frames has its own variables, and Safari lets a page read only its own.
 
-- **Which frame gets the trainer:** the userscript runs in every frame. The frame that actually contains the game shows the ⬢ launcher. Typing `#saveforge` on the portal page sends the trainer into that frame.
+- **Which frame gets the trainer:** the userscript runs in every frame. The top page decides, so there is always **one** ⬢ launcher (in the game frame) and **one** panel, never one per frame (2.3). Typing `#saveforge` on the portal page sends the trainer into the frame showing a game **now**. If a portal swapped its game, the new one opens. If the page holds several games, a chooser asks which.
+- **Switching games:** when the page switches to another game, the trainer moves to it by itself. Favorites, marks and links are kept per game, and other games' saves on the same site are never shown or written.
 - **Website globals are never shown as game variables:** analytics, ads, cookie consent, portal SDKs and page data (such as a `window.game = {title, plays, rating…}` description of the game) are filtered out.
   - **How it is judged (1.6):** every variable is scored on its own: its type, its name (translated), the object around it, whether it changes while you play, whether its value is on screen, and whether your edits worked. Game data inside a generic object (`app.data.money` next to `app.config.url`) is found; the URL is not.
   - **Not sure?** Uncertain finds appear under **Potential game variables**. ⓘ → *Detection* explains the score. Tap *This is a game variable* or *Not a game variable* and SaveForge remembers it for that website.

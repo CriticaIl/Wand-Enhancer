@@ -35,7 +35,7 @@ export function createSugarCubeSavesUI(ctx) {
     poll();
   }
   function poll() {
-    if (!pending) return win.clearInterval(pollTimer);
+    if (!pending) return void (win.clearInterval(pollTimer), (pollTimer = 0));
     let r = checkLoaded(win, pending.expect.map((e) => ({ path: e.path, value: e.value })));
     // the session option takes effect only through a page reload: the values are already in the
     // session state right after writing, so success is counted only on a newer page load
@@ -46,7 +46,7 @@ export function createSugarCubeSavesUI(ctx) {
       pending.verifiedAt = Date.now();
       store?.set?.('sc-verify', pending);
       toast(`✓ Verified: the game loaded your edited save (${pending.expect.map((e) => `$${e.path.join('.')} = ${fmt(Number(e.value) || e.value)}`).join(', ')})`);
-      win.clearInterval(pollTimer);
+      win.clearInterval(pollTimer), (pollTimer = 0);
     }
     if (changed && ['scsave', 'home'].includes(top().type)) renderAll();
   }
@@ -63,6 +63,12 @@ export function createSugarCubeSavesUI(ctx) {
     const sc = readSugarCubeStorage(win, { fresh: true });
     const sheet = h('div', { class: 'sheet scsave' }, h('h2', null, 'Edit a SugarCube save'));
     bodyEl.append(sheet);
+    // several stories on this website and the one on this page cannot be told: never guess whose save to write
+    if (sc.story && !sc.story.current && sc.story.ids.length > 1) {
+      sheet.append(h('div', { class: 'badbox' }, `${sc.story.how} (${sc.story.ids.join(', ')}). SaveForge does not write a save it cannot attribute to this game. Start the story (play one passage) and open this again, or use Saves in storage.`));
+      return;
+    }
+    if (sc.story?.current && sc.story.ids.length > 1) sheet.append(h('p', { class: 'note' }, `Story “${sc.story.current}” (${sc.story.how}). Saves of the other ${sc.story.ids.length - 1} SugarCube stor${sc.story.ids.length > 2 ? 'ies' : 'y'} on this website are not shown.`));
     if (!sc.saves.length) {
       sheet.append(h('div', { class: 'warnbox' }, 'No SugarCube saves were found in this page’s storage. Save the game once (its Saves menu), then come back.'));
       return;
@@ -148,6 +154,7 @@ export function createSugarCubeSavesUI(ctx) {
     try {
       const edits = v.edits.map((e, i) => ({ path: paths[i], value: e.value })).filter((e) => e.path && String(e.value).trim() !== '');
       if (!edits.length) throw new Error('Enter at least one new value.');
+      ctx.guard?.(); // never write a save after the page switched to another game
       const backup = { kind: 'storage', title: 'Before SugarCube save edit', dump: { format: 'saveforge-storage-dump', version: 1, origin: safeOrigin(win), exportedAt: new Date().toISOString(), localStorage: {}, indexedDB: [] }, changes: edits.map((e) => ({ id: `$${e.path.join('.')}`, after: String(e.value) })) };
       if (target.kind !== 'session') backup.dump.localStorage[target.ref.key] = readRaw(win, 'localStorage', target.ref.key);
       if (sc.session) backup.session = { key: sc.session.key, raw: sc.session.raw };
@@ -236,7 +243,11 @@ export function createSugarCubeSavesUI(ctx) {
     status,
     hasSaves: () => readSugarCubeStorage(win).saves.length > 0,
     pending: () => pending,
-    dispose: () => win.clearInterval(pollTimer),
+    dispose: () => {
+      win.clearInterval(pollTimer);
+      pollTimer = 0;
+    },
+    timers: () => (pollTimer ? 1 : 0),
   };
 }
 

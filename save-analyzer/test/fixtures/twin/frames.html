@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Game portal</title>
+<style>body{margin:0;font:14px system-ui,sans-serif}iframe{display:block;width:380px;height:420px;border:0;margin:4px 0}</style></head>
+<body>
+<!-- ?a=<url>&b=<url>: game frames; ?canvas=1 also puts a canvas game-like element on the portal
+     page itself (a portal with an animated banner). swapTo(url) replaces the game frame with a NEW
+     iframe (SPA portal opening another game); navigateTo(url) changes the src of the same iframe. -->
+<h1>Portal</h1>
+<div id="slot"></div>
+<script>
+  var q = new URLSearchParams(location.search);
+  function add(url, id) {
+    var f = document.createElement('iframe');
+    f.src = url;
+    f.id = id;
+    document.getElementById('slot').appendChild(f);
+    return f;
+  }
+  if (q.get('canvas')) {
+    var c = document.createElement('canvas');
+    c.width = 360; c.height = 200; c.style.width = '360px'; c.style.height = '200px';
+    document.body.insertBefore(c, document.getElementById('slot'));
+    var t = 0;
+    setInterval(function () { var x = c.getContext('2d'); x.fillStyle = '#123'; x.fillRect(0, 0, 360, 200); x.fillStyle = '#fff'; x.fillRect(t++ % 360, 90, 10, 10); }, 100);
+  }
+  if (q.get('a')) add(q.get('a'), 'frame-a');
+  if (q.get('b')) add(q.get('b'), 'frame-b');
+  window.swapTo = function (url) {
+    var old = document.querySelector('#slot iframe');
+    if (old) old.remove();
+    history.pushState({}, '', location.pathname + '?game=' + encodeURIComponent(url));
+    add(url, 'frame-new');
+  };
+  window.navigateTo = function (url) {
+    document.querySelector('#slot iframe').src = url;
+  };
+</script>
+</body>
+</html>

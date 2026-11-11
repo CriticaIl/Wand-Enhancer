@@ -106,6 +106,7 @@ export function mountTrainer(win, opts) {
     stack: [{ type: 'home' }],
     selected: 0,
     minimized: !!opts.startMinimized,
+    creating: new Map(), // source id -> scan in progress
     collapsed: false,
     favorites: new Set(),
     recent: [],
@@ -223,6 +224,7 @@ export function mountTrainer(win, opts) {
       scSavesUI = createSugarCubeSavesUI({
         win, h, bodyEl, back, top, toast, setDesc, renderAll, store,
         backupStore: opts.saveHub?.store || null,
+        guard: opts.guard,
         minimize: () => setMinimized(true),
       });
     }
@@ -252,6 +254,7 @@ export function mountTrainer(win, opts) {
   }
 
   let toastTimer;
+  let destroyed = false;
   function toast(msg, bad) {
     shadow.querySelector('.toast')?.remove();
     const t = h('div', { class: `toast${bad ? ' bad' : ''}` }, msg);
@@ -273,17 +276,35 @@ export function mountTrainer(win, opts) {
       S.status = { loading: `Reading ${src.label}…`, scanning: true };
       renderAll();
       try {
-        const p = await src.create();
-        S.providers.set(id, p);
-        listen(p);
+        // one scan per source at a time: tapping again (or a late SugarCube start) joins it
+        // instead of starting a second scan whose provider would never be disposed
+        let job = S.creating.get(id);
+        if (!job) {
+          job = Promise.resolve().then(() => src.create());
+          S.creating.set(id, job);
+          job.then(
+            () => S.creating.delete(id),
+            () => S.creating.delete(id),
+          );
+        }
+        const p = await job;
+        if (destroyed) {
+          p?.dispose?.(); // closed while scanning: this result never runs
+          return;
+        }
+        if (!S.providers.has(id)) {
+          S.providers.set(id, p);
+          listen(p);
+        }
       } catch (e) {
+        if (destroyed) return;
         S.status = { error: e.message || String(e) };
         renderAll();
         opts.onReady?.();
         return;
       }
     }
-    if (S.sourceId !== id) return; // another source was picked meanwhile
+    if (destroyed || S.sourceId !== id) return; // closed, or another source was picked meanwhile
     S.provider = S.providers.get(id);
     S.status = null;
     // only the source on screen does background work (learning, save sync)
@@ -1567,7 +1588,16 @@ export function mountTrainer(win, opts) {
     );
   }
 
+  /** On a website with several games: writing a save whose owner SaveForge cannot tell asks first. */
+  function confirmOwner(sp) {
+    const own = hub?.ownership;
+    if (!own || !sp?.diff) return true;
+    const keys = own.uncertainFor(sp.diff().map((d) => d.id), sp.dump);
+    if (!keys.length) return true;
+    return win.confirm(`SaveForge has seen more than one game on this website, and cannot tell which game this save belongs to:\n\n${keys.slice(0, 5).join('\n')}\n\nWrite it anyway? Only do this if it is the save of the game you are playing (${opts.gameContext?.title || 'this page'}).`);
+  }
   async function doWriteNow() {
+    if (!confirmOwner(savesOf())) return;
     try {
       toast('Verifying and writing…');
       const r = hub && savesOf() === hub.provider ? await hub.writeNow() : await savesOf().applyAndReload({ reload: false });
@@ -1604,6 +1634,7 @@ export function mountTrainer(win, opts) {
   }
 
   async function doApply() {
+    if (!confirmOwner(savesOf())) return;
     try {
       toast('Verifying and writing…');
       await savesOf().applyAndReload({ reload: true });
@@ -1737,6 +1768,7 @@ export function mountTrainer(win, opts) {
       'div',
       null,
       h('h2', null, 'Diagnostics'),
+      gameBlock(d),
       h('dl', { class: 'kv' }, h('dt', null, 'This frame'), h('dd', null, d.frame || '?'), h('dt', null, 'Address'), h('dd', null, d.href || '?'), h('dt', null, 'Script context'), h('dd', null, d.context ? `${d.context.world}: ${d.context.detail}` : '?')),
       d.context && d.context.world === 'isolated' ? h('div', { class: 'badbox' }, 'SaveForge is running in an isolated extension context, so it cannot see or change the game’s JavaScript. Edits would only change SaveForge’s own copy. In the Userscripts app make sure the script has “@inject-into page”, or use the trainer bookmarklet.') : null,
       !d.engines.some((e) => e.id !== 'generic') && !included.length && gameFrame
@@ -1772,6 +1804,72 @@ export function mountTrainer(win, opts) {
         ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { generic.includeAll = !generic.includeAll; p.rescan(); toast(generic.includeAll ? 'Website globals included (advanced)' : 'Showing game state only'); } }, generic.includeAll ? 'Hide website globals' : 'Include website globals (advanced)'))
         : null,
     ));
+  }
+
+  /** Which game this trainer targets, why, and what SaveForge runs right now (2.3). */
+  function gameBlock(d) {
+    const g = d.game;
+    if (!g) return null;
+    const ago = (t) => (t ? `${Math.max(0, Math.round((Date.now() - t) / 1000))} s ago` : '—');
+    const inst = d.instances || {};
+    const res = d.resources || {};
+    const sc = d.scan || {};
+    const kv = (pairs) => h('dl', { class: 'kv' }, pairs.filter(Boolean).flatMap(([k, v]) => [h('dt', null, k), h('dd', null, String(v))]));
+    return h(
+      'div',
+      null,
+      h('h3', null, 'Game context'),
+      g.current ? null : h('div', { class: 'badbox' }, `This page no longer shows the game this trainer scanned${g.stale ? ` (${g.stale})` : ''}. Nothing will be written; SaveForge reopens for the new game.`),
+      kv([
+        ['Game', g.title || '(no title)'],
+        ['Address', g.href],
+        ['Frame', g.frame],
+        ['Context ID', g.id],
+        ['Game key', g.key],
+        ['Why this game', g.reason],
+        ['Open since', ago(g.since)],
+        g.restored ? ['Restored by Safari', `${g.restored} time(s) (back-forward cache)`] : null,
+        ['Scan', sc.running ? `running (${sc.current || 'scanning'})` : sc.cachedAt ? `reused from ${ago(sc.cachedAt)}` : sc.last ? `done (${sc.last})` : 'not started'],
+        ['Trainer panels on this page', inst.panels ?? '?'],
+        inst.frames !== undefined ? ['Trainer panels in all frames', inst.frames] : null,
+        ['Launchers on this page', inst.launchers ?? '?'],
+        ['SaveForge copies here', inst.copies ?? 1],
+        ['SaveForge timers running', res.timers ?? '?'],
+        ['SaveForge page listeners', res.listeners ?? '?'],
+        ['SaveForge observers', res.observers ?? 0],
+      ]),
+      res.detail && res.detail.length ? h('details', null, h('summary', null, 'What is running'), h('ul', null, res.detail.map((x) => h('li', null, x)))) : null,
+      h('p', { class: 'note' }, 'Everything SaveForge remembers (favorites, recent, marks, learned save links, Linker mappings) belongs to this game key only. Other games on the same website have their own.'),
+      saveOwnersBlock(d.saveOwners),
+      opts.resetGameData
+        ? h('div', { class: 'btns' }, h('button', {
+            class: 'btn',
+            onclick: async () => {
+              if (!win.confirm('Reset SaveForge’s data for this game?\n\nFavorites, recent, hidden/marked variables, learned save links and Linker mappings for this game are deleted, and the game is scanned again. The game’s own saves are NOT touched.')) return;
+              try {
+                await opts.resetGameData();
+              } catch (e) {
+                toast(e.message, true);
+              }
+            },
+          }, 'Reset this game’s trainer data'))
+        : null,
+    );
+  }
+
+  /** Saves of other games of this website, left out of this game's saves (2.3). */
+  function saveOwnersBlock(o) {
+    if (!o) return null;
+    const out = [];
+    if (o.multi) out.push(h('p', { class: 'note' }, `SaveForge has seen ${o.games.length} games on this website: ${o.games.map((g) => `${g.title || g.key}${g.me ? ' (this one)' : ''}`).join(', ')}. They share the browser’s storage, so every save is matched to its game.`));
+    if (o.foreign.length) {
+      out.push(
+        h('h3', null, `Saves of other games here (${o.foreign.length}) — not shown, never written`),
+        h('ul', null, o.foreign.slice(0, 30).map((f) => h('li', null, h('b', null, f.name), ` — ${f.kind}, belongs to ${f.ownerTitle}`, f.how === 'engine' ? null : h('button', { class: 'btn mini', onclick: async () => { if (!win.confirm(`Treat “${f.name}” as a save of THIS game? SaveForge will show it and may write it.`)) return; await opts.claimSave?.(f.id); toast('Save re-read'); renderAll(); } }, 'This is this game’s save')))),
+      );
+    }
+    if (o.multi && o.unknown.length) out.push(h('p', { class: 'note' }, `${o.unknown.length} save(s) here could belong to any game of this website (${o.unknown.slice(0, 6).join(', ')}${o.unknown.length > 6 ? '…' : ''}); writing one asks first. A save becomes this game’s once SaveForge sees this game write it.`));
+    return out.length ? h('div', null, out) : null;
   }
 
   /** More than one SaveForge copy on this page (two installed scripts, old + new, extension + script). */
@@ -2177,19 +2275,41 @@ export function mountTrainer(win, opts) {
     hide() {
       setMinimized(true);
     },
-    destroy() {
+    /** keep: keep the scan for a quick reopen (same game only). restart: the trainer reopens itself (another game). */
+    destroy({ keep: keepWanted = true, restart = false } = {}) {
+      if (destroyed) return; // idempotent: a second close never runs cleanup twice
+      destroyed = true;
       win.clearInterval(poll);
+      win.clearTimeout(toastTimer);
       linkerUI?.dispose();
       scSavesUI?.dispose();
       doc.removeEventListener('visibilitychange', syncPaused);
       for (const u of unsubs.splice(0)) u();
       // keep the scan results (paused) so reopening does not scan again, unless turned off
-      const keep = S.providers.size && opts.keepOnClose ? opts.keepOnClose(new Map([...S.providers].filter(([k]) => k !== 'imported'))) : false;
+      const keep = keepWanted && S.providers.size && opts.keepOnClose ? opts.keepOnClose(new Map([...S.providers].filter(([k]) => k !== 'imported'))) : false;
       if (!keep) for (const pr of S.providers.values()) pr.dispose?.();
+      S.providers.clear();
+      S.provider = null;
       host.remove();
-      opts.onClose?.(keep);
+      opts.onClose?.(keep, { restart });
     },
     provider: () => S.provider,
+    providers: () => [...S.providers.values()],
+    /** What tests and Diagnostics need to know (no game data). */
+    state: () => ({ favorites: [...S.favorites], recent: [...S.recent], sourceId: S.sourceId, minimized: S.minimized, destroyed, scanning: S.creating.size > 0 }),
+    uiResources: () => {
+      const detail = ['panel value refresh: 1 timer', 'page visibility: 1 listener'];
+      const sc = scSavesUI?.timers?.() || 0;
+      if (sc) detail.push(`SugarCube save check: ${sc} timer(s)`);
+      const ln = linkerUI?.listenerCount?.() || 0;
+      if (ln) detail.push(`Button & Textbox Linker: ${ln} listener(s)`);
+      return destroyed ? { timers: 0, listeners: 0, observers: 0, detail: [] } : { timers: 1 + sc, listeners: 1 + ln, observers: 0, detail };
+    },
+    openDiagnostics: () => {
+      setMinimized(false);
+      push({ type: 'diagnostics' });
+    },
+    resetGameData: () => opts.resetGameData?.(),
     /** New sources found after opening (e.g. a SugarCube story that started late). */
     addSources(list, { select = false, note = '' } = {}) {
       const added = [];
@@ -2225,6 +2345,7 @@ export function mountTrainer(win, opts) {
       listen(pr);
     }
   }
+  if (opts.notice) win.setTimeout(() => !destroyed && toast(opts.notice), 300);
   const firstSource = () => ([...S.providers.keys()].find((k) => k !== 'raw') || (opts.sources.find((x) => x.id !== 'raw') || opts.sources[0]).id);
   if (opts.interrupted) {
     S.status = { choice: opts.interrupted };

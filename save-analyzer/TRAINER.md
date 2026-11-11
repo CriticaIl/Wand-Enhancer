@@ -328,6 +328,50 @@ Nothing is intercepted while there are no active mappings, when *Mappings enable
 
 A game that registers its own *window capture* listeners before SaveForge can still see a remapped tap first. *Watch one tap* shows what really happens.
 
+## Game targeting and one trainer (2.3)
+
+**The game context.** A trainer belongs to exactly one game, identified in `src/trainer/context.js`:
+- **Game key:** the origin, path, meaningful query parameters and a `#/route`. Tracking and cache-busting parameters are ignored.
+- **Document token:** stored on `<html>`, so every JavaScript world of a document agrees on it.
+- **Context ID:** `hash(game key)-document token`.
+
+What SaveForge stores is keyed by the game key:
+- favorites, recent, marks, learned save links, Linker mappings, SugarCube verification, backups
+- per website (interface preferences only): panel position, performance profile, label language
+
+**When the page changes game.** `watchContext` compares the game key once a second while the page is visible, and right after `popstate`/`hashchange`/`pageshow`. When it differs:
+- the running scan is aborted
+- the trainer closes without keeping its scan, and opens again for the new game 0.7 s later
+- every provider carries a guard, so writes are refused once the address no longer matches the scanned game: live writes, locks, storage writes, and the SugarCube save workflow
+- a scan that finishes after its trainer closed is disposed and never shown
+
+**Whose save is it** (`src/trainer/save-owner.js`). Every localStorage key and IndexedDB database gets an owner game, remembered per website:
+1. **engine knowledge:** SugarCube's `(Saved Games)<story id>.…` keys belong to the running story
+2. **written while watched:** an entry the game wrote while SaveForge was open is that game's
+3. **by name:** a name containing words of exactly one known game's address or title belongs to that game
+
+Entries of other games are filtered out of the Storage Bridge dump before analysis. They are never shown, linked or written: `apply` writes only the keys in the dump. Entries of unknown owner stay available. Once SaveForge has seen several games on the website, writing them asks first.
+
+**One launcher, one panel, the right frame** (`src/userscript/entry.js`). Every frame's instance reports to its parent, relayed up to the top page. Reports carry the frame's slot (index path) and document token, so a frame navigated to another game replaces its old report.
+
+The top page's instance coordinates:
+- **Launcher:** it elects the one frame that shows it. A game frame covering ≥ 20% of the screen wins over a portal page that merely has a canvas.
+- **State broadcast:** it tells every frame where the launcher is and where a panel is open. A frame never shows a launcher next to an open panel.
+- **Opening:** before opening, it pings all frames and decides from **fresh** replies only:
+  1. an open panel is shown, never a second one
+  2. otherwise the requesting game frame opens
+  3. otherwise the one game opens, or a chooser lists several
+  4. otherwise a same-site frame without the script, or the page itself
+
+Within one document, copies in different worlds still coordinate through the DOM (2.2.1).
+
+**Tests:** `test/targeting.test.mjs` reproduced the reported problems on 2.2.2 before they were fixed. It uses twin games with the same engine and variable names on one host, a single-page twin, and a portal with swapped, re-navigated, double and canvas-plus-frame layouts.
+
+Results on the unfixed 2.2.2 build:
+- **Reproduced:** favorites carried over, the old scan reused, writes to the old game accepted, nothing opened after a frame swap or re-navigation, two launchers, 4 timers left after closing mid-scan.
+- **Already passed:** two copies in different worlds plus reinjection.
+- **New features:** the chooser, Diagnostics and Reset have no 2.2.2 equivalent.
+
 ## Performance and stability (2.2)
 
 **How it was measured:** `node tools/profile-trainer.mjs "<fixture query>" 4` runs the stress fixture (`test/fixtures/stress/`) in Chromium with 4× CPU throttling (roughly a phone) and a game loop that changes state every frame. It measures:

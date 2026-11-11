@@ -1,19 +1,51 @@
-# SaveForge 2.2 on iPhone: install, test and what to expect
+# SaveForge 2.3 on iPhone: install, test and what to expect
 
-## Which version am I running? (2.2.2)
+## Fixed in 2.3: the wrong game, and duplicate menus
+
+**What caused it (found and reproduced by tests before fixing):**
+
+| What you saw | Cause | Fixed by |
+| --- | --- | --- |
+| Game B showed Game A's variables or favorites | Everything SaveForge remembered (favorites, recent, hidden/marked variables, learned save links, Linker mappings) was stored **per website**. Sites such as itch.io's game host and GitHub Pages serve many games from one website, so every game there shared it. | Stored **per game** now (website + game address). |
+| Reopening after switching games showed the old game | The scan kept for a quick reopen was reused for anything in the same browser tab, including a new game loaded by a portal without a full page load. | The kept scan is reused only for the same game in the same page. |
+| The trainer kept the old game while open | Nothing noticed when the page switched to another game. | The trainer checks once a second (and on navigation). When the game changes it closes its scan of the old game and opens again for the new one. Any edit still aimed at the old game is refused. |
+| Game B offered Game A's **saves** | One website has one browser storage. On shared hosts it holds every game's saves, and SaveForge read all of them. | Every save is matched to its game (see below). Other games' saves are left out and never written. |
+| `#saveforge` / the button opened nothing, or the old game | When a portal replaced or re-navigated its game frame, SaveForge still used the **first** game frame it had heard of, which could be gone or showing another game. | The top page asks every frame what it shows **now** before opening. A frame that now shows another game replaces its old entry. |
+| Two buttons, or two menus | Each frame decided on its own: a portal page with an animated banner (a canvas) and the game frame both showed a button, and each could open a panel. | The top page coordinates: one button (the game frame's), one panel across the page and all its frames. Several games on one page: a chooser asks which one. |
+| Timers kept running after closing during a scan | A scan that finished after you closed the trainer was never stopped. | Late scan results are discarded and stopped. A test closes SaveForge three times mid-scan and checks nothing is left running. |
+
+**Saves on websites that host several games:**
+- A save the game writes while SaveForge is open becomes that game's. So does a save named after the game (`moonharbor_save` → "Moon Harbor"), and a SugarCube save of the running story.
+- **Saves of other games are not shown and never written.** Diagnostics → *Game context* lists them. If one is wrongly attributed, *This is this game's save* hands it back.
+- A save whose game cannot be told stays available. Once SaveForge has seen two or more games on that website, writing such a save asks first.
+- **SugarCube:** stories name their saves after the story id. Only the running story's saves are offered. If several stories have saves and the one on the page cannot be identified, SaveForge refuses to write rather than guess.
+
+**Diagnostics → Game context** shows:
+- the game, its address and frame
+- the context ID, and why this game was selected
+- scan status and age
+- trainer panels and launchers on this page (and in all frames, from the top page)
+- the number of SaveForge copies
+- SaveForge's own timers and page listeners running right now
+
+**Reset this game's trainer data** (same screen) deletes SaveForge's records for this game and scans it again. It removes favorites, recent, marks, learned save links and Linker mappings. **The game's own saves are not touched.**
+
+**Upgrading from 2.2:** older versions stored data per website. The **first game you open on each website after updating** keeps that data; other games there start fresh. Older save backups stay listed under Backups.
+
+## Which version am I running? (2.3.0)
 Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
 
 | Where | How to see it |
 | --- | --- |
-| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.2.2**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.2.2 · build xxxxxxxx** |
-| Floating trainer | Header: **TRAINER 2.2.2**. Diagnostics → *This copy: SaveForge 2.2.2 (build xxxxxxxx)* |
-| Userscripts app | The SaveForge script shows **2.2.2** |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.0**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.0 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.3.0**. Diagnostics → *This copy: SaveForge 2.3.0 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.3.0** |
 
 **If the website still shows an older version:**
 - **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
 - **The Userscripts app.** It checks for updates on its own schedule. Open the install link again (USERSCRIPT.md) and tap **Update**, then reload the game page.
 
-**What changed in 2.2.2:**
+**What changed in 2.2.2 (the website's version label):**
 - **Why "2.2.1" never appeared on the website:** the website never showed a version anywhere. It does now, and the trainer and userscript read the same version file.
 - **The main page** now loads one bundled file whose address changes with every build. Safari can no longer mix cached old parts with new ones after an update.
 - **The offline copy** (service worker) is replaced with each build and checks with the server instead of reusing cached copies.
@@ -136,7 +168,7 @@ Every part shows the same version **and build** (a fingerprint of the code; the 
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.2.2** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.3.0** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -187,7 +219,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ## 5. Verified by automated tests vs. still needs your iPhone
 
-### Verified by the automated tests (Chromium, 184 tests)
+### Verified by the automated tests (Chromium, 198 tests)
 
 **Edits:**
 - Edits reach the game's live objects, even after the game replaced them. Covered cases: SugarCube copying variables on every passage, a state object rebuilt 5× per second, and RPG Maker objects re-read on every access.
@@ -266,9 +298,27 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Games in srcdoc frames and nested cross-origin frames are handled.
 - Ordinary websites still get no DOM changes, storage or errors.
 
+**Game targeting and one trainer (2.3):**
+- Two games on one website: Game B shows none of Game A's favorites, and Game A's save is neither offered nor written. Game A keeps its favorite.
+- Single-page navigation: after closing, the old game's kept scan is not reused. While the trainer is open, it switches to the new game by itself. Edits never reach the old game's objects, and a write prepared for the old game is refused.
+- A portal swapping or re-navigating its game frame: `#saveforge` opens the game shown now.
+- Two game frames: a chooser lists both, and only the chosen one opens.
+- A portal page with its own canvas plus a game frame: one launcher and one panel across all frames.
+- Two SaveForge copies in separate worlds plus a reinjected script: one launcher and one panel. Exactly one launcher comes back after closing.
+- Closing during a 20,000-variable scan three times: no timers left behind and no panel brought back. A 100,000-variable game changing during its scan: the old scan is dropped.
+- The game changing three times during the first scan: the newest game's result is shown.
+- Navigating away and back, and a Safari-style page restore: the right game, the same context.
+- Diagnostics shows the game context, instances and resources. *Reset this game's trainer data* keeps the game's save.
+
 **Existing features:** analyzer, saves, Diagnostics, favourites, backups, Safari extension and all earlier tests still pass.
 
 ### Not verifiable here (please test on your iPhone)
+
+**2.3 targeting and duplicates (tested in Chromium only):**
+- **Your games and portals.** The tests use made-up twin games, a portal, and frames with swapped games. Real portals may load games in ways the tests do not cover (for example, replacing the game without changing the address: tap *Rescan game* then).
+- **Safari's back-forward cache.** The tests simulate Safari's page-restore event; real restoration was not observed on an iPhone.
+- **Userscripts copies in separate worlds** were simulated with Chromium isolated worlds. Whether the Userscripts app also runs a copy in frames where you did not allow it is up to the app.
+- **Which game owns an older save** on a shared website, from before SaveForge saw the game write it. Check Diagnostics → *Game context* the first time on such a site.
 
 - Whether tukann's game (or any real game) exposes a redraw function SaveForge can find. Many games keep their render functions private. In that case the screen status says "not refreshed yet" and the display-only and manual fallbacks remain. The Update game display screen shows exactly what was found.
 
@@ -276,7 +326,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.2.2 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.3.0 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

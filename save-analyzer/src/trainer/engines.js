@@ -478,6 +478,7 @@ function genericGlobals(win, hasEngine) {
       if (learnTimer) win.clearInterval(learnTimer);
       learnTimer = null;
     },
+    learning: () => !!learnTimer,
     onLearned(fn) {
       learnListeners.add(fn);
       return () => learnListeners.delete(fn);

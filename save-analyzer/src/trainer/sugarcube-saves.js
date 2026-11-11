@@ -126,6 +126,60 @@ export function editState(state, edits) {
  *           free: [{id, label, slot, key, path, codec, raw}], session: {key, codec, raw, state}|null, bundles}
  */
 let cacheEntry = null;
+
+// ---- which story is this? (2.3) SugarCube names its storage "(Saved Games)<story id>.<what>".
+// Several stories on one website share localStorage (and, within a tab, sessionStorage), so
+// saves are only ever taken from the story running on this page.
+const SG = '(Saved Games)';
+export function storyIdOfKey(key) {
+  if (typeof key !== 'string' || !key.startsWith(SG)) return null;
+  const rest = key.slice(SG.length);
+  const i = rest.indexOf('.');
+  return i > 0 ? rest.slice(0, i) : null;
+}
+function slugify(str) {
+  return String(str || '')
+    .trim()
+    .replace(/[^\w\s\u2013\u2014-]+/g, '')
+    .replace(/[_\s\u2013\u2014-]+/g, '-')
+    .toLocaleLowerCase();
+}
+function storyIds(win) {
+  const ids = new Set();
+  for (const store of ['localStorage', 'sessionStorage']) {
+    try {
+      const st = win[store];
+      for (let i = 0; i < st.length; i++) {
+        const id = storyIdOfKey(st.key(i));
+        if (id) ids.add(id);
+      }
+    } catch {
+      /* blocked */
+    }
+  }
+  return ids;
+}
+/** {ids, current, how}: the story ids in storage and the one running here (null when it cannot be told). */
+export function currentStory(win) {
+  const ids = storyIds(win);
+  const out = (current, how) => ({ ids: [...ids], current, how });
+  try {
+    const sc = win.SugarCube;
+    const live = sc && (sc.Config?.saves?.id || sc.Story?.id || sc.Story?.domId);
+    if (live) return out(String(live), 'from the running story (SugarCube.Story)');
+  } catch {
+    /* not reachable from this world */
+  }
+  if (ids.size <= 1) return out(ids.size ? [...ids][0] : null, ids.size ? 'the only SugarCube story with saves on this website' : 'no SugarCube storage');
+  try {
+    const name = win.document.querySelector('tw-storydata')?.getAttribute('name');
+    const cands = [slugify(name), String(name || '')];
+    for (const c of cands) if (c && ids.has(c)) return out(c, 'matches the story title on this page');
+  } catch {
+    /* no DOM */
+  }
+  return out(null, `${ids.size} SugarCube stories have saves on this website and the one on this page cannot be identified`);
+}
 /** Cheap signature of both storages (keys, lengths, edges) — avoids decoding everything again. */
 function storageSig(win) {
   let s = '';
@@ -151,13 +205,19 @@ export function readSugarCubeStorage(win, { fresh = false } = {}) {
   return out;
 }
 function readSugarCubeStorageRaw(win) {
-  const out = { saves: [], free: [], session: null };
+  const story = currentStory(win);
+  const out = { saves: [], free: [], session: null, story };
+  // another story's keys are never offered (never written); keys without a story id are kept
+  const mine = (k) => {
+    const id = storyIdOfKey(k);
+    return !id || !story.current || id === story.current;
+  };
   const each = (store, fn) => {
     try {
       const st = win[store];
       for (let i = 0; i < st.length; i++) {
         const k = st.key(i);
-        fn(k, st.getItem(k));
+        if (mine(k)) fn(k, st.getItem(k));
       }
     } catch {
       /* storage blocked */
@@ -191,10 +251,13 @@ function readSugarCubeStorageRaw(win) {
 }
 
 function readSession(win) {
+  const cur = currentStory(win).current;
   try {
     const st = win.sessionStorage;
     for (let i = 0; i < st.length; i++) {
       const key = st.key(i);
+      const id = storyIdOfKey(key);
+      if (id && cur && id !== cur) continue; // another story played earlier in this tab
       const raw = st.getItem(key);
       const d = decodeStored(raw);
       if (d && isState(d.obj)) return { key, codec: d.codec, raw, state: d.obj };

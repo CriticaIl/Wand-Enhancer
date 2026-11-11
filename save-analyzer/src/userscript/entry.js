@@ -10,6 +10,7 @@
 // On ordinary websites nothing is added, stored or loaded.
 
 import { openTrainer } from '../trainer/inject.js';
+import { docToken } from '../trainer/context.js';
 import { getMode, looksLikeGame, probeContext, setMode } from './activation.js';
 
 import { BUILD, VERSION } from '../version.js';
@@ -41,17 +42,21 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
   };
   win.__saveforgeUserscript = api;
 
-  // ---------------------------------------------------------------- frames
-  // Games on portals usually run in an iframe (often another site, sometimes
-  // nested). This script runs in every frame; each instance reports a detected
-  // game to its parent, reports are relayed up, and "open" is routed down to the
-  // frame that actually holds the game. Messages are namespaced and checked
-  // against the sending window; frames without a game stay silent unless the
-  // user opens SaveForge (which pings them for the Diagnostics screen).
+  // ---------------------------------------------------------------- frames (2.3: one coordinator)
+  // Games on portals usually run in an iframe (often another site, sometimes nested). This
+  // script runs in every frame. Every instance reports itself to its parent (relayed up to the
+  // top page); the TOP page's instance coordinates:
+  //   - it elects the one frame that shows the launcher (a big game frame wins over a portal page
+  //     that merely has a canvas) and tells every frame ("state": owner + active panel)
+  //   - opening anywhere goes through it: if a panel is already open in any frame that panel is
+  //     shown; otherwise the game frame is chosen from FRESH reports (a ping round), never from a
+  //     frame that was removed or navigated to another game; several games → a chooser
+  // Messages are namespaced and checked against the sending window (child or parent only).
   const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
   const MSG = '__saveforge';
   const routes = new Map(); // report id -> direct child window that leads to it
-  const reports = new Map(); // report id -> report (from descendants)
+  const reports = new Map(); // report id -> report (from descendants), with .seen (our clock)
+  let state = { known: false, owner: null, active: null }; // from the top page's coordinator
   const isTop = (() => {
     try {
       return win === win.top;
@@ -63,7 +68,11 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
     for (let i = 0; i < win.frames.length; i++) if (win.frames[i] === w) return true;
     return false;
   };
-  const myReport = () => ({ id, origin: safeOrigin(), href: safeHref(), game: !!detected, reason: detected || '' });
+  const myReport = (extra = {}) => ({ id, doc: docToken(win), origin: safeOrigin(), href: safeHref(), title: safeTitle(), game: !!detected, reason: detected || '', trainer: !!win.__saveforgeTrainer, ...extra });
+  const childIndex = (w) => {
+    for (let i = 0; i < win.frames.length; i++) if (win.frames[i] === w) return i;
+    return -1;
+  };
   const post = (target, msg) => {
     try {
       target.postMessage({ [MSG]: 1, ...msg }, '*');
@@ -71,42 +80,230 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
       /* frame gone */
     }
   };
-  function reportUp() {
-    if (!isTop) post(win.parent, { type: 'report', report: myReport() });
+  const down = (msg) => {
+    for (let i = 0; i < win.frames.length; i++) post(win.frames[i], msg);
+  };
+  function reportUp(extra) {
+    if (isTop) return elect();
+    post(win.parent, { type: 'report', report: myReport(extra) });
+  }
+  /** Reports whose frame was removed (or that left) are forgotten. */
+  function pruneRoutes() {
+    for (const [rid, w] of routes) {
+      if (!isChildWindow(w) || reports.get(rid)?.gone) {
+        routes.delete(rid);
+        reports.delete(rid);
+      }
+    }
   }
   win.addEventListener('message', (e) => {
     const d = e.data;
     if (!d || typeof d !== 'object' || d[MSG] !== 1) return;
-    if (d.type === 'report' && d.report && isChildWindow(e.source)) {
-      routes.set(d.report.id, e.source);
-      reports.set(d.report.id, d.report);
-      if (d.report.game) hideLauncherForChild();
-      if (!isTop) post(win.parent, { type: 'report', report: d.report });
-    } else if (e.source === win.parent && d.type === 'ping') {
-      reportUp();
-      for (let i = 0; i < win.frames.length; i++) post(win.frames[i], { type: 'ping' });
-    } else if (e.source === win.parent && d.type === 'open') {
-      if (d.target === id) openHere();
-      else if (routes.has(d.target)) post(routes.get(d.target), { type: 'open', target: d.target });
+    const fromChild = isChildWindow(e.source);
+    const fromParent = !isTop && e.source === win.parent;
+    if (d.type === 'report' && d.report && fromChild) {
+      // slot: where the reporting frame sits (frame index path below this window). A NEW document
+      // in the same slot (the portal navigated the frame to another game) replaces the old report:
+      // the old document cannot be relied on to say goodbye (pagehide messages can be lost)
+      const relayed = { ...d.report, slot: [childIndex(e.source), ...(d.report.slot || [])] };
+      const slot = relayed.slot.join('/');
+      for (const [rid, old] of reports) if (rid !== relayed.id && old.slot && old.slot.join('/') === slot && old.doc !== relayed.doc) (reports.delete(rid), routes.delete(rid));
+      routes.set(relayed.id, e.source);
+      reports.set(relayed.id, { ...relayed, seen: Date.now() });
+      if (relayed.gone) (reports.delete(relayed.id), routes.delete(relayed.id));
+      if (isTop) scheduleElect();
+      else post(win.parent, { type: 'report', report: relayed });
+    } else if (d.type === 'req' && fromChild) {
+      if (isTop) decideOpen(d.from);
+      else post(win.parent, d);
+    } else if (fromParent && d.type === 'ping') {
+      down({ type: 'ping' });
+      // answer with what is true NOW (a frame may have been navigated to another game)
+      detectNow().finally(() => reportUp());
+    } else if (fromParent && d.type === 'state') {
+      state = { known: true, owner: d.owner, active: d.active };
+      applyState();
+      down(d);
+    } else if (fromParent && (d.type === 'open' || d.type === 'show')) {
+      if (d.target === id) {
+        if (d.type === 'open') openHere();
+        else if (win.__saveforgeTrainer) win.__saveforgeTrainer.show();
+        else openHere();
+      } else if (routes.has(d.target)) post(routes.get(d.target), { type: d.type, target: d.target });
     }
   });
-  function hideLauncherForChild() {
-    // the game frame shows its own launcher; avoid a second one on the portal page
-    if (!detected && mode !== 'always') removeLauncher();
+  // leaving the page (navigation, tab closed): the coordinator forgets this frame at once
+  win.addEventListener('pagehide', () => {
+    if (!isTop) post(win.parent, { type: 'report', report: myReport({ gone: true, game: false, trainer: false }) });
+  });
+  win.addEventListener('pageshow', (e) => {
+    if (e.persisted) reportUp();
+  });
+
+  // ---- the top page's coordinator
+  let electTimer = 0;
+  function scheduleElect() {
+    win.clearTimeout(electTimer);
+    electTimer = win.setTimeout(elect, 150);
+  }
+  function frameArea(w) {
+    try {
+      for (const el of doc.querySelectorAll('iframe')) {
+        if (el.contentWindow !== w) continue;
+        const r = el.getBoundingClientRect();
+        return Math.max(0, r.width) * Math.max(0, r.height);
+      }
+    } catch {
+      /* no DOM */
+    }
+    return 0;
+  }
+  function elect() {
+    if (!isTop) return;
+    pruneRoutes();
+    const screen = (win.innerWidth || 1) * (win.innerHeight || 1);
+    const games = [...reports.values()].filter((r) => r.game && !r.gone).map((r) => ({ r, area: frameArea(routes.get(r.id)) })).sort((a, b) => b.area - a.area);
+    let owner = null;
+    if (games.length && games[0].area >= 0.2 * screen) owner = games[0].r.id; // a big game frame
+    else if (detected) owner = id;
+    else if (games.length) owner = games[0].r.id;
+    const activeChild = [...reports.values()].find((r) => r.trainer && !r.gone);
+    const active = win.__saveforgeTrainer ? id : activeChild ? activeChild.id : null;
+    state = { known: true, owner, active };
+    applyState();
+    down({ type: 'state', owner, active });
+  }
+  function applyState() {
+    if (!state.known) return;
+    if (win.__saveforgeTrainer || state.active) return hideLauncher(); // a panel is open somewhere
+    if (mode === 'never') return removeLauncher();
+    if (state.owner === id) return showLauncher();
+    if (state.owner) return hideLauncher(); // another frame holds the game
+    // no game anywhere: only the top page shows a launcher, and only in "always" mode; an
+    // ordinary page keeps nothing of SaveForge in its DOM
+    if (isTop && mode === 'always') showLauncher();
+    else removeLauncher();
   }
   async function pingFrames(wait = 600) {
-    for (let i = 0; i < win.frames.length; i++) post(win.frames[i], { type: 'ping' });
+    const t0 = Date.now();
+    down({ type: 'ping' });
     await new Promise((r) => win.setTimeout(r, wait));
-    return [...reports.values()].map((r) => ({ ...r, source: routes.get(r.id) }));
+    pruneRoutes();
+    return [...reports.values()].filter((r) => r.seen >= t0 && !r.gone).map((r) => ({ ...r, source: routes.get(r.id) }));
+  }
+  function routeTo(target, type = 'open') {
+    if (target === id) return type === 'open' ? openHere() : win.__saveforgeTrainer ? win.__saveforgeTrainer.show() : openHere();
+    const route = routes.get(target);
+    if (!route) throw new Error('That frame is no longer available.');
+    post(route, { type, target });
+    return null;
   }
   function openInFrame(report) {
-    const route = routes.get(report.id);
-    if (!route) throw new Error('That frame is no longer available.');
-    post(route, { type: 'open', target: report.id });
+    routeTo(report.id, 'open');
+  }
+  /** Top page: where should the trainer open? (from: the frame that asked, or this page) */
+  let deciding = null;
+  function decideOpen(from = id) {
+    if (deciding) return deciding;
+    deciding = (async () => {
+      const fresh = await pingFrames(500);
+      // 1. a panel is already open somewhere: show it, never open a second one
+      if (win.__saveforgeTrainer) return win.__saveforgeTrainer.show();
+      const active = fresh.find((r) => r.trainer);
+      if (active) return routeTo(active.id, 'show');
+      // 2. the frame you opened it from holds a game: open there
+      const req = from !== id ? fresh.find((r) => r.id === from) : null;
+      if (req && req.game) return routeTo(req.id, 'open');
+      // 3. the games on this page now (one entry per frame document, even with two SaveForge copies)
+      const seen = new Set();
+      const games = fresh.filter((r) => r.game && !seen.has(`${r.href}|${r.title}`) && seen.add(`${r.href}|${r.title}`));
+      if (detected && from === id && !games.length) return openHere();
+      const options = [...(detected ? [{ id, title: safeTitle(), href: safeHref(), origin: safeOrigin(), reason: detected, self: true }] : []), ...games];
+      if (options.length > 1) return chooser(options);
+      if (options.length === 1) {
+        if (options[0].id !== id) toast('Opening SaveForge in the game frame…');
+        return routeTo(options[0].id, 'open');
+      }
+      // 4. same-site frames where the manager did not inject the script (srcdoc, about:blank, blob)
+      const local = await sameSiteGameFrame();
+      if (local) return local;
+      // 5. nothing detected: open where you asked
+      return from !== id && routes.has(from) ? routeTo(from, 'open') : openHere();
+    })().finally(() => (deciding = null));
+    return deciding;
+  }
+  async function sameSiteGameFrame() {
+    for (const el of doc.querySelectorAll('iframe')) {
+      let child = null;
+      try {
+        child = el.contentWindow;
+        void child.location.href; // throws for other sites
+      } catch {
+        continue;
+      }
+      if (!child || child.__saveforgeUserscript) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 200 || r.height < 150) continue;
+      if ((await looksLikeGame(child)).game) {
+        toast('Opening SaveForge in the game frame…');
+        return openTrainer(child, { onClose: () => delete child.__saveforgeTrainer, reason: 'a same-site game frame without the userscript, opened from the page around it' });
+      }
+    }
+    return null;
+  }
+
+  /** Several games on the page: you choose (2.3). */
+  function chooser(options) {
+    doc.querySelector('saveforge-chooser')?.remove();
+    const host = doc.createElement('saveforge-chooser');
+    host.setAttribute('style', 'all: initial');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>
+      .w { position: fixed; z-index: 2147483647; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%); width: min(92vw, 380px); padding: 10px; border-radius: 16px;
+        background: rgba(10,12,18,.97); color: #eef2f8; font: 15px -apple-system, system-ui, sans-serif; box-shadow: 0 14px 40px rgba(0,0,0,.6); }
+      h2 { font-size: 16px; margin: 4px 6px 8px; }
+      button { display: block; width: 100%; text-align: left; min-height: 48px; margin: 4px 0; padding: 8px 12px; border: 0; border-radius: 12px; background: rgba(255,255,255,.07); color: inherit; font: inherit; }
+      button small { display: block; color: #8b95ad; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      button.x { background: none; text-align: center; color: #8b95ad; }
+    </style><div class="w" role="dialog" aria-label="Choose the game"><h2>Which game should SaveForge open?</h2></div>`;
+    const w = root.querySelector('.w');
+    for (const o of options) {
+      const b = doc.createElement('button');
+      b.textContent = o.title || o.origin || 'Game';
+      const sm = doc.createElement('small');
+      sm.textContent = `${o.self ? 'this page · ' : 'frame · '}${o.href || o.origin}`;
+      b.append(sm);
+      b.addEventListener('click', () => {
+        host.remove();
+        try {
+          routeTo(o.id, 'open');
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+      w.append(b);
+    }
+    const x = doc.createElement('button');
+    x.className = 'x';
+    x.textContent = 'Cancel';
+    x.addEventListener('click', () => host.remove());
+    w.append(x);
+    for (const t of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'click']) host.addEventListener(t, (ev) => ev.stopPropagation());
+    (doc.body || doc.documentElement).append(host);
+    return null;
   }
 
   async function open() {
-    // no game state here but a descendant frame has one: open it there
+    if (win.__saveforgeTrainer) return win.__saveforgeTrainer.show();
+    if (isTop) return decideOpen(id);
+    if (state.known) {
+      // the top page coordinates: a panel open elsewhere is shown, and a non-game frame asks it
+      if (!state.active && (detected || state.owner === id)) return openHere();
+      reportUp();
+      post(win.parent, { type: 'req', from: id });
+      return null;
+    }
+    // no SaveForge on the top page (not allowed there): decide here, as before 2.3
     if (!detected) {
       const found = [...reports.values()].find((r) => r.game) || (await pingFrames(500)).find((r) => r.game);
       if (found) {
@@ -114,23 +311,8 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
         openInFrame(found);
         return null;
       }
-      // same-site frames where the manager did not inject the script (srcdoc, about:blank, blob frames)
-      for (const el of doc.querySelectorAll('iframe')) {
-        let child = null;
-        try {
-          child = el.contentWindow;
-          void child.location.href; // throws for other sites
-        } catch {
-          continue;
-        }
-        if (!child || child.__saveforgeUserscript) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width < 200 || r.height < 150) continue;
-        if ((await looksLikeGame(child)).game) {
-          toast('Opening SaveForge in the game frame…');
-          return openTrainer(child, { onClose: () => delete child.__saveforgeTrainer });
-        }
-      }
+      const local = await sameSiteGameFrame();
+      if (local) return local;
     }
     return openHere();
   }
@@ -142,18 +324,30 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
       openInFrame,
       contextInfo: async () => probeContext(win),
       siteMode: { get: async () => mode, set: (m) => changeMode(m) },
+      reason: detected ? `game detected in this ${isTop ? 'page' : 'frame'} (${detected})` : `opened by you in this ${isTop ? 'page' : 'frame'} (no game detected here)`,
+      instances: async () => (isTop ? { frames: (await pingFrames(400)).filter((r) => r.trainer).length + (win.__saveforgeTrainer ? 1 : 0) } : {}),
       onClose: () => {
         delete win.__saveforgeTrainer;
-        if (mode !== 'never' && (mode === 'always' || detected)) showLauncher();
+        reportUp();
+        if (state.known) applyState();
+        else if (mode !== 'never' && (mode === 'always' || detected)) showLauncher();
       },
     });
     ctl.show();
+    reportUp(); // trainer: true only if THIS copy holds the panel (not another world's)
     return ctl;
   }
 
   function safeOrigin() {
     try {
       return win.location.origin;
+    } catch {
+      return '';
+    }
+  }
+  function safeTitle() {
+    try {
+      return doc.title || '';
     } catch {
       return '';
     }
@@ -172,6 +366,9 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
     if (m === 'never') {
       removeLauncher();
       win.__saveforgeTrainer?.destroy();
+    } else if (state.known) {
+      if (isTop) elect();
+      else applyState();
     } else if (m === 'always' || detected) showLauncher();
     else removeLauncher();
     api.saved = setMode(win, m);
@@ -197,9 +394,11 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
   // ---------------------------------------------------------------- launcher (Shadow DOM, only when wanted)
   function showLauncher() {
     if (win.__saveforgeTrainer) return;
-    // another SaveForge copy (other JS world, older version) already shows a launcher or the panel here
+    // another SaveForge copy (other JS world, older version) shows a panel here, or its own launcher
     try {
-      if (!launcher && (doc.querySelector('saveforge-launcher') || doc.querySelector('saveforge-trainer'))) return;
+      if (doc.querySelector('saveforge-trainer')) return hideLauncher();
+      const others = [...doc.querySelectorAll('saveforge-launcher')].filter((el) => el !== launcher?.host && el.style.display !== 'none');
+      if (others.length) return hideLauncher();
     } catch {
       /* no DOM */
     }
@@ -326,21 +525,41 @@ export function startUserscript(win, { detectDelays = DETECT_SCHEDULE, watchMs =
     { passive: true, capture: true },
   );
 
+  /** Is there a game here right now? (answers the coordinator's ping; never shows anything) */
+  async function detectNow() {
+    if (detected) return true;
+    try {
+      const res = await looksLikeGame(win);
+      if (res.game) detected = res.reason;
+    } catch {
+      /* page gone */
+    }
+    return !!detected;
+  }
+  /** Shows the launcher where the coordinator says (or here when no SaveForge runs above this frame). */
+  function settleLauncher() {
+    if (isTop) return elect();
+    reportUp();
+    win.setTimeout(() => {
+      if (state.known) applyState();
+      else if (mode !== 'never' && (detected || mode === 'always')) showLauncher();
+    }, 400);
+  }
   async function detectOnce() {
     if (mode !== 'auto' || detected || win.__saveforgeTrainer) return true;
     const res = await looksLikeGame(win);
     if (!res.game) return false;
     detected = res.reason;
-    reportUp();
-    showLauncher();
+    settleLauncher();
     return true;
   }
 
   (async () => {
     mode = (await getMode(win)) || DEFAULT_MODE;
+    reportUp(); // the coordinator learns about this frame (and tells it where the launcher goes)
     if (handleHash()) {
       /* handled */
-    } else if (mode === 'always') showLauncher();
+    } else if (mode === 'always') settleLauncher();
     if (mode === 'auto') {
       // games often appear late: watch the DOM for new canvases/frames as well as re-checking on a schedule
       let timer = 0;

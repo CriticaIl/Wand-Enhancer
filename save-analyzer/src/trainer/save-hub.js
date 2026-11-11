@@ -75,8 +75,10 @@ export class SaveHub {
           /* no stored links */
         }
         try {
+          await this.ownership?.load();
           const t0 = Date.now();
           this.provider = await StorageProvider.create(this.win, this.store, this.collectOpts());
+          this.provider.guard = () => this.guard?.();
           this.noteRead(t0, this.provider.dump);
           this.sig = signature(this.provider.dump);
           this.lsSig = lsSignature(this.win);
@@ -124,6 +126,7 @@ export class SaveHub {
         const before = this.saveVals;
         if (this.provider) this.provider.replaceData(dump, doc);
         else this.provider = new StorageProvider(this.win, this.store, dump, doc);
+        this.provider.guard = () => this.guard?.();
         this.provider.collectOpts = opts;
         this.sig = sig;
         this.stale = false;
@@ -141,7 +144,7 @@ export class SaveHub {
 
   /** Keeps the trainer in step with the game's saves while it is open. */
   startAuto() {
-    if (this.timer || !this.auto) return;
+    if (this.timer || !this.auto || this.disposed) return;
     this.timer = this.win.setInterval(() => this.tick(), this.autoMs);
   }
   stopAuto() {
@@ -170,7 +173,7 @@ export class SaveHub {
 
   /** Options for the Storage Bridge read. */
   collectOpts() {
-    return { indexedDB: this.includeIndexedDB, maxBinary: this.profile.maxBinary };
+    return { indexedDB: this.includeIndexedDB, maxBinary: this.profile.maxBinary, filter: this.ownership ? (d) => this.ownership.filter(d) : undefined };
   }
   noteRead(t0, dump) {
     this.reads.count++;
@@ -346,6 +349,7 @@ export class SaveHub {
   dispose() {
     this.stopAuto();
     this.attached.clear();
+    this.disposed = true;
   }
 }
 

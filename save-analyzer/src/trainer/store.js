@@ -38,17 +38,50 @@ async function run(win, store, mode, fn) {
   }
 }
 
-export function createStore(win, scope) {
+const NONE = Symbol('none');
+
+/** Deletes SaveForge's records whose key starts with prefix (Reset this game's trainer data). */
+export async function clearPrefix(win, prefix) {
+  for (const key of [...memory.kv.keys()]) if (key.startsWith(prefix)) memory.kv.delete(key);
+  try {
+    const keys = (await run(win, 'kv', 'readonly', (s) => s.getAllKeys())) || [];
+    const mine = keys.filter((x) => typeof x === 'string' && x.startsWith(prefix));
+    if (mine.length) await run(win, 'kv', 'readwrite', (s) => mine.forEach((x) => s.delete(x)));
+    return mine.length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * scope: what the data belongs to. Since 2.3 game data is scoped per GAME (see context.js),
+ * not per website. `legacy` (optional): {scope, use: () => Promise<boolean>, skip: Set} — the
+ * pre-2.3 per-website scope, read when this game has nothing stored yet and `use()` says this
+ * game inherited that data (the first game opened on the site after the update).
+ */
+export function createStore(win, scope, legacy = null) {
   const k = (name) => `${scope}:${name}`;
+  const raw = async (key) => {
+    try {
+      const v = await run(win, 'kv', 'readonly', (s) => s.get(key));
+      return v === undefined ? NONE : v;
+    } catch {
+      return memory.kv.has(key) ? memory.kv.get(key) : NONE;
+    }
+  };
   return {
+    scope,
     async get(name, fallback) {
-      try {
-        const v = await run(win, 'kv', 'readonly', (s) => s.get(k(name)));
-        return v === undefined ? fallback : v;
-      } catch {
-        return memory.kv.has(k(name)) ? memory.kv.get(k(name)) : fallback;
+      const v = await raw(k(name));
+      if (v !== NONE) return v;
+      if (legacy && !legacy.skip?.has(name) && (await legacy.use())) {
+        const old = await raw(`${legacy.scope}:${name}`);
+        if (old !== NONE) return old;
       }
+      return fallback;
     },
+    /** Deletes everything stored under this scope. Never the game's own saves. */
+    clear: () => clearPrefix(win, `${scope}:`),
     async set(name, value) {
       try {
         await run(win, 'kv', 'readwrite', (s) => s.put(value, k(name)));
@@ -76,7 +109,11 @@ export function createStore(win, scope) {
       } catch {
         /* memory only */
       }
-      return [...list, ...memory.backups].filter((b) => b.scope === scope).sort((a, b) => b.savedAt - a.savedAt);
+      // backups made before 2.3 were per website: still listed (marked) so they can be restored
+      return [...list, ...memory.backups]
+        .filter((b) => b.scope === scope || (legacy && b.scope === legacy.scope))
+        .map((b) => (b.scope === scope ? b : { ...b, legacy: true }))
+        .sort((a, b) => b.savedAt - a.savedAt);
     },
   };
 }

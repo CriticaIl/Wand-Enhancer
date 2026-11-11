@@ -5,7 +5,10 @@
 
 import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
 import { frameLabel, LiveProvider } from './providers.js';
-import { createStore } from './store.js';
+import { clearPrefix, createStore } from './store.js';
+import { gameAddress, gameContext, gameTokens, watchContext } from './context.js';
+import { SaveOwnership } from './save-owner.js';
+import { currentStory, storyIdOfKey } from './sugarcube-saves.js';
 import { SaveHub } from './save-hub.js';
 import { BUILD, VERSION } from '../version.js';
 import { createSignal, finishStartup, interruptedStartup, PerfLog, PROFILES, resolveSettings } from './perf.js';
@@ -89,13 +92,44 @@ export function openTrainer(win, extra = {}) {
     }
   })();
   // the caller's onClose (the userscript's) runs in addition to SaveForge's own cleanup, never instead of it
-  const { frameReports, openInFrame, contextInfo, saveSyncMs, safeMode: safeArg, onClose: callerOnClose, ...rest } = extra;
+  const { frameReports, openInFrame, contextInfo, saveSyncMs, safeMode: safeArg, onClose: callerOnClose, reason: openReason, instances: instancesFn, ...rest } = extra;
+  // ---- which game this trainer belongs to (2.3): everything below is scoped to it
+  const gctx = gameContext(win, openReason || (contextInfo ? 'opened by the SaveForge userscript in this frame' : 'opened on this page (bookmarklet, extension or the SaveForge app)'));
+  let stale = ''; // set when this page now shows another game: nothing may be written any more
+  let closed = false;
+  const guard = () => {
+    if (closed) throw new Error('This trainer was closed. Nothing was written.');
+    const now = gameAddress(win).key;
+    if (stale || now !== gctx.key) {
+      throw new Error(`This page now shows a different game (${now}). Nothing was written: SaveForge only edits the game it scanned, and is switching to the new game.`);
+    }
+  };
+  // Stores: per GAME (game key), not per website as before 2.3. A few interface preferences
+  // (panel position, performance profile, label language) stay per website. Data stored per
+  // website by older versions is inherited by the first game opened there after the update only.
+  const siteStore = createStore(win, `${origin}|ui`);
+  const metaStore = createStore(win, `${gctx.key}|meta`);
+  let legacyP = null;
+  const legacyUse = () =>
+    (legacyP ||= (async () => {
+      if (await metaStore.get('legacy-off', false)) return false;
+      const owner = await siteStore.get('legacy-owner', null);
+      if (!owner) {
+        await siteStore.set('legacy-owner', gctx.key);
+        return true;
+      }
+      return owner === gctx.key;
+    })().catch(() => false));
+  const scoped = (part, skip = []) => createStore(win, `${gctx.key}|${part}`, { scope: `${origin}|${part}`, use: legacyUse, skip: new Set(skip) });
+  const SITE_PREFS = new Set(['pos', 'perf', 'englishLabels', 'enInResults', 'compact', 'saveAutoSync']);
+  const gameUi = scoped('ui', ['sc-verify']);
+  const pick = (n) => (SITE_PREFS.has(n) ? siteStore : gameUi);
   // a previous start that never finished (the tab crashed or reloaded while scanning)
   const interrupted = safeArg === undefined ? interruptedStartup(win) : null;
   let safeMode = !!safeArg;
   const perf = new PerfLog(win);
   win.__saveforgeStarting = true;
-  const uiStore = createStore(win, `${origin}|ui`);
+  const uiStore = { scope: gameUi.scope, get: (n, f) => pick(n).get(n, f), set: (n, v) => pick(n).set(n, v), addBackup: (r) => gameUi.addBackup(r), backups: () => gameUi.backups() };
   // scan profile (Low Memory Mode on phones by default); read before any scan starts
   const settingsP = uiStore
     .get('perf', {})
@@ -107,9 +141,17 @@ export function openTrainer(win, extra = {}) {
 
   // results kept from the last time the trainer was closed on this page: reopening does not
   // repeat an expensive scan (Rescan game does it on request)
-  const cache = win.__saveforgeCache && Date.now() - win.__saveforgeCache.at < win.__saveforgeCache.ttl ? win.__saveforgeCache : null;
-  if (cache) win.clearTimeout(cache.timer);
-  delete win.__saveforgeCache;
+  // — only for the SAME game in the same document: after a single-page navigation the kept
+  // objects belong to the previous game and are thrown away
+  let cache = win.__saveforgeCache || null;
+  if (cache) {
+    win.clearTimeout(cache.timer);
+    delete win.__saveforgeCache;
+    if (Date.now() - cache.at >= cache.ttl || cache.ctxKey !== gctx.key || cache.docId !== gctx.docId) {
+      dropCache(cache);
+      cache = null;
+    }
+  }
 
   const st0 = perf.start('detect engines');
   let engines = cache ? cache.engines : detectLiveEngines(win, { generic: !(interrupted || safeMode) });
@@ -123,7 +165,21 @@ export function openTrainer(win, extra = {}) {
   }
   perf.end(st0, { engines: engines.map((e) => e.id).join(', ') });
   // one shared set of save variables (the Save Editor's pipeline) for every view
-  const hub = cache ? cache.hub : new SaveHub(win, createStore(win, `${origin}|storage`), extra.saveSyncMs ? { autoMs: extra.saveSyncMs } : undefined);
+  const hub = cache ? cache.hub : new SaveHub(win, scoped('storage', ['save-links', 'verify']), extra.saveSyncMs ? { autoMs: extra.saveSyncMs } : undefined);
+  hub.guard = guard;
+  if (hub.provider) hub.provider.guard = guard;
+  // saves of other games on this website are never this game's save variables
+  if (!hub.ownership) {
+    hub.ownership = new SaveOwnership(siteStore, gctx, gameTokens(win));
+    hub.ownership.hint = (name, kind) => {
+      if (kind !== 'localStorage') return null;
+      const id = storyIdOfKey(name);
+      if (!id) return null;
+      const cur = currentStory(win).current;
+      if (!cur) return null;
+      return id === cur ? 'me' : { owner: `sugarcube:${id}`, title: `SugarCube story “${id}”` };
+    };
+  }
   settingsP.then((P) => {
     hub.profile = P;
     if (!cache) hub.includeIndexedDB = !!P.readIndexedDB;
@@ -137,17 +193,25 @@ export function openTrainer(win, extra = {}) {
     create: async () => {
       const P = await settingsP;
       e.profile = deepFor.has(e.id) ? { ...P, ...PROFILES.deep, name: PROFILES.deep.name } : P;
-      const store = createStore(win, `${origin}|${e.id}`);
+      const store = scoped(e.id);
       if (e.useStore) await e.useStore(store);
+      if (closed || stale) throw new Error('Closed before the scan started.');
       if (e.prepare) await perf.time(`prepare: ${e.name}`, () => e.prepare());
+      if (closed || stale) throw new Error('Closed before the scan started.');
       scanSignal = createSignal();
       const p = await LiveProvider.createAsync(win, e, store, { signal: scanSignal, sliceMs: e.profile.sliceMs || 8, perf, onProgress: (x) => progressFn && progressFn(x) });
       scanSignal = null;
+      p.guard = guard;
+      // closed, or the game changed, while scanning: this result is never shown and never runs
+      if (closed || stale) {
+        p.dispose();
+        throw new Error('Closed while scanning.');
+      }
       if (safeMode) return p; // Safe Mode: no save reading, no background work
       finishStartup(win);
       win.__saveforgeStarting = false;
       // save variables appear as soon as the saves are read (never blocks the live list)
-      hub.ensure().then(() => p.attachSaves(hub));
+      hub.ensure().then(() => !closed && !p.disposed && p.attachSaves(hub));
       return p;
     },
   });
@@ -174,7 +238,11 @@ export function openTrainer(win, extra = {}) {
     id: 'raw',
     label: 'All variables (raw)',
     channel: 'live-generic',
-    create: async () => new LiveProvider(win, await getRaw(), createStore(win, `${origin}|raw`)),
+    create: async () => {
+      const p = new LiveProvider(win, await getRaw(), scoped('raw'));
+      p.guard = guard;
+      return p;
+    },
   });
   sources.push({
     id: 'storage',
@@ -195,6 +263,11 @@ export function openTrainer(win, extra = {}) {
     const generic = engines.find((e) => e.id === 'generic');
     const frames = listGameFrames(win, frameReports ? await frameReports() : []);
     return {
+      game: { ...gctx, contextId: gctx.id, href: safe(() => win.location.href), current: !stale && gameAddress(win).key === gctx.key, stale, restored: watcher ? watcher.restored() : 0, cachedAt: cache ? cache.at : null },
+      instances: await instancesNow(),
+      resources: resourcesNow(),
+      scan: scanStatus(),
+      saveOwners: hub.ownership ? hub.ownership.report() : null,
       context: contextInfo ? await contextInfo() : { world: 'page', detail: 'Running in the page’s own JavaScript context (bookmarklet, extension or same-site frame).' },
       frame: frameLabel(win),
       href: safe(() => win.location.href),
@@ -263,8 +336,13 @@ export function openTrainer(win, extra = {}) {
 
   function frameActions(f) {
     const acts = [];
-    if (f.report && openInFrame) acts.push({ label: 'Open trainer in this frame', run: () => openInFrame(f.report) });
-    else if (f.sameOrigin) acts.push({ label: 'Open trainer in this frame', run: () => openTrainer(f.el.contentWindow) });
+    // one panel at a time: this one closes before the frame's opens
+    const moveTo = (fn) => () => {
+      ctl.destroy();
+      fn();
+    };
+    if (f.report && openInFrame) acts.push({ label: 'Open trainer in this frame', run: moveTo(() => openInFrame(f.report)) });
+    else if (f.sameOrigin) acts.push({ label: 'Open trainer in this frame', run: moveTo(() => openTrainer(f.el.contentWindow, { reason: 'opened from Diagnostics of the page around this frame' })) });
     if (f.href && /^https?:/.test(f.href)) acts.push({ label: 'Open game frame directly', run: () => win.open(f.href, '_blank', 'noopener') });
     return acts;
   }
@@ -310,7 +388,15 @@ export function openTrainer(win, extra = {}) {
     return e;
   };
 
+  let watcher = null;
   const ctl = mountTrainer(win, {
+    gameContext: gctx,
+    guard,
+    resetGameData: () => resetGameData(),
+    claimSave: async (id) => {
+      hub.ownership?.assign(id, true);
+      await hub.sync({ force: true });
+    },
     sources,
     limitations,
     diagnostics,
@@ -341,11 +427,10 @@ export function openTrainer(win, extra = {}) {
         pr.setPaused?.(true);
       }
       hub.stopAuto();
-      const c = { providers, engines, hub, scProbe, at: Date.now(), ttl };
+      const c = { providers, engines, hub, scProbe, at: Date.now(), ttl, ctxKey: gctx.key, docId: gctx.docId };
       c.timer = win.setTimeout(() => {
         if (win.__saveforgeCache !== c) return;
-        for (const pr of providers.values()) pr.dispose?.();
-        hub.dispose();
+        dropCache(c);
         delete win.__saveforgeCache;
       }, ttl);
       win.__saveforgeCache = c;
@@ -360,24 +445,111 @@ export function openTrainer(win, extra = {}) {
     sfBuild: SF_BUILD,
     sfId: SF_ID,
     copies: () => saveforgeCopies(win),
-    onClose: (kept) => {
+    onClose: (kept, how = {}) => {
+      closed = true;
+      // closing (even during a scan) is your choice, not a crash: the next open is not offered Safe Mode
+      finishStartup(win);
+      watcher?.stop();
+      // saves this game wrote since the last read are its own (unless the page already changed game)
+      if (!stale) hub.ownership?.observeLocal(win);
       if (!kept) hub.dispose();
       scanSignal?.abort('closed');
       win.clearInterval(scTimer);
       scTimer = 0;
       win.__saveforgeStarting = false;
+      if (win.__saveforgeTrainer === ctl) delete win.__saveforgeTrainer;
+      // switching to the new game is not a close: the caller (userscript launcher) is not told
+      if (how.restart) return;
       try {
         callerOnClose?.(kept);
       } catch {
         /* caller cleanup is best-effort */
       }
-      win.clearInterval(scTimer);
-      delete win.__saveforgeTrainer;
     },
     ...rest,
   });
   win.__saveforgeTrainer = ctl;
+  for (const pr of cache ? cache.providers.values() : []) pr.guard = guard;
   ctl.perf = () => ({ stages: perf.stages, last: perf.lastCompleted()?.name || null, current: perf.current?.name || null });
+
+  // ---- the page becomes another game: never keep showing (or writing) the previous one.
+  // The trainer closes its scan of the old game and opens again for the new one by itself.
+  const reopen = (why, notice) =>
+    win.setTimeout(() => {
+      if (win.__saveforgeTrainer) return; // opened again meanwhile
+      try {
+        openTrainer(win, { ...extra, reason: why, notice, startMinimized: !!ctl.state?.().minimized });
+      } catch (e) {
+        console.debug('SaveForge could not reopen:', e);
+      }
+    }, 700);
+  watcher = watchContext(win, gctx, {
+    onChange: ({ to, why }) => {
+      if (stale || closed) return;
+      stale = `${why}: ${to}`;
+      scanSignal?.abort('the game changed');
+      ctl.destroy({ keep: false, restart: true });
+      reopen(`the page switched to another game (${why})`, 'This page now shows another game: SaveForge switched to it. Nothing from the previous game is shown or written.');
+    },
+    onRestore: () => {
+      // Safari restored the page from its back-forward cache: same game; read its saves again
+      if (hub.provider && !closed) hub.sync().catch(() => {});
+    },
+  });
+  if (stale === '' && gameAddress(win).key !== gctx.key) watcher.check('changed while opening');
+  const uiState = ctl.state;
+  ctl.state = () => ({ ...(uiState ? uiState() : {}), contextId: gctx.id, gameKey: gctx.key, href: safe(() => win.location.href), restored: watcher.restored(), stale, closed });
+  ctl.context = () => gctx;
+  ctl.diagnosticsData = diagnostics;
+  ctl.resources = resourcesNow;
+
+  function resourcesNow() {
+    const r = ctl.uiResources ? ctl.uiResources() : { timers: 0, listeners: 0, observers: 0 };
+    const out = { timers: r.timers, listeners: r.listeners, observers: r.observers || 0, detail: [...(r.detail || [])] };
+    const add = (what, t = 0, l = 0) => {
+      if (!t && !l) return;
+      out.timers += t;
+      out.listeners += l;
+      out.detail.push(`${what}: ${t ? `${t} timer(s)` : ''}${t && l ? ', ' : ''}${l ? `${l} listener(s)` : ''}`);
+    };
+    if (watcher) add('game change watcher', watcher.timers(), watcher.listeners());
+    add('SugarCube start watcher', scTimer ? 1 : 0);
+    add('save auto-sync', hub.timer ? 1 : 0);
+    for (const p of ctl.providers ? ctl.providers() : []) {
+      const x = p.resources ? p.resources() : null;
+      if (x) add(`scan “${p.title || p.kind}”`, x.timers, x.listeners);
+    }
+    return out;
+  }
+  async function instancesNow() {
+    const doc = win.document;
+    const vis = (el) => el.isConnected && el.style.display !== 'none';
+    const local = {
+      panels: [...doc.querySelectorAll('saveforge-trainer')].filter(vis).length,
+      launchers: [...doc.querySelectorAll('saveforge-launcher')].filter(vis).length,
+      copies: saveforgeCopies(win).length || 1,
+    };
+    try {
+      return { ...local, ...(instancesFn ? await instancesFn() : {}) };
+    } catch {
+      return local;
+    }
+  }
+  function scanStatus() {
+    const last = perf.lastCompleted?.();
+    return { running: !!scanSignal, current: perf.current?.name || null, last: last ? last.name : null, lastAt: last ? last.end || last.at || null : null, cachedAt: cache ? cache.at : null, openedAt: gctx.since };
+  }
+  /** Reset this game's trainer data: SaveForge's own records for this game only. Never the game's saves. */
+  async function resetGameData() {
+    const n = await clearPrefix(win, `${gctx.key}|`);
+    hub.ownership?.forgetMine();
+    await metaStore.set('legacy-off', true); // and do not inherit pre-2.3 per-website data again
+    ctl.destroy({ keep: false, restart: true });
+    win.setTimeout(() => {
+      if (!win.__saveforgeTrainer) openTrainer(win, { ...extra, reason: 'reopened after “Reset this game’s trainer data”', notice: `SaveForge’s data for this game was reset (${n} record(s): favorites, recent, marks, learned links, Linker mappings). The game’s own saves were not touched.` });
+    }, 50);
+    return n;
+  }
   let settingsNow = null;
   settingsP.then((P) => (settingsNow = P));
   function resolveSettingsSync() {
@@ -385,6 +557,16 @@ export function openTrainer(win, extra = {}) {
   }
   if (!interrupted && !safeMode) scWatch();
   return ctl;
+}
+
+/** Ends a kept scan: its providers and save hub stop for good. */
+function dropCache(c) {
+  try {
+    for (const pr of c.providers.values()) pr.dispose?.();
+    c.hub?.dispose?.();
+  } catch {
+    /* already gone */
+  }
 }
 
 /** Why the generic detector found what it found (or nothing), for Diagnostics. */

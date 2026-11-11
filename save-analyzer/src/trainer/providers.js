@@ -31,6 +31,12 @@ export const SECTIONS = [
 export const SECTION_OF = Object.fromEntries(SECTIONS.flatMap((s) => s.cats.map((c) => [c, s.id])));
 
 class BaseProvider {
+  /** Set by the trainer (inject.js): throws when this page now shows another game, so nothing
+   * read from the previous game is ever written (2.3). */
+  checkContext() {
+    if (this.disposed) throw new Error('This scan was closed. Nothing was written.');
+    this.guard?.();
+  }
   constructor() {
     this.listeners = new Set();
     this.refCounts = null;
@@ -196,16 +202,17 @@ export class LiveProvider extends BaseProvider {
   /** Learning found new evidence: re-scan later, at most every relearnMinMs, never while paused. */
   requestRelearn() {
     this.relearnDirty = true;
-    if (this.paused || this.relearnTimer || this.relearning) return;
+    if (this.disposed || this.paused || this.relearnTimer || this.relearning) return;
     const wait = Math.max(0, this.lastRelearn + this.relearnMinMs - Date.now());
     this.relearnTimer = this.timers.setTimeout(() => {
       this.relearnTimer = 0;
-      if (this.paused) return;
+      if (this.paused || this.disposed) return;
       this.relearnAsync({ background: true });
     }, wait);
   }
   /** Minimized / hidden: stop background work (learning, save sync, re-scans). */
   setPaused(on) {
+    if (this.disposed) return; // a closed scan never restarts background work
     this.paused = !!on;
     if (on) {
       if (this.engine.stopLearning) this.engine.stopLearning();
@@ -236,6 +243,7 @@ export class LiveProvider extends BaseProvider {
       const snap = this.engine.snapshotAsync ? await this.engine.snapshotAsync({ signal, sliceMs, yieldFn: y }) : this.engine.snapshot();
       this.engine._cached = null;
       const menu = await generateModMenuAsync(snap.root, { sliceMs, yieldFn: y });
+      if (this.disposed) return; // closed or replaced meanwhile: never shown
       this.refs = snap.refs;
       this.truncated = snap.truncated;
       this.scanStopped = !!snap.stopped;
@@ -357,6 +365,7 @@ export class LiveProvider extends BaseProvider {
     return r;
   }
   set(changes, label = 'Edit') {
+    this.checkContext();
     const list = Array.isArray(changes) ? changes : [changes];
     const saveCh = list.filter((c) => this.isSave(c.id));
     const liveCh = list.filter((c) => !this.isSave(c.id));
@@ -483,6 +492,7 @@ export class LiveProvider extends BaseProvider {
 
   /** Writes through the engine's own setter when it has one, else directly. Returns how it was written. */
   write(id, v) {
+    this.checkContext();
     const r = this.resolve(id);
     if (!r) throw new Error('This value is no longer reachable in the game (it may have been replaced). Tap Rescan game.');
     let how = 'direct';
@@ -496,6 +506,7 @@ export class LiveProvider extends BaseProvider {
   }
 
   setLive(changes, label = 'Edit') {
+    this.checkContext();
     const list = Array.isArray(changes) ? changes : [changes];
     const step = [];
     for (const { id, value } of list) {
@@ -616,14 +627,21 @@ export class LiveProvider extends BaseProvider {
     }
   }
   dispose() {
+    if (this.disposed) return;
     if (this.saves) {
       this.saves.detach(this);
       this.unsubHub?.();
       this.unsubSp?.();
     }
     this.unlockAll();
+    if (this.relearnTimer) this.timers.clearTimeout(this.relearnTimer), (this.relearnTimer = 0);
     if (this.unlearn) this.unlearn();
     if (this.engine.stopLearning) this.engine.stopLearning();
+    this.disposed = true;
+  }
+  /** SaveForge timers this scan keeps running right now (Diagnostics). */
+  resources() {
+    return { timers: (this.lockTimer ? 1 : 0) + (this.relearnTimer ? 1 : 0) + (this.engine.learning?.() ? 1 : 0), listeners: 0 };
   }
 
   async saveBackup() {
@@ -694,10 +712,17 @@ export class LiveProvider extends BaseProvider {
 
 export class ConflictError extends Error {}
 
+/** Storage Bridge read, seen by this game: saves owned by other games of the website are left out (save-owner.js). */
+async function collectFor(win, collectOpts = {}) {
+  const { filter, ...opts } = collectOpts;
+  const dump = await storageBridge(win, 'collect', opts);
+  return filter ? filter(dump) : dump;
+}
+
 export class StorageProvider extends BaseProvider {
   /** collectOpts: {indexedDB: false} reads localStorage only; {maxBinary} leaves big binary files unread. */
   static async create(win, store, collectOpts = {}) {
-    const dump = await storageBridge(win, 'collect', collectOpts);
+    const dump = await collectFor(win, collectOpts);
     const text = JSON.stringify(dump);
     const res = await analyzeFile('browser-storage.json', new TextEncoder().encode(text));
     if (!res.ok) throw new Error('Browser storage could not be decoded.');
@@ -737,7 +762,7 @@ export class StorageProvider extends BaseProvider {
 
   /** Same pipeline as the SaveForge Save Editor: Storage Bridge dump → analyzeFile. */
   static async read(win, collectOpts = {}) {
-    const dump = await storageBridge(win, 'collect', collectOpts);
+    const dump = await collectFor(win, collectOpts);
     const res = await analyzeFile('browser-storage.json', new TextEncoder().encode(JSON.stringify(dump)));
     return { dump, doc: res.ok ? res.doc : null };
   }
@@ -782,6 +807,7 @@ export class StorageProvider extends BaseProvider {
     return this.session.edits.size;
   }
   set(changes, label) {
+    this.checkContext();
     const changed = this.session.set(changes, label);
     return { ok: true, changed: changed ? 1 : 0, applied: 'pending' };
   }
@@ -816,7 +842,7 @@ export class StorageProvider extends BaseProvider {
 
   /** Checks storage has not changed since it was read (e.g. a game autosave). */
   async assertUnchanged() {
-    const now = await storageBridge(this.win, 'collect', this.collectOpts || {});
+    const now = await collectFor(this.win, this.collectOpts || {});
     const strip = (d) => JSON.stringify({ l: d.localStorage, i: d.indexedDB });
     if (strip(now) !== strip(this.dump)) {
       throw new ConflictError('The game has saved to its storage since the trainer read it (for example an autosave). Nothing was written, so no newer progress was overwritten. Tap “Re-read storage”, then make your edits again.');
@@ -826,6 +852,7 @@ export class StorageProvider extends BaseProvider {
   /** Validates, backs up, writes and reloads. Returns only if it did not reload. */
   async applyAndReload({ reload = true } = {}) {
     if (!this.session.edits.size) return { written: 0 };
+    this.checkContext();
     await this.assertUnchanged();
     const out = await this.session.export();
     if (!out.validation.ok) throw new Error(`Verification failed, nothing was written: ${out.validation.problems.slice(0, 3).join('; ')}`);
@@ -839,6 +866,7 @@ export class StorageProvider extends BaseProvider {
 
   async restore(backup) {
     if (!backup?.dump) throw new Error('This backup has no storage snapshot.');
+    this.checkContext();
     await storageBridge(this.win, 'apply', backup.dump);
     // SugarCube save edits also captured the running game's session state
     if (backup.session?.key) {
