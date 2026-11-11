@@ -157,43 +157,85 @@ export function pageBridge(win) {
   return b;
 }
 
-// ---------------------------------------------------------------- read-only passage agent (2.3.4)
-// The Input Inspector reads passage SOURCE. When the story is not in the page as <tw-passagedata>
-// (removed by the story after loading, or added with Story.add), SugarCube still has every passage:
-// Story.has(name) / Story.get(name).text (src/story.js, src/passage.js). Isolated from the page,
-// SaveForge reaches them through this agent in the page world. It only reads: Story.has, then
-// Story.get(name).text (never for a name has() denied — get() would invent an empty passage), and
-// the text of Story.getWidgets()/getScripts(). It never renders or runs a passage, never touches
-// State. Separate markers from the State agent, so an agent left by an older SaveForge copy cannot
-// shadow it.
-const P_AGENT = 'data-saveforge-psg-agent';
-const P_REQ = 'data-saveforge-psg-req';
-const P_RES = 'data-saveforge-psg-res';
-const P_EVT = 'saveforge-psg-rpc';
+// ---------------------------------------------------------------- read-only passage agent (2.3.4, v2 in 2.3.5)
+// The Input Inspector reads passage SOURCE. Stock SugarCube 2 keeps Story/State/Engine inside its
+// wrapper function ((function (window, document, jQuery, undefined) {…})) and exports only
+// window.SugarCube; a customized runtime may export the Story API differently (window.Story), and
+// SugarCube 1 used window.tale. findStoryApi() looks in those places and accepts an object only if
+//   1. it has SugarCube's shape BEFORE any of its functions is called: has(), get() and one of
+//      filter()/find()/lookup()/lookupWith() (an unrelated "Story" object is never called)
+//   2. it knows the passage on screen: has(current) === true
+//   3. get(current) returns a passage named `current` with text
+// The agent runs the same code in the page world when SaveForge runs isolated. It only reads:
+// has() before get() (get() of an unknown name would invent an empty passage), passage .text,
+// getWidgets()/getScripts() text, and typeof of a few globals. It never renders a passage, never
+// touches State. New markers in 2.3.5, so an agent left by 2.3.4 cannot shadow this one.
+// Plain ES5 on purpose: its source text (toString) is also what the page-world agent runs.
+// Never built with eval/new Function: pages may forbid those (Content-Security-Policy).
+export function findStoryApi(win, current) {
+  var tried = [];
+  function own(k) { try { var d = Object.getOwnPropertyDescriptor(win, k); return d && ('value' in d) ? d.value : undefined; } catch (e) { return undefined; } }
+  var sc = own('SugarCube');
+  var cands = [
+    ['window.SugarCube.Story', function () { return sc && typeof sc === 'object' ? sc.Story : undefined; }],
+    ['window.Story', function () { return own('Story'); }],
+    ['window.tale (SugarCube 1)', function () { return own('tale'); }]
+  ];
+  for (var i = 0; i < cands.length; i++) {
+    var where = cands[i][0], api;
+    try { api = cands[i][1](); } catch (e) { api = undefined; }
+    if (!api || (typeof api !== 'object' && typeof api !== 'function')) { tried.push({ where: where, why: 'not present' }); continue; }
+    if (typeof api.has !== 'function' || typeof api.get !== 'function' || !(typeof api.filter === 'function' || typeof api.find === 'function' || typeof api.lookup === 'function' || typeof api.lookupWith === 'function')) { tried.push({ where: where, why: 'present, but not shaped like SugarCube’s Story API (has/get and filter/find/lookup): not called' }); continue; }
+    if (!current) { tried.push({ where: where, why: 'no passage on screen to verify it with' }); continue; }
+    var h;
+    try { h = api.has(current); } catch (e) { tried.push({ where: where, why: 'has() threw: ' + (e && e.message) }); continue; }
+    if (h !== true) { tried.push({ where: where, why: 'has(“' + current + '”) is not true: it does not know the passage on screen' }); continue; }
+    var ps;
+    try { ps = api.get(current); } catch (e) { tried.push({ where: where, why: 'get() threw: ' + (e && e.message) }); continue; }
+    var nm = ps && (ps.name !== undefined ? ps.name : ps.title);
+    if (!ps || typeof ps.text !== 'string' || String(nm) !== String(current)) { tried.push({ where: where, why: 'get(“' + current + '”) did not return that passage with its text' }); continue; }
+    return { api: api, where: where, tried: tried };
+  }
+  return { api: null, where: '', tried: tried };
+}
+
+
+const P_AGENT = 'data-saveforge-psg2-agent';
+const P_REQ = 'data-saveforge-psg2-req';
+const P_RES = 'data-saveforge-psg2-res';
+const P_EVT = 'saveforge-psg2-rpc';
+const GLOBALS = ['SugarCube', 'Story', 'State', 'Engine', 'Macro', 'Wikifier', 'Config', 'setup', 'tale', 'state', 'jQuery'];
 const PASSAGE_AGENT_SRC = `(function(){
   var de = document.documentElement;
-  if (window.__saveforgePsgAgent) { de.setAttribute('${P_AGENT}', '1'); return; }
-  window.__saveforgePsgAgent = 1;
+  if (window.__saveforgePsg2Agent) { de.setAttribute('${P_AGENT}', '1'); return; }
+  window.__saveforgePsg2Agent = 1;
+  var findStoryApi = ${findStoryApi.toString()};
   document.addEventListener('${P_EVT}', function(){
     var res;
     try {
       var q = JSON.parse(de.getAttribute('${P_REQ}') || '{}');
-      var g = window.SugarCube;
-      var St = g && g.Story;
-      if (!g) res = { error: 'window.SugarCube is not exposed by this game' };
-      else if (!St || typeof St.has !== 'function' || typeof St.get !== 'function') res = { error: 'SugarCube.Story has no has()/get()' };
-      else {
-        var cap = q.cap || 300000, total = 0, out = {}, w = [], sc = [];
-        (q.names || []).forEach(function (n) {
-          if (total > cap) return;
-          if (!St.has(n)) { out[n] = null; return; }
-          var t = String(St.get(n).text || '');
-          total += t.length;
-          out[n] = t.slice(0, cap);
-        });
-        if (q.widgets && typeof St.getWidgets === 'function') St.getWidgets().slice(0, 5).forEach(function (p) { var t = String(p.text || ''); total += t.length; if (total < cap) w.push({ name: String(p.name), text: t }); });
-        if (q.scripts && typeof St.getScripts === 'function') St.getScripts().slice(0, 3).forEach(function (p) { var t = String(p.text || ''); total += t.length; if (total < cap) sc.push({ name: String(p.name), text: t }); });
-        res = { passages: out, widgets: w, scripts: sc };
+      if (q.op === 'globals') {
+        res = { globals: {} };
+        ${JSON.stringify(GLOBALS)}.forEach(function (k) { var d; try { d = Object.getOwnPropertyDescriptor(window, k); } catch (e) { d = null; } res.globals[k] = d ? (('value' in d) ? (d.value === null ? 'null' : typeof d.value) : 'accessor') : 'absent'; });
+      } else {
+        var f = findStoryApi(window, q.current);
+        if (!f.api) res = { error: 'no Story API in the page', tried: f.tried };
+        else {
+          var St = f.api, cap = q.cap || 300000, total = 0, out = {}, w = [], sc = [];
+          (q.names || []).forEach(function (n) {
+            if (total > cap) return;
+            if (St.has(n) !== true) { out[n] = null; return; }
+            var t = String(St.get(n).text || '');
+            total += t.length;
+            out[n] = t.slice(0, cap);
+          });
+          if (q.widgets) {
+            var ws = typeof St.getWidgets === 'function' ? St.getWidgets() : [];
+            Array.prototype.slice.call(ws, 0, 5).forEach(function (p) { var t = String(p.text || ''); total += t.length; if (total < cap) w.push({ name: String(p.name !== undefined ? p.name : p.title), text: t }); });
+          }
+          if (q.scripts && typeof St.getScripts === 'function') Array.prototype.slice.call(St.getScripts(), 0, 3).forEach(function (p) { var t = String(p.text || ''); total += t.length; if (total < cap) sc.push({ text: t }); });
+          res = { where: f.where, tried: f.tried, passages: out, widgets: w, scripts: sc };
+        }
       }
     } catch (e) { res = { error: String(e && e.message || e) }; }
     de.setAttribute('${P_RES}', JSON.stringify(res));
@@ -201,9 +243,9 @@ const PASSAGE_AGENT_SRC = `(function(){
   de.setAttribute('${P_AGENT}', '1');
 })();`;
 
-/** rpc(args) → {passages, widgets, scripts} | {error}, or {rpc: null, why} when the page blocks inline scripts. */
+/** rpc(args) → {where, tried, passages, widgets, scripts} | {error, tried} | {globals}, or {rpc: null, why} when the page blocks inline scripts. */
 export function passageBridge(win) {
-  if (win.__saveforgePsgBridge) return win.__saveforgePsgBridge;
+  if (win.__saveforgePsg2Bridge) return win.__saveforgePsg2Bridge;
   const doc = win.document;
   const de = doc.documentElement;
   try {
@@ -228,9 +270,10 @@ export function passageBridge(win) {
     return JSON.parse(raw);
   };
   const b = { rpc };
-  win.__saveforgePsgBridge = b;
+  win.__saveforgePsg2Bridge = b;
   return b;
 }
+export const SUGARCUBE_GLOBALS = GLOBALS;
 
 // ---------------------------------------------------------------- probe
 

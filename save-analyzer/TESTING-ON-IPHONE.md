@@ -1,5 +1,23 @@
 # SaveForge 2.3 on iPhone: install, test and what to expect
 
+## Fixed in 2.3.5: Input Inspector on games without window.SugarCube
+
+**What you saw (tukann.itch.io):** all three passage sources were "not available".
+
+**What that means:** this game's SugarCube is customized. A normal SugarCube always has `window.SugarCube`, and never empties its story data. The game keeps SugarCube's functions private and removes its passages from the page.
+
+**What 2.3.5 adds:**
+- **The Story API is also found as `window.Story`** (or SugarCube 1's `tale`), after checking that it really is the story's.
+- **The game's own HTML file** is read once from the browser cache: passages removed from the page are often still in it. It is never run.
+- **SugarCube runtime:** when nothing can be read, SaveForge says why (version, what the story data holds, whether the engine exports its API, which globals exist).
+
+**Please check:**
+1. Same game and passage → **Find Answers**.
+2. Look at the last line of **Passage sources**:
+   - *"the game's HTML file … used"*: the passages were read, and any answers shown are the game's own comparisons.
+   - *"has no passages either … packed or encoded"*: the game ships its passages in a form SaveForge does not decode, so the answer cannot be read.
+3. If the passages were read and the result is still *Answer not found*, the game checks the code against a computed value (for example a hash).
+
 ## Fixed in 2.3.4: Input Inspector on stories that hide their passages
 
 **What you saw:** on mopoga.com, *Answer not found — The source of passage CAH_PATRON_CODE_FORM is not in the page (tw-passagedata)*.
@@ -126,14 +144,14 @@ Both were reproduced with two games served from one origin inside a portal (a Su
 
 **Upgrading from 2.2:** older versions stored data per website. The **first game you open on each website after updating** keeps that data; other games there start fresh. Older save backups stay listed under Backups.
 
-## Which version am I running? (2.3.4)
+## Which version am I running? (2.3.5)
 Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
 
 | Where | How to see it |
 | --- | --- |
-| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.4**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.4 · build xxxxxxxx** |
-| Floating trainer | Header: **TRAINER 2.3.4**. Diagnostics → *This copy: SaveForge 2.3.4 (build xxxxxxxx)* |
-| Userscripts app | The SaveForge script shows **2.3.4** |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.5**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.5 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.3.5**. Diagnostics → *This copy: SaveForge 2.3.5 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.3.5** |
 
 **If the website still shows an older version:**
 - **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
@@ -262,7 +280,7 @@ Every part shows the same version **and build** (a fingerprint of the code; the 
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.3.4** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.3.5** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -474,7 +492,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.3.4 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.3.5 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

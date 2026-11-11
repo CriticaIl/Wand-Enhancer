@@ -10,6 +10,10 @@
      a NEW empty passage.
        ?private=1   window.SugarCube is not exposed (and the story data is gone): nothing to read
        ?keepdata=1  tw-storydata stays in the page (control)
+       ?empty=1     (2.3.5) the story removes every <tw-passagedata> but KEEPS an empty <tw-storydata>
+                    (the state seen on the reported game: "<tw-storydata> is there but has no passages")
+       ?globalstory=1  (2.3.5) the Story API is a page global window.Story (no window.SugarCube)
+       ?fakestory=1    (2.3.5) window.Story is someone else's object with has()/get() (not SugarCube's)
      Counters for the tests: __rendered (passage code run), __getUnknown (get() of unknown names),
      __events (events not made by the user). -->
 <style>body{margin:0;font:16px system-ui,sans-serif;background:#1b1020;color:#eee;padding:12px}</style>
@@ -25,6 +29,7 @@
 <tw-passagedata pid="4" name="Widgets" tags="widget">&lt;&lt;widget &quot;checkCode&quot;&gt;&gt;&lt;&lt;if _patronCode is &quot;BACKER2025&quot;&gt;&gt;&lt;&lt;set $patron to true&gt;&gt;&lt;&lt;/if&gt;&gt;&lt;&lt;/widget&gt;&gt;</tw-passagedata>
 <script type="text/twine-javascript">setup.patronTier = 'gold';</script>
 </tw-storydata>
+<script id="script-sugarcube" type="text/plain">/* stand-in for a CUSTOMIZED SugarCube runtime (not run): it has no window export */</script>
 <div id="passages"><div id="passage-cah-patron-code-form" data-passage="CAH_PATRON_CODE_FORM" class="passage">
   <p>Enter your patron code:</p>
   <input id="textbox--patroncode" name="textbox--patroncode" type="text" class="macro-textbox" tabindex="0">
@@ -48,15 +53,22 @@
     });
     sd.querySelectorAll('script').forEach(function (el, i) { scripts.push(new Passage('tw-user-script-' + i, el)); });
     var Story = {
+      // the same members as SugarCube's Story (src/story.js): has/get plus filter/find/getWidgets/getScripts
       has: function (n) { return Object.prototype.hasOwnProperty.call(passages, String(n)); },
+      filter: function (fn) { return Object.keys(passages).map(function (k) { return passages[k]; }).filter(fn); },
+      find: function (fn) { return this.filter(fn)[0]; },
       get: function (n) { if (!this.has(n)) { window.__getUnknown++; return new Passage(String(n)); } return passages[n]; },
       getWidgets: function () { return widgets.slice(); },
       getScripts: function () { return scripts.slice(); },
     };
     var variables = { patron: false }, temporary = { patronCode: '' };
+    if (q.get('globalstory') === '1') window.Story = Story;
+    window.__fakeCalls = 0;
+    if (q.get('fakestory') === '1') window.Story = { has: function () { window.__fakeCalls++; return true; }, get: function (n) { window.__fakeCalls++; return { name: 'news-' + n, text: 'not a passage' }; } };
     if (q.get('private') !== '1') Object.defineProperty(window, 'SugarCube', { value: Object.seal({ Story: Story, State: { get variables() { return variables; }, get temporary() { return temporary; }, passage: 'CAH_PATRON_CODE_FORM' }, setup: {} }) });
     // the story hides its passages: the story data leaves the page after loading
-    if (q.get('keepdata') !== '1') sd.remove();
+    if (q.get('empty') === '1') sd.querySelectorAll('tw-passagedata').forEach(function (el) { el.remove(); });
+    else if (q.get('keepdata') !== '1') sd.remove();
     window.__state = function () { return JSON.stringify({ variables: variables, temporary: temporary }); };
     document.querySelector('.macro-textbox').addEventListener('change', function (e) { temporary.patronCode = e.target.value; });
     window.__events = 0;

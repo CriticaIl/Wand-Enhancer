@@ -72,6 +72,49 @@ For the chosen field, SaveForge shows:
   - a Ren'Py `renpy.input` through the fixture
   - closing removes the focus listener
 
+## Fixed in 2.3.5: SugarCube runtimes without window.SugarCube
+
+**Reported** on tukann.itch.io, passage `CAH_PATRON_CODE_FORM`, with 2.3.4's *Passage sources*:
+1. `tw-passagedata`: `<tw-storydata>` is there but has no passages
+2. Story API: `window.SugarCube` is not exposed in SaveForge's JavaScript world
+3. page bridge: `window.SugarCube` is not exposed by this game
+
+**Investigation:**
+- **itch.io and its game hosts cannot be reached from the test environment**, and the game's files are not public elsewhere. So the game itself was not inspected; the conclusions come from SugarCube's source and the diagnostics.
+- **The game is SugarCube 2, not SugarCube 1.** `textbox--patroncode` is the slug of the temporary variable `_patronCode`, and temporary variables only exist from SugarCube 2.3. The `div.passage[data-passage]` markup is also SugarCube 2's.
+- **Stock SugarCube 2 cannot produce these diagnostics:**
+  - The engine runs inside `(function (window, document, jQuery, undefined) { … })` (`template/intro.js`/`outro.js`), so `Story`, `State` and `Engine` are local to it, never globals.
+  - It exports only `window.SugarCube`, as a non-configurable property (`src/sugarcube.js`), so a page script cannot remove it.
+  - It never empties `<tw-storydata>` (`src/story.js`).
+  - The diagnostics therefore show **a customized or protected runtime** that keeps its API private and removes its passages from the page. That combination is typical of games that hide a Patreon code.
+- **A real compatibility gap in 2.3.4:** it looked only at `window.SugarCube`. A customized runtime that exposes its Story API as a page global (`window.Story`) was ignored. This was reproduced: 2.3.4 showed the three lines above, word for word, while a genuine `window.Story` was present.
+- **A second source 2.3.4 missed:** the game's own HTML file. SugarCube reads its passages from the page when it starts. A story that removes them afterwards still ships them in its file.
+
+**Fix:**
+- **Story API lookup** (`findStoryApi` in `src/trainer/sugarcube-live.js`): `window.SugarCube.Story`, `window.Story`, `window.tale` (SugarCube 1). An object is accepted only if all of these hold:
+  1. Before any of its functions is called, it has SugarCube's shape: `has`, `get` and one of `filter`/`find`/`lookup`/`lookupWith`. An unrelated `Story` object is never called.
+  2. `has(<passage on screen>)` is true.
+  3. `get()` returns that passage, by name, with its text.
+
+  The same code (its own source text, never built with `eval`) runs in the page world when SaveForge is isolated. The agent uses new markers, so the 2.3.4 agent cannot shadow it.
+- **The game's HTML file:** read once with `fetch(location, {cache: 'force-cache'})`, so normally from the browser cache, and only after the other sources failed.
+  - It must be the same story (`ifid`), and is at most 50 MB.
+  - It is scanned by tags, with HTML comments removed first; no document is built.
+  - If the file has no passages either, the result says what it holds (for example, a large `text/x-packed` script). SaveForge never decodes or runs it.
+- **SugarCube runtime** (shown when no source works): format and version (from the page, or from the game file), what `<tw-storydata>` holds, whether `script#script-sugarcube` contains SugarCube's `window.SugarCube` export, the start state, and which SugarCube globals the page has. Then a verdict: customized runtime, different packaging, or engine not started.
+
+**Tests** (`test/input-inspector-runtime.e2e.test.mjs`):
+- The reported state: the same first diagnostic line, then the passages from the game file.
+- A runtime with `window.Story`: verified, and used without reading the file.
+- An impostor `window.Story`: never called.
+- A file with packed passages: *Answer not found*, with what the file holds and the runtime verdict.
+- An isolated world: the page agent's verified lookup.
+- The reported state inside a cross-origin game frame (as on itch.io).
+
+Read-only checks in every case: passages run, unconfirmed `get()` calls, State changes and dispatched events are all zero.
+
+**What still cannot be known from here:** whether tukann's game keeps its passages in its HTML file. If it does, 2.3.5 finds the answer there. If it ships them packed or encrypted, the result is *Answer not found*, and *SugarCube runtime* and the file line say so. If the game compares the code with a computed value (a hash), the result is also *Answer not found*.
+
 ## Fixed in 2.3.4: passages that are not in the page
 
 **Reported:** on a real game on mopoga.com, the trainer showed:

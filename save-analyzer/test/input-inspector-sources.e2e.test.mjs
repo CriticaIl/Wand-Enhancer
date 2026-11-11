@@ -100,22 +100,25 @@ test('the reported case: passage data removed from the page → read through Sug
   // which source was used, and why the others were not
   const src = await T(page).locator('.passage-sources').innerText();
   assert.match(src, /tw-passagedata.*not in this page/i);
-  assert.match(src, /SugarCube.?s Story API.*Story\.has.*used/i);
+  assert.match(src, /Story API.*used: window\.SugarCube\.Story/i);
   assert.match(text, /a real SugarCube passage/i, 'the textbox is confirmed as part of a SugarCube passage');
   await assertReadOnly(page, state0);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
-test('no passage data in the page and no SugarCube API: "Answer not found", with why each source failed', { skip, timeout: 60000 }, async () => {
+test('no passage data in the page and no SugarCube API: each source says why, and (2.3.5) the game’s own file still has the passages', { skip, timeout: 60000 }, async () => {
+  // 2.3.4 ended here with "Answer not found". The story removed its passages from the PAGE only;
+  // its file still has them (the genuinely unreadable case — passages packed in the file — is
+  // tested in input-inspector-runtime.e2e.test.mjs)
   const { ctx, page, errors } = await openPageWorld('?private=1');
-  await find(page);
-  const text = await result(page).innerText();
-  assert.match(text, /Answer not found/);
+  const state0 = await find(page);
   const src = await T(page).locator('.passage-sources').innerText();
   assert.match(src, /tw-passagedata.*not in this page/i);
-  assert.match(src, /window\.SugarCube is not exposed/i);
-  assert.equal(await result(page).locator('.answer').count(), 0);
+  assert.match(src, /window\.SugarCube\.Story: not present; window\.Story: not present/i);
+  assert.match(src, /game’s HTML file.*used: same story/i);
+  assert.deepEqual((await result(page).locator('.answer-value').allInnerTexts()).sort(), ['BACKER2025', 'GOLDEN-KEY', 'letmein']);
+  await assertReadOnly(page, state0);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -148,7 +151,7 @@ test('SaveForge isolated from the page (extension world): passages read through 
   await result(page).waitFor({ timeout: 10000 });
   const answers = await result(page).locator('.answer-value').allInnerTexts();
   assert.deepEqual(answers.sort(), ['BACKER2025', 'GOLDEN-KEY', 'letmein']);
-  assert.match(await T(page).locator('.passage-sources').innerText(), /page bridge/i);
+  assert.match(await T(page).locator('.passage-sources').innerText(), /page agent.*used: window\.SugarCube\.Story/i);
   await assertReadOnly(page, state0);
   assert.deepEqual(errors, []);
   await ctx.close();

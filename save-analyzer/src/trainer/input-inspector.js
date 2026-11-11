@@ -4,7 +4,7 @@
 // field and never submits anything. Login, password and other sensitive fields are not inspected.
 
 import { callsIn, recordedListeners } from './linker.js';
-import { passageBridge } from './sugarcube-live.js';
+import { findStoryApi, passageBridge, SUGARCUBE_GLOBALS } from './sugarcube-live.js';
 
 export const LIMITS = { passages: 8, text: 300000, functions: 10, fnText: 20000, candidates: 30 };
 
@@ -472,51 +472,181 @@ function linkedPassages(text) {
   return [...out].filter(Boolean);
 }
 
+const HTML_MAX = 50 * 1024 * 1024;
+
+function decodeHtml(t) {
+  return String(t)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;|&#x0*27;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&amp;/g, '&');
+}
+function attrOf(tag, name) {
+  const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(tag) || new RegExp(`\\b${name}\\s*=\\s*'([^']*)'`).exec(tag);
+  return m ? decodeHtml(m[1]) : null;
+}
+
 /**
- * Where SugarCube passage SOURCE can be read, tried in this order (2.3.4), each one reported:
+ * The game's HTML file, read once from the browser cache (2.3.5): a story that removes its
+ * passages from the page after loading still ships them in its file. Only text is read, by tag
+ * scanning (no document is built). Accepted only if it is the same story (same ifid).
+ */
+async function storyFileSource(win, liveIfid) {
+  let url = '';
+  try {
+    url = String(win.location.href).split('#')[0];
+  } catch {
+    return { error: 'the page address cannot be read' };
+  }
+  if (!/^https?:/i.test(url)) return { error: `the page is not served over http(s) (${url.split(':')[0]}:)` };
+  let text;
+  try {
+    const res = await win.fetch(url, { cache: 'force-cache', credentials: 'same-origin' });
+    if (!res.ok) return { error: `the server answered ${res.status}` };
+    const len = Number(res.headers.get('content-length') || 0);
+    if (len > HTML_MAX) return { error: `the file is too large to read on a phone (${Math.round(len / 1048576)} MB)` };
+    text = await res.text();
+  } catch (e) {
+    return { error: `reading it failed: ${e.message}` };
+  }
+  if (text.length > HTML_MAX) return { error: 'the file is too large to read on a phone' };
+  // HTML comments may mention <tw-storydata>/<tw-passagedata> (story data itself is escaped text):
+  // never read tags from them, and take the story data element that carries its attributes
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+  const open = /<tw-storydata\b[^>]*\b(?:format|ifid)\s*=[^>]*>/i.exec(text);
+  if (!open) return { error: 'the file has no <tw-storydata> (another packaging: the story is not stored as Twine 2 story data)' };
+  const ifid = attrOf(open[0], 'ifid');
+  if (liveIfid && ifid && ifid.toUpperCase() !== liveIfid.toUpperCase()) return { error: `the file is a different story (ifid ${ifid}, the page has ${liveIfid})` };
+  const close = text.indexOf('</tw-storydata>', open.index);
+  const data = text.slice(open.index, close < 0 ? text.length : close);
+  const passages = new Map();
+  for (const m of data.matchAll(/<tw-passagedata\b([^>]*)>([\s\S]*?)<\/tw-passagedata>/gi)) {
+    const name = attrOf(m[1], 'name');
+    if (name !== null && !passages.has(name)) passages.set(name, { raw: m[2], tags: (attrOf(m[1], 'tags') || '').split(/\s+/).filter(Boolean) });
+  }
+  const scripts = [];
+  for (const m of data.matchAll(/<script\b[^>]*type\s*=\s*["']text\/twine-javascript["'][^>]*>([\s\S]*?)<\/script>/gi)) scripts.push({ name: 'the story JavaScript (from the game file)', text: m[1] });
+  let packed = '';
+  if (!passages.size) {
+    // nothing to read: say what the file holds instead (it is never decoded or run)
+    const big = [...text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].map((m) => ({ attrs: m[1].trim().slice(0, 60), size: m[2].length })).filter((x) => x.size > 20000).sort((a, b) => b.size - a.size);
+    packed = big.length ? `the file’s <tw-storydata> has no passages either; it has ${big.length} large script(s) (largest ${Math.round(big[0].size / 1024)} KB${big[0].attrs ? `, ${big[0].attrs}` : ''}): the passages are probably packed or encoded there, which SaveForge does not decode or run` : 'the file’s <tw-storydata> has no passages either, and no large script that could hold them';
+  }
+  const kids = {};
+  for (const m of data.slice(open[0].length).matchAll(/<(tw-passagedata|script|style)\b/gi)) kids[m[1].toLowerCase()] = (kids[m[1].toLowerCase()] || 0) + 1;
+  return {
+    ifid,
+    format: attrOf(open[0], 'format') || '',
+    version: attrOf(open[0], 'format-version') || '',
+    creator: [attrOf(open[0], 'creator'), attrOf(open[0], 'creator-version')].filter(Boolean).join(' '),
+    children: Object.entries(kids).map(([k, n]) => `${k} ×${n}`).join(', ') || 'nothing',
+    size: text.length,
+    count: passages.size,
+    packed,
+    get: (name) => (passages.has(name) ? decodeHtml(passages.get(name).raw) : null),
+    widgets: () => [...passages].filter(([, p]) => p.tags.includes('widget')).slice(0, 5).map(([name, p]) => ({ name, text: decodeHtml(p.raw) })),
+    scripts: () => scripts.slice(0, 3).map((x) => ({ name: x.name, text: decodeHtml(x.text) })),
+  };
+}
+
+/** What the page says about its SugarCube runtime (2.3.5): version, story data, globals, the runtime's export. */
+export function sugarCubeRuntime(win, pageGlobals, file = null) {
+  const doc = win.document;
+  const out = { format: '', version: '', ifid: '', creator: '', children: '', passagesInPage: 0, dataInit: '', runtime: null, globals: pageGlobals || null, verdict: '' };
+  try {
+    const sd = doc.querySelector('tw-storydata');
+    if (sd) {
+      out.format = sd.getAttribute('format') || '';
+      out.version = sd.getAttribute('format-version') || '';
+      out.ifid = sd.getAttribute('ifid') || '';
+      out.creator = [sd.getAttribute('creator'), sd.getAttribute('creator-version')].filter(Boolean).join(' ');
+      const counts = {};
+      for (const c of sd.children) counts[c.tagName.toLowerCase()] = (counts[c.tagName.toLowerCase()] || 0) + 1;
+      out.children = Object.entries(counts).map(([k, n]) => `${k} ×${n}`).join(', ') || 'nothing';
+      out.passagesInPage = counts['tw-passagedata'] || 0;
+    }
+    out.dataInit = doc.documentElement.getAttribute('data-init') || '';
+    const rs = doc.querySelector('script#script-sugarcube');
+    if (rs) {
+      const t = rs.textContent || '';
+      out.runtime = { size: t.length, exportsSugarCube: /defineProperty\(\s*window\s*,\s*["']SugarCube["']|window\.SugarCube\s*=/.test(t) };
+    }
+  } catch {
+    /* no DOM */
+  }
+  // the page no longer has its story data: say what the game's own file declares
+  if (!out.format && file && !file.error && file.format) {
+    out.format = file.format;
+    out.version = `${file.version} (from the game file)`;
+    out.creator = file.creator;
+    out.children = `${file.children} (in the game file; none in the page)`;
+  }
+  const g = out.globals || {};
+  const has = (k) => g[k] && g[k] !== 'absent' && g[k] !== 'undefined';
+  if (has('SugarCube')) out.verdict = 'window.SugarCube is present in the page.';
+  else if (!out.runtime) out.verdict = 'There is no script#script-sugarcube in the page: the SugarCube engine is loaded another way (a different packaging), and it exposes no SugarCube API to the page.';
+  else if (!out.runtime.exportsSugarCube) out.verdict = `A customized SugarCube runtime: its script (${Math.round(out.runtime.size / 1024)} KB) does not contain SugarCube’s usual window.SugarCube export, so its Story, State and Engine stay private${has('Story') ? ' (a global named Story exists; see the Story API check)' : ''}.`;
+  else out.verdict = 'The runtime script contains SugarCube’s window.SugarCube export, but window.SugarCube is missing: the engine may not have started normally, or it runs inside a wrapper that gives it another window object.';
+  return out;
+}
+
+/**
+ * Where SugarCube passage SOURCE can be read (2.3.4, extended in 2.3.5), tried in this order, each
+ * one reported:
  *   1. <tw-passagedata> in the page (the published story data)
- *   2. SugarCube's Story API in this JavaScript world: Story.has(name), then Story.get(name).text.
- *      A story can remove its <tw-storydata> after loading (or add passages with Story.add);
- *      SugarCube's Passage objects keep their own elements, so the text is still there.
- *      Story.get() is called only after Story.has() confirmed the name: for an unknown name it
- *      would return a new, empty passage.
- *   3. the page bridge, when SaveForge runs isolated from the page and cannot see window.SugarCube
+ *   2. a Story API in SaveForge's JavaScript world — window.SugarCube.Story, window.Story or
+ *      window.tale — accepted only after findStoryApi() verified it (SugarCube's shape before any
+ *      call; it knows the passage on screen; get() returns that passage with its text).
+ *      Story.has(name) always before Story.get(name): get() of an unknown name invents a passage.
+ *   3. the page agent (SaveForge isolated from the page): the same lookup in the page world
+ *   4. the game's HTML file, from the browser cache, same story (ifid) — passages the story
+ *      removed from the page after loading are still in its file
  * Only text is read: no passage is rendered or run, State is never touched.
  */
-export function sugarCubePassageSource(win) {
+export function sugarCubePassageSource(win, current) {
   const doc = win.document;
-  const report = [];
-  const note = (source, state, why) => report.push({ source, state, why });
+  const used = new Set();
+  const why = { dom: '', story: '', bridge: '', file: '' };
   let domCount = 0;
   let hasStoryData = false;
+  let liveIfid = '';
   try {
-    hasStoryData = !!doc.querySelector('tw-storydata');
+    const sd = doc.querySelector('tw-storydata');
+    hasStoryData = !!sd;
+    liveIfid = sd ? sd.getAttribute('ifid') || '' : '';
     domCount = doc.querySelectorAll('tw-passagedata').length;
   } catch {
     /* no DOM */
   }
-  let St = null;
-  let directWhy = '';
-  try {
-    const g = win.SugarCube;
-    if (!g) directWhy = 'window.SugarCube is not exposed in SaveForge’s JavaScript world';
-    else if (!g.Story || typeof g.Story.has !== 'function' || typeof g.Story.get !== 'function') directWhy = 'SugarCube.Story has no has()/get() (an unusual SugarCube build)';
-    else St = g.Story;
-  } catch (e) {
-    directWhy = `reading window.SugarCube threw: ${e.message}`;
-  }
+  const found = findStoryApi(win, current);
+  const St = found.api;
+  const apiWhere = found.where;
+  why.story = St ? '' : found.tried.map((t) => `${t.where}: ${t.why}`).join('; ');
   let bridge;
+  let bridgeWhere = '';
   const viaBridge = (args) => {
-    if (bridge === undefined) bridge = St || directWhy.startsWith('SugarCube.Story') ? null : passageBridge(win);
+    if (bridge === undefined) bridge = St ? null : passageBridge(win);
     if (!bridge || !bridge.rpc) return { error: bridge ? bridge.why : 'not needed' };
     try {
-      return bridge.rpc({ cap: LIMITS.text, ...args });
+      return bridge.rpc({ cap: LIMITS.text, current, ...args });
     } catch (e) {
       return { error: e.message };
     }
   };
-  const used = new Set();
-  const why = { dom: '', story: '', bridge: '' };
+  let file = null;
+  const fromFile = (name) => {
+    if (!file || file.error) return null;
+    const t = file.get(name);
+    if (t === null) {
+      why.file ||= file.count ? `the game file (same story) has ${file.count} passages, none named “${name}”` : file.packed;
+      return null;
+    }
+    used.add('file');
+    return { text: t, via: 'the game file' };
+  };
   const get = (name) => {
     if (domCount) {
       const t = passageText(doc, name);
@@ -525,42 +655,51 @@ export function sugarCubePassageSource(win) {
     } else why.dom ||= hasStoryData ? '<tw-storydata> is there but has no passages' : 'not in this page (no <tw-storydata>: the story removed its passage data after loading, or ships it another way)';
     if (St) {
       try {
-        if (St.has(name)) return used.add('story'), { text: String(St.get(name).text ?? ''), via: 'Story.get' };
-        why.story ||= `Story.has(“${name}”) is false`;
+        if (St.has(name) === true) return used.add('story'), { text: String(St.get(name).text ?? ''), via: apiWhere };
+        why.story ||= `${apiWhere}: has(“${name}”) is false`;
       } catch (e) {
-        why.story ||= `Story.has/get threw: ${e.message}`;
+        why.story ||= `${apiWhere}: has/get threw: ${e.message}`;
       }
-      return null;
+      return fromFile(name);
     }
-    why.story ||= directWhy;
     const r = viaBridge({ names: [name] });
     if (r.error) {
-      why.bridge ||= r.error === 'not needed' ? '' : r.error;
-      return null;
+      if (r.error !== 'not needed') why.bridge ||= r.tried ? r.tried.map((t) => `${t.where}: ${t.why}`).join('; ') : r.error;
+      return fromFile(name);
     }
+    bridgeWhere = r.where;
     const t = r.passages ? r.passages[name] : null;
-    if (typeof t === 'string') return used.add('bridge'), { text: t, via: 'page bridge' };
-    why.bridge ||= `Story.has(“${name}”) is false in the page`;
-    return null;
+    if (typeof t === 'string') return used.add('bridge'), { text: t, via: `${r.where} (through the page agent)` };
+    why.bridge ||= `${r.where}: has(“${name}”) is false in the page`;
+    return fromFile(name);
   };
   return {
     get,
-    /** Widget passages (tag "widget"): DOM, or Story.getWidgets(). */
+    /** Reads the game's HTML file (once), when passages could not be read otherwise. */
+    async loadFile() {
+      if (file) return file;
+      file = await storyFileSource(win, liveIfid);
+      if (file.error) why.file = file.error;
+      else if (!file.count) why.file = file.packed;
+      return file;
+    },
+    needsFile: () => !used.has('dom') && !used.has('story') && !used.has('bridge'),
+    file: () => file,
     widgets() {
       const dom = passagesTagged(doc, 'widget');
       if (dom.length) return dom;
       try {
-        if (St && typeof St.getWidgets === 'function') return [...St.getWidgets()].slice(0, 5).map((p) => ({ name: String(p.name), text: String(p.text ?? '') }));
+        if (St && typeof St.getWidgets === 'function') return [...St.getWidgets()].slice(0, 5).map((p) => ({ name: String(p.name ?? p.title), text: String(p.text ?? '') }));
       } catch {
         return [];
       }
-      if (!St && bridge !== null) {
+      if (used.has('bridge')) {
         const r = viaBridge({ widgets: true });
         if (r.widgets) return r.widgets;
       }
+      if (used.has('file')) return file.widgets();
       return [];
     },
-    /** The story JavaScript: DOM, or Story.getScripts(). */
     scripts() {
       try {
         const js = doc.querySelector('#twine-user-script, script[type="text/twine-javascript"]');
@@ -569,19 +708,43 @@ export function sugarCubePassageSource(win) {
       } catch {
         return [];
       }
-      if (!St && bridge !== null) {
+      if (used.has('bridge')) {
         const r = viaBridge({ scripts: true });
         if (r.scripts) return r.scripts.map((x) => ({ name: 'the story JavaScript', text: x.text }));
       }
+      if (used.has('file')) return file.scripts();
       return [];
     },
-    /** Which sources were checked, which were used, and why the others failed. */
+    /** typeof of SugarCube's possible globals in the PAGE world (for the runtime report). */
+    pageGlobals() {
+      if (!bridge && St === null) bridge = passageBridge(win);
+      if (bridge && bridge.rpc) {
+        try {
+          return bridge.rpc({ op: 'globals' }).globals;
+        } catch {
+          /* fall through */
+        }
+      }
+      const out = {};
+      for (const k of SUGARCUBE_GLOBALS) {
+        let d;
+        try {
+          d = Object.getOwnPropertyDescriptor(win, k);
+        } catch {
+          d = null;
+        }
+        out[k] = d ? ('value' in d ? (d.value === null ? 'null' : typeof d.value) : 'accessor') : 'absent';
+      }
+      return out;
+    },
+    /** Which sources were checked, which was used, and why the others failed. */
     report() {
       const out = [];
       out.push({ source: 'tw-passagedata in this page', state: used.has('dom') ? 'used' : 'failed', why: used.has('dom') ? '' : why.dom });
-      if (!used.has('dom') || St) out.push({ source: 'SugarCube’s Story API (Story.has, Story.get(name).text)', state: used.has('story') ? 'used' : St ? (why.story ? 'failed' : 'not needed') : 'failed', why: used.has('story') ? '' : why.story || directWhy });
-      if (!St && bridge !== undefined) out.push({ source: 'the page bridge (SaveForge runs isolated from the page)', state: used.has('bridge') ? 'used' : 'failed', why: used.has('bridge') ? '' : why.bridge || (bridge && bridge.why) || '' });
-      return out.filter((x) => x.state !== 'not needed' || x.why);
+      if (!used.has('dom')) out.push({ source: 'a Story API in SaveForge’s JavaScript world (window.SugarCube.Story, window.Story, window.tale)', state: used.has('story') ? 'used' : 'failed', why: used.has('story') ? apiWhere : why.story });
+      if (!St && bridge !== undefined && bridge !== null) out.push({ source: 'the page agent (the same lookup in the page’s own world)', state: used.has('bridge') ? 'used' : 'failed', why: used.has('bridge') ? bridgeWhere : why.bridge || bridge.why || '' });
+      if (file) out.push({ source: 'the game’s HTML file (read once from the browser cache)', state: used.has('file') ? 'used' : 'failed', why: used.has('file') ? `same story (ifid ${file.ifid || '?'}), ${file.count} passages` : why.file });
+      return out;
     },
   };
 }
@@ -601,15 +764,22 @@ function sugarCubePassageOf(win, el) {
   return null;
 }
 
-export function inspectSugarCube(win, el) {
-  const src = sugarCubePassageSource(win);
+export async function inspectSugarCube(win, el) {
   const inspected = [];
   const at = sugarCubePassageOf(win, el);
+  const src = sugarCubePassageSource(win, at ? at.name : null);
   const done = (r) => ({ engine: 'SugarCube', inspected: [...new Set(inspected)], sources: src.report(), ...r });
   if (!at) return done({ found: false, why: 'The SugarCube passage this textbox belongs to could not be found on the page.' });
   const current = at.name;
-  const first = src.get(current);
-  if (!first) return done({ found: false, why: `The source of passage “${current}” could not be read from any source (see Passage sources).` , field: { passage: current, match: `passage from ${at.how}` } });
+  let first = src.get(current);
+  if (!first && src.needsFile()) {
+    await src.loadFile();
+    first = src.get(current);
+  }
+  if (!first) {
+    const runtime = sugarCubeRuntime(win, src.pageGlobals(), src.file());
+    return done({ found: false, runtime, why: `The source of passage “${current}” could not be read from any source (see Passage sources). ${runtime.verdict}`, field: { passage: current, match: `passage from ${at.how}` } });
+  }
   const text = first.text;
   inspected.push(`passage “${current}” (${first.via})`);
   const boxes = sugarCubeTextboxes(text);
@@ -617,7 +787,7 @@ export function inspectSugarCube(win, el) {
   let box = boxes.find((b) => sugarCubeSlugs(b.receiver).includes(name.toLowerCase()) || sugarCubeSlugs(b.receiver).includes(name));
   let match = box ? `the textbox's name “${attr(el, 'name')}” is SugarCube's name for ${box.receiver}` : '';
   if (!box && boxes.length === 1) (box = boxes[0]), (match = `the only textbox macro in passage “${current}”`);
-  const belongs = box ? `a real SugarCube passage: “${current}” (${first.via === 'tw-passagedata' ? 'in the story data' : first.via === 'Story.get' ? 'Story.has() confirms it' : 'confirmed through the page bridge'}) has this <<${box.macro}>> for ${box.receiver}` : '';
+  const belongs = box ? `a real SugarCube passage: “${current}” (${first.via === 'tw-passagedata' ? 'in the story data' : first.via === 'the game file' ? 'in the game’s own file, same story' : `confirmed by ${first.via}`}) has this <<${box.macro}>> for ${box.receiver}` : '';
   if (!box) return done({ found: false, field: { passage: current, match: `passage from ${at.how}` }, why: boxes.length ? `Passage “${current}” has ${boxes.length} textboxes and this one could not be matched to its variable.` : `Passage “${current}” has no <<textbox>> macro (the field may come from a widget or JavaScript).` });
   const ref = sugarCubeRef(box.receiver);
   const sources = [{ where: `passage “${current}”`, text }];
@@ -967,7 +1137,7 @@ export function createInputInspector(win, { renpyCall = null } = {}) {
         if (!el || !el.isConnected) return { found: false, why: 'This textbox is no longer on the page.', inspected: [] };
         const why = sensitiveReason(el);
         if (why) return { found: false, why: `Not inspected: ${why}.`, inspected: [], refused: true };
-        if (cand.engine === 'sugarcube') return inspectSugarCube(win, el);
+        if (cand.engine === 'sugarcube') return await inspectSugarCube(win, el);
         if (cand.engine === 'harlowe') return inspectHarlowe(win);
         if (cand.engine === 'renpy' && renpyCall) return renpyAnswers(await renpyCall('input', {}));
         return inspectHtml(win, el);

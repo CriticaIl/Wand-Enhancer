@@ -2372,6 +2372,26 @@ export function mountTrainer(win, opts) {
     v.result = { ...r, label: c.label };
     if (top() === v) renderAll();
   }
+  /** What the page says about its SugarCube runtime (2.3.5): why passages cannot be read. */
+  function runtimeBlock(rt) {
+    const g = rt.globals || {};
+    const present = Object.entries(g).filter(([, t]) => t !== 'absent' && t !== 'undefined').map(([k, t]) => `${k} (${t})`);
+    const kv = (pairs) => h('dl', { class: 'kv' }, pairs.filter((x) => x && x[1] !== undefined && x[1] !== '' && x[1] !== null).flatMap(([k, val]) => [h('dt', null, k), h('dd', null, String(val))]));
+    return h(
+      'div',
+      { class: 'sc-runtime' },
+      h('h3', null, 'SugarCube runtime'),
+      h('div', { class: 'warnbox' }, rt.verdict),
+      kv([
+        ['Story format', [rt.format, rt.version].filter(Boolean).join(' ') || 'unknown'],
+        ['Made with', rt.creator],
+        ['<tw-storydata> holds', rt.children],
+        ['Runtime script', rt.runtime ? `script#script-sugarcube, ${Math.round(rt.runtime.size / 1024)} KB, ${rt.runtime.exportsSugarCube ? 'contains' : 'does not contain'} the window.SugarCube export` : 'no script#script-sugarcube'],
+        ['Page start state', rt.dataInit ? `<html data-init="${rt.dataInit}">` : ''],
+        ['SugarCube globals in the page', present.length ? present.join(', ') : 'none of SugarCube, Story, State, Engine, Macro, Wikifier, Config, setup, tale, state'],
+      ]),
+    );
+  }
   async function copyText(text) {
     try {
       await win.navigator.clipboard.writeText(text);
@@ -2431,6 +2451,7 @@ export function mountTrainer(win, opts) {
             h('ul', null, r.sources.map((x) => h('li', null, h('b', null, x.source), ` — ${x.state === 'used' ? 'used' : x.state === 'not needed' ? 'not needed' : 'not available'}${x.why ? `: ${x.why}` : ''}`))),
           )
         : null,
+      r.runtime ? runtimeBlock(r.runtime) : null,
       r.inspected && r.inspected.length ? h('details', null, h('summary', null, `What was read (${r.inspected.length})`), h('ul', null, r.inspected.map((x) => h('li', null, x)))) : null,
       h('p', { class: 'note' }, 'Nothing was typed into the game and nothing was submitted. Answers come only from comparisons in the game’s own code.'),
       v.others ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => ((v.choose = v.others), (v.result = null), renderAll()) }, 'Inspect another textbox')) : null,
