@@ -20,7 +20,7 @@ import { childId, escapeSegment } from '../core/model.js';
  * @property {Array<{label, run}>} [actions]
  */
 
-export function detectLiveEngines(win, { generic = true } = {}) {
+export function detectLiveEngines(win, { generic = true, leftover = null } = {}) {
   const found = [];
   const rpg = rpgMaker(win);
   if (rpg) found.push(rpg);
@@ -31,7 +31,7 @@ export function detectLiveEngines(win, { generic = true } = {}) {
   const ph = phaser(win);
   if (ph) found.push(ph);
   // the generic scan briefly creates a hidden iframe, so callers that must not touch the page skip it
-  const g = generic ? genericGlobals(win, found.length > 0) : null;
+  const g = generic ? genericGlobals(win, found.length > 0, leftover) : null;
   if (g) found.push(g);
   return found;
 }
@@ -263,7 +263,7 @@ function construct2(win) {
 
 const LIB_GLOBALS = /^(PIXI|Phaser|THREE|BABYLON|createjs|Howler|Howl|jQuery|\$|_|React|ReactDOM|Vue|angular|Ember|Backbone|Matter|p2|Box2D|planck|LZString|pako|JSZip|localforage|Stats|dat|gsap|TweenMax|TweenLite|anime|Hammer|PIXI_SOUND|webkit.*|chrome|safari|SaveForge.*|__.*|google.*|ga|gtag|dataLayer|fbq|_gaq|SugarCube|DataManager|Utils|Graphics|Input|TouchInput|Bitmap|Sprite.*|Window_.*|Scene_.*|Game_.*|\$data.*|\$game.*|Imported|PluginManager|SceneManager|ImageManager|AudioManager|SoundManager|TextManager|ColorManager|StorageManager|ConfigManager|BattleManager|EffectManager|FontManager|VideoManager|Spriteset_.*|Tilemap|ShaderTilemap|WebAudio|JsonEx|Decrypter|ResourceHandler|CacheEntry|CacheMap|ImageCache|RequestQueue|Point|Rectangle|Stage|Weather|ToneFilter|ToneSprite|ScreenSprite|TilingSprite|Window|WindowLayer|Video|ProgressWatcher|Html5Audio|Story|State|Engine|Config|Setting|Macro|Wikifier|Passage|Scripting|Save|UI|UIBar|Dialog|Fullscreen|LoadScreen|SimpleAudio|L10n|Template|Util|Has|Browser|Engine|setup|prehistory|predisplay|prerender|postdisplay|postrender|cr_.*|C2_.*|c2_.*|module|exports|require|define)$/;
 
-function genericGlobals(win, hasEngine) {
+function genericGlobals(win, hasEngine, leftover = null) {
   let baseline;
   try {
     const f = win.document.createElement('iframe');
@@ -306,7 +306,8 @@ function genericGlobals(win, hasEngine) {
       if (typeof v === 'function' || v === undefined) continue;
       // WebAssembly runtimes (Emscripten: Ren'Py web, Unity, Godot…) and binary data are never game
       // variables, and enumerating them can use gigabytes (the 2.3.0 Ren'Py crash)
-      const why = runtimeGlobal(k, v, emscripten);
+      // the SAME object the game this page showed before had: not part of the game shown now (2.3.2)
+      const why = leftover && leftover.get(k) === v ? 'left over from the previous game on this page (the page switched games; this object did not change since)' : runtimeGlobal(k, v, emscripten);
       if (why) {
         if (prefiltered.length < 200) prefiltered.push(k);
         runtimeWhy.set(k, why);

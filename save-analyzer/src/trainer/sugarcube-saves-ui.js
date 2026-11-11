@@ -64,6 +64,10 @@ export function createSugarCubeSavesUI(ctx) {
     const sheet = h('div', { class: 'sheet scsave' }, h('h2', null, 'Edit a SugarCube save'));
     bodyEl.append(sheet);
     // several stories on this website and the one on this page cannot be told: never guess whose save to write
+    if (sc.story && !sc.story.page) {
+      sheet.append(h('div', { class: 'badbox' }, 'This page is not a SugarCube story, so no SugarCube save belongs to it. SugarCube saves stored on this website belong to other games and are never written from here.'));
+      return;
+    }
     if (sc.story && !sc.story.current && sc.story.ids.length > 1) {
       sheet.append(h('div', { class: 'badbox' }, `${sc.story.how} (${sc.story.ids.join(', ')}). SaveForge does not write a save it cannot attribute to this game. Start the story (play one passage) and open this again, or use Saves in storage.`));
       return;
@@ -155,6 +159,8 @@ export function createSugarCubeSavesUI(ctx) {
       const edits = v.edits.map((e, i) => ({ path: paths[i], value: e.value })).filter((e) => e.path && String(e.value).trim() !== '');
       if (!edits.length) throw new Error('Enter at least one new value.');
       ctx.guard?.(); // never write a save after the page switched to another game
+      // the story could not be identified for sure: writing is your decision, never SaveForge's guess
+      if (sc.story && sc.story.current && !sc.story.verified && !win.confirm(`SaveForge could not read this story's id from the page. ${sc.story.how}.\n\nWrite into the saves of story “${sc.story.current}”? Only do this if it is the story you are playing.`)) throw new Error('Not written: the story was not confirmed.');
       const backup = { kind: 'storage', title: 'Before SugarCube save edit', dump: { format: 'saveforge-storage-dump', version: 1, origin: safeOrigin(win), exportedAt: new Date().toISOString(), localStorage: {}, indexedDB: [] }, changes: edits.map((e) => ({ id: `$${e.path.join('.')}`, after: String(e.value) })) };
       if (target.kind !== 'session') backup.dump.localStorage[target.ref.key] = readRaw(win, 'localStorage', target.ref.key);
       if (sc.session) backup.session = { key: sc.session.key, raw: sc.session.raw };

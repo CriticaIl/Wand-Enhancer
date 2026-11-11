@@ -6,9 +6,9 @@
 import { detectLiveEngines, liveLimitations, rawGlobals } from './engines.js';
 import { frameLabel, LiveProvider } from './providers.js';
 import { clearPrefix, createStore } from './store.js';
-import { gameAddress, gameContext, gameTokens, watchContext } from './context.js';
+import { gameAddress, gameContext, gameTokens, markContent, watchContext } from './context.js';
 import { SaveOwnership } from './save-owner.js';
-import { currentStory, storyIdOfKey } from './sugarcube-saves.js';
+import { currentStory, isSugarCubePage, storyIdOfKey } from './sugarcube-saves.js';
 import { SaveHub } from './save-hub.js';
 import { BUILD, VERSION } from '../version.js';
 import { createSignal, finishStartup, interruptedStartup, PerfLog, PROFILES, resolveSettings } from './perf.js';
@@ -95,6 +95,15 @@ export function openTrainer(win, extra = {}) {
   })();
   // the caller's onClose (the userscript's) runs in addition to SaveForge's own cleanup, never instead of it
   const { frameReports, openInFrame, contextInfo, saveSyncMs, safeMode: safeArg, onClose: callerOnClose, reason: openReason, instances: instancesFn, ...rest } = extra;
+  // objects a previous game in this document left behind (2.3.2): only while they are unchanged
+  const leftover = new Map();
+  for (const [k, v] of (win.__saveforgeLeftover && win.__saveforgeLeftover.objects) || []) {
+    try {
+      if (Object.getOwnPropertyDescriptor(win, k)?.value === v) leftover.set(k, v);
+    } catch {
+      /* gone */
+    }
+  }
   // ---- which game this trainer belongs to (2.3): everything below is scoped to it
   const gctx = gameContext(win, openReason || (contextInfo ? 'opened by the SaveForge userscript in this frame' : 'opened on this page (bookmarklet, extension or the SaveForge app)'));
   let stale = ''; // set when this page now shows another game: nothing may be written any more
@@ -102,7 +111,7 @@ export function openTrainer(win, extra = {}) {
   const guard = () => {
     if (closed) throw new Error('This trainer was closed. Nothing was written.');
     const now = gameAddress(win).key;
-    if (stale || now !== gctx.key) {
+    if (stale || now !== gctx.addressKey) {
       throw new Error(`This page now shows a different game (${now}). Nothing was written: SaveForge only edits the game it scanned, and is switching to the new game.`);
     }
   };
@@ -175,7 +184,7 @@ export function openTrainer(win, extra = {}) {
     return [eng];
   };
   const st0 = perf.start('detect engines');
-  let engines = cache ? cache.engines : lightweight ? renpyEngines() : detectLiveEngines(win, { generic: !(interrupted || safeMode) });
+  let engines = cache ? cache.engines : lightweight ? renpyEngines() : detectLiveEngines(win, { generic: !(interrupted || safeMode), leftover });
   let limitations = liveLimitations(win);
   // SugarCube: when window.SugarCube is not visible from here, find out why and use the
   // page bridge if SaveForge runs in an isolated userscript/extension world
@@ -192,14 +201,29 @@ export function openTrainer(win, extra = {}) {
   // saves of other games on this website are never this game's save variables
   if (!hub.ownership) {
     hub.ownership = new SaveOwnership(siteStore, gctx, gameTokens(win));
+    // SugarCube names its keys after the story: on a page that is not a SugarCube story, none is
+    // this game's (2.3.2: a lone story's saves used to count as "current" on any page)
     hub.ownership.hint = (name, kind) => {
       if (kind !== 'localStorage') return null;
       const id = storyIdOfKey(name);
       if (!id) return null;
-      const cur = currentStory(win).current;
-      if (!cur) return null;
-      return id === cur ? 'me' : { owner: `sugarcube:${id}`, title: `SugarCube story “${id}”` };
+      const st = currentStory(win);
+      if (!st.page) return { owner: `sugarcube:${id}`, title: `SugarCube story “${id}” (this page is not a SugarCube story)` };
+      if (!st.current) return null; // several stories, this one unknown: not confirmed
+      if (id !== st.current) return { owner: `sugarcube:${id}`, title: `SugarCube story “${id}”` };
+      return st.verified ? 'me' : 'probable';
     };
+    // the engines this page actually runs (a save of another engine is another game's)
+    Object.defineProperty(hub.ownership, 'pageEngines', {
+      get: () => {
+        const ids = new Set(engines.map((e) => e.id));
+        const out = new Set();
+        if (ids.has('sugarcube') || isSugarCubePage(win)) out.add('sugarcube');
+        if (ids.has('rpgmaker')) out.add('rpgmaker');
+        if (lightweight || limitations.some((l) => l.id === 'renpy-web')) out.add('renpy');
+        return out;
+      },
+    });
   }
   settingsP.then((P) => {
     hub.profile = P;
@@ -223,6 +247,8 @@ export function openTrainer(win, extra = {}) {
       const p = await LiveProvider.createAsync(win, e, store, { signal: scanSignal, sliceMs: e.profile.sliceMs || 8, perf, onProgress: (x) => progressFn && progressFn(x) });
       scanSignal = null;
       p.guard = guard;
+      p.gameContext = gctx;
+      if (leftover.size) p.leftover = new Set(leftover.keys());
       // closed, or the game changed, while scanning: this result is never shown and never runs
       if (closed || stale) {
         p.dispose();
@@ -241,7 +267,7 @@ export function openTrainer(win, extra = {}) {
   const engineInfo = () => engines.map((e) => ({ id: e.id, name: e.name, channel: e.channel }));
   // "Rescan game": engines that finished loading after the trainer opened become new sources
   const rescanSources = () => {
-    const now = detectLiveEngines(win);
+    const now = detectLiveEngines(win, { leftover });
     const added = now.filter((e) => !engines.some((x) => x.id === e.id));
     engines = [...engines, ...added];
     limitations = liveLimitations(win);
@@ -263,6 +289,7 @@ export function openTrainer(win, extra = {}) {
     create: async () => {
       const p = new LiveProvider(win, await getRaw(), scoped('raw'));
       p.guard = guard;
+      p.gameContext = gctx;
       return p;
     },
   });
@@ -285,12 +312,13 @@ export function openTrainer(win, extra = {}) {
     const generic = engines.find((e) => e.id === 'generic');
     const frames = listGameFrames(win, frameReports ? await frameReports() : []);
     return {
-      game: { ...gctx, contextId: gctx.id, href: safe(() => win.location.href), current: !stale && gameAddress(win).key === gctx.key, stale, restored: watcher ? watcher.restored() : 0, cachedAt: cache ? cache.at : null },
+      game: { ...gctx, contextId: gctx.id, href: safe(() => win.location.href), current: !stale && gameAddress(win).key === gctx.addressKey, stale, restored: watcher ? watcher.restored() : 0, cachedAt: cache ? cache.at : null },
       instances: await instancesNow(),
       resources: resourcesNow(),
       scan: scanStatus(),
       saveOwners: hub.ownership ? hub.ownership.report() : null,
       renpy: lightweight ? renpyReport() : null,
+      sources: sourcesReport(),
       context: contextInfo ? await contextInfo() : { world: 'page', detail: 'Running in the page’s own JavaScript context (bookmarklet, extension or same-site frame).' },
       frame: frameLabel(win),
       href: safe(() => win.location.href),
@@ -509,9 +537,14 @@ export function openTrainer(win, extra = {}) {
       }
     }, 700);
   watcher = watchContext(win, gctx, {
-    onChange: ({ to, why }) => {
+    onChange: ({ to, why, content, leftover: left }) => {
       if (stale || closed) return;
       stale = `${why}: ${to}`;
+      if (content) {
+        // same address: the document now carries which game it shows, and what the old one left
+        markContent(win, content);
+        win.__saveforgeLeftover = { objects: left, at: Date.now() };
+      }
       scanSignal?.abort('the game changed');
       ctl.destroy({ keep: false, restart: true });
       reopen(`the page switched to another game (${why})`, 'This page now shows another game: SaveForge switched to it. Nothing from the previous game is shown or written.');
@@ -521,13 +554,27 @@ export function openTrainer(win, extra = {}) {
       if (hub.provider && !closed) hub.sync().catch(() => {});
     },
   });
-  if (stale === '' && gameAddress(win).key !== gctx.key) watcher.check('changed while opening');
+  if (stale === '' && gameAddress(win).key !== gctx.addressKey) watcher.check('changed while opening');
   const uiState = ctl.state;
   ctl.state = () => ({ ...(uiState ? uiState() : {}), contextId: gctx.id, gameKey: gctx.key, href: safe(() => win.location.href), restored: watcher.restored(), stale, closed });
   ctl.context = () => gctx;
   ctl.diagnosticsData = diagnostics;
   ctl.resources = resourcesNow;
 
+  /** Where every listed variable comes from: live roots (this frame) and save entries with their owner. */
+  function sourcesReport() {
+    const live = new Map();
+    for (const p of ctl.providers ? ctl.providers() : []) {
+      if (p.kind !== 'live') continue;
+      for (const e of p.liveEntries || p.entries || []) {
+        const root = (e.nodeId.split('/')[1] || '').replace(/~1/g, '/').replace(/~0/g, '~');
+        const k = `${p.engine.name}|${root}`;
+        if (!live.has(k)) live.set(k, { source: p.engine.name, root, count: 0, frame: gctx.frame, state: p.leftover?.has(root) ? 'left over from the previous game' : 'this game' });
+        live.get(k).count++;
+      }
+    }
+    return { frame: gctx.frame, href: safe(() => win.location.href), live: [...live.values()].sort((a, b) => b.count - a.count).slice(0, 40), saves: hub.ownership ? hub.ownership.report().entries : [] };
+  }
   function resourcesNow() {
     const r = ctl.uiResources ? ctl.uiResources() : { timers: 0, listeners: 0, observers: 0 };
     const out = { timers: r.timers, listeners: r.listeners, observers: r.observers || 0, detail: [...(r.detail || [])] };

@@ -319,6 +319,8 @@ export class LiveProvider extends BaseProvider {
         if (this.saveToLive.has(se.nodeId)) continue;
         // engine internals (e.g. superseded SugarCube moments) stay in “Saves in storage” only
         if (se.category === 'internal') continue;
+        // saves not confirmed as this game's never sit next to its live variables (2.3.2)
+        if (this.saves.mergeable && !this.saves.mergeable(se.nodeId)) continue;
         extra.push({ ...se, nodeId: SAVE_PREFIX + se.nodeId, origin: 'save', saveId: se.nodeId, en: undefined });
       }
     }
@@ -428,6 +430,22 @@ export class LiveProvider extends BaseProvider {
     const link = this.saveLinkOf(id);
     if (link) return `${this.liveSourceOf(id)} · Save: ${this.saveProvider().sourceOf(link.saveId)} (${link.how === 'engine' ? 'engine save layout' : 'verified by observation'})`;
     return this.liveSourceOf(id);
+  }
+  /**
+   * Which game and frame this value belongs to (2.3.2). Live values come from the running page in
+   * this frame; save values from browser storage shared by every page of the website, so their
+   * owner is checked (save-owner.js).
+   */
+  belongsTo(id) {
+    if (this.isSave(id)) return this.saves?.ownerOf ? describeOwner(this.saves.ownerOf(id.slice(SAVE_PREFIX.length)), this.saveProvider()?.sourceOf(id.slice(SAVE_PREFIX.length))) : { state: 'unverified', detail: 'a save value' };
+    const g = this.gameContext;
+    const where = g ? `${g.frame} · “${g.title || 'untitled'}” · ${g.href}` : 'this page';
+    const root = (id.split('/')[1] || '').replace(/~1/g, '/').replace(/~0/g, '~');
+    if (this.leftover && this.leftover.has(root)) return { state: 'other', detail: `Left over from the game this page showed before (${where}).` };
+    const engineSide = this.engine.id !== 'generic' && this.engine.id !== 'raw';
+    const link = this.saveLinkOf?.(id);
+    const save = link && this.saves?.ownerOf ? describeOwner(this.saves.ownerOf(link.saveId), this.saveProvider()?.sourceOf(link.saveId)) : null;
+    return { state: 'current', detail: `This game: read live from the running page (${where}) — ${engineSide ? `${this.engine.name}` : `page variable ${root}`}.${save ? ` Linked save: ${save.detail}` : ''}`, save };
   }
   liveSourceOf(id) {
     if (this.engine.sourceOf) return `${this.engine.name}: ${this.engine.sourceOf(id)}`;
@@ -770,6 +788,12 @@ export class LiveProvider extends BaseProvider {
 // ---------------------------------------------------------------- storage (Apply & Reload)
 
 export class ConflictError extends Error {}
+export class OwnershipError extends Error {
+  constructor(msg, entries) {
+    super(msg);
+    this.entries = entries;
+  }
+}
 
 /** Storage Bridge read, seen by this game: saves owned by other games of the website are left out (save-owner.js). */
 async function collectFor(win, collectOpts = {}) {
@@ -899,6 +923,12 @@ export class StorageProvider extends BaseProvider {
     return 'browser storage';
   }
 
+  /** Which game this value belongs to, and how sure SaveForge is (2.3.2). */
+  belongsTo(id) {
+    const st = this.ownership ? this.ownership.stateOf(id, this.dump) : { state: 'mine', why: 'this page’s storage', name: '' };
+    return describeOwner(st, this.sourceOf(id));
+  }
+
   /** Checks storage has not changed since it was read (e.g. a game autosave). */
   async assertUnchanged() {
     const now = await collectFor(this.win, this.collectOpts || {});
@@ -912,6 +942,9 @@ export class StorageProvider extends BaseProvider {
   async applyAndReload({ reload = true } = {}) {
     if (!this.session.edits.size) return { written: 0 };
     this.checkContext();
+    // never write a save that is not confirmed as this game's (you confirm it in the trainer first)
+    const unsure = this.ownership ? this.ownership.uncertainFor(this.diff().map((d) => d.id), this.dump) : [];
+    if (unsure.length) throw new OwnershipError(`Not written: ${unsure.map((u) => `“${u.name}”`).join(', ')} ${unsure.length > 1 ? 'are' : 'is'} not confirmed as this game’s save. Several games can share this website’s storage. Confirm it is this game’s save first (Apply & Reload asks; or Diagnostics → Game context).`, unsure);
     await this.assertUnchanged();
     const out = await this.session.export();
     if (!out.validation.ok) throw new Error(`Verification failed, nothing was written: ${out.validation.problems.slice(0, 3).join('; ')}`);
@@ -996,6 +1029,14 @@ export class FileProvider extends BaseProvider {
   dispose() {
     this.unsub?.();
   }
+}
+
+/** {state, detail} for an ownership record of a save entry. */
+function describeOwner(st, source) {
+  const name = st.name || source || 'this save';
+  const map = { mine: 'current', probable: 'probable', unverified: 'unverified', other: 'other' };
+  const text = st.state === 'mine' ? `This game's save (${name}): ${st.why}.` : st.state === 'probable' ? `Probably this game's save (${name}): ${st.why}.` : st.state === 'other' ? `Another game's save (${name}): ${st.why}.` : `Save not confirmed (${name}): ${st.why}.`;
+  return { state: map[st.state] || 'unverified', detail: text };
 }
 
 async function timed(perf, name, fn, extra) {

@@ -15,6 +15,7 @@
          = LZString.compressToUTF16(JSON {autosave, slots}), each save holding
          state.delta (delta-encoded history) and state.index
      Query parameters:
+       ?story=id  another story (its own story id, title and ifid) — two games on one host
        ?init=ms   publish window.SugarCube only after this delay (late start)
        ?hidden=1  never publish window.SugarCube (builds that keep State private)
        ?go=Shop,Street  play these passages after the start (only on a fresh session)
@@ -41,7 +42,14 @@
 <script id="script-sugarcube">
 (function () {
   var params = new URLSearchParams(location.search);
-  var STORY_ID = 'fixture';
+  // ?story=<id>: a second, different story (another game on the same host, 2.3.2)
+  var STORY_ID = params.get('story') || 'fixture';
+  if (params.get('story')) {
+    var sd = document.querySelector('tw-storydata');
+    sd.setAttribute('name', 'Story ' + STORY_ID);
+    sd.setAttribute('ifid', 'B0000000-0000-4000-8000-' + ('000000000000' + STORY_ID.length).slice(-12));
+    document.title = 'Story ' + STORY_ID + ' (SugarCube)';
+  }
   // ---- SugarCube-style history: every moment is {title, variables}; navigation clones
   var history = [];
   var active = -1;
@@ -155,7 +163,7 @@
   State.marshalForSave = marshal;
   var Engine = { play: play, show: function () { render(); } };
   var setup = { shopPrices: { partySupplies: 10799 }, dialogue: { 'Olivia Livingroom Phone 1': { De: 'Naja...', Es: 'No es para tanto', Fr: 'Non, pas vraiment' } } };
-  var Story = { title: 'Fixture Story', domId: STORY_ID, lookupWith: function () { return ['Start', 'Shop', 'Street'].map(function (t) { return { title: t }; }); } };
+  var Story = { title: params.get('story') ? 'Story ' + STORY_ID : 'Fixture Story', domId: STORY_ID, lookupWith: function () { return ['Start', 'Shop', 'Street'].map(function (t) { return { title: t }; }); } };
 
   document.addEventListener('click', function (e) {
     var p = e.target.getAttribute && e.target.getAttribute('data-passage');

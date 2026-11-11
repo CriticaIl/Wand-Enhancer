@@ -79,6 +79,8 @@ export class SaveHub {
           const t0 = Date.now();
           this.provider = await StorageProvider.create(this.win, this.store, this.collectOpts());
           this.provider.guard = () => this.guard?.();
+          this.provider.ownership = this.ownership || null;
+        this.provider.ownership = this.ownership || null;
           this.noteRead(t0, this.provider.dump);
           this.sig = signature(this.provider.dump);
           this.lsSig = lsSignature(this.win);
@@ -127,6 +129,7 @@ export class SaveHub {
         if (this.provider) this.provider.replaceData(dump, doc);
         else this.provider = new StorageProvider(this.win, this.store, dump, doc);
         this.provider.guard = () => this.guard?.();
+        this.provider.ownership = this.ownership || null;
         this.provider.collectOpts = opts;
         this.sig = sig;
         this.stale = false;
@@ -312,10 +315,12 @@ export class SaveHub {
     const sp = this.provider;
     if (!sp) return out;
     const eng = p.engine?.id || 'live';
-    for (const l of engineLinks(eng, p, sp)) if (sp.node(l.saveId) && p.node(l.liveId)) out.set(l.liveId, l);
+    // only saves of THIS game are ever linked to its live variables (2.3.2)
+    const ok = (saveId) => this.mergeable(saveId);
+    for (const l of engineLinks(eng, p, sp)) if (sp.node(l.saveId) && p.node(l.liveId) && ok(l.saveId)) out.set(l.liveId, l);
     for (const [k, l] of this.observed) {
       if (!k.startsWith(`${eng}|`) || out.has(l.liveId)) continue;
-      if (sp.node(l.saveId) && p.node(l.liveId)) out.set(l.liveId, { liveId: l.liveId, saveId: l.saveId, how: 'observed', detail: l.detail });
+      if (sp.node(l.saveId) && p.node(l.liveId) && ok(l.saveId)) out.set(l.liveId, { liveId: l.liveId, saveId: l.saveId, how: 'observed', detail: l.detail });
     }
     // one save field is never shown under two live variables
     const seen = new Set();
@@ -324,6 +329,16 @@ export class SaveHub {
       else seen.add(l.saveId);
     }
     return out;
+  }
+  /** May this save node appear with (or be linked to) the live variables? Only this game's saves. */
+  mergeable(saveId) {
+    if (!this.ownership || !this.provider) return true;
+    return this.ownership.mergeable(saveId, this.provider.dump);
+  }
+  /** Which game a save node belongs to, and how sure SaveForge is. */
+  ownerOf(saveId) {
+    if (!this.ownership || !this.provider) return { state: 'mine', why: 'single page (no shared storage check)', name: '' };
+    return this.ownership.stateOf(saveId, this.provider.dump);
   }
   possibleFor(saveId) {
     return this.ambiguous.get(saveId) || [];

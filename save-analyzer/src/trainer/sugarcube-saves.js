@@ -159,26 +159,46 @@ function storyIds(win) {
   }
   return ids;
 }
-/** {ids, current, how}: the story ids in storage and the one running here (null when it cannot be told). */
+/** Is the page in this window a SugarCube story? (markers in the DOM, readable from any JS world) */
+export function isSugarCubePage(win) {
+  try {
+    const doc = win.document;
+    const sd = doc.querySelector('tw-storydata');
+    if (sd && /sugarcube/i.test(sd.getAttribute('format') || '')) return true;
+    if (doc.querySelector('script#script-sugarcube') || doc.getElementById('ui-bar')) return true;
+    const sc = win.SugarCube;
+    return !!(sc && sc.State);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * {ids, current, verified, page, how}: the story ids in this website's storage, and the story running
+ * in this window. `current` is set only when the page IS a SugarCube story (2.3.2: a lone story's
+ * saves used to count as "current" on any page of the website, e.g. a fighting game hosted next to
+ * it). verified: the id was read from the running story or matches its title; otherwise it is only
+ * probable (the page is a story, and only one story has saves here).
+ */
 export function currentStory(win) {
   const ids = storyIds(win);
-  const out = (current, how) => ({ ids: [...ids], current, how });
+  const out = (current, how, verified = false, page = true) => ({ ids: [...ids], current, verified, page, how });
+  if (!isSugarCubePage(win)) return out(null, 'this page is not a SugarCube story', false, false);
   try {
     const sc = win.SugarCube;
     const live = sc && (sc.Config?.saves?.id || sc.Story?.id || sc.Story?.domId);
-    if (live) return out(String(live), 'from the running story (SugarCube.Story)');
+    if (live) return out(String(live), 'read from the running story (SugarCube.Story)', true);
   } catch {
     /* not reachable from this world */
   }
-  if (ids.size <= 1) return out(ids.size ? [...ids][0] : null, ids.size ? 'the only SugarCube story with saves on this website' : 'no SugarCube storage');
   try {
     const name = win.document.querySelector('tw-storydata')?.getAttribute('name');
-    const cands = [slugify(name), String(name || '')];
-    for (const c of cands) if (c && ids.has(c)) return out(c, 'matches the story title on this page');
+    for (const c of [slugify(name), String(name || '')]) if (c && ids.has(c)) return out(c, 'matches the story title on this page', true);
   } catch {
     /* no DOM */
   }
-  return out(null, `${ids.size} SugarCube stories have saves on this website and the one on this page cannot be identified`);
+  if (ids.size === 1) return out([...ids][0], 'probably this story: the only SugarCube story with saves on this website (its id could not be read from the page)', false);
+  return out(null, ids.size ? `${ids.size} SugarCube stories have saves on this website and the one on this page cannot be identified` : 'no SugarCube storage', false);
 }
 /** Cheap signature of both storages (keys, lengths, edges) — avoids decoding everything again. */
 function storageSig(win) {
@@ -210,7 +230,9 @@ function readSugarCubeStorageRaw(win) {
   // another story's keys are never offered (never written); keys without a story id are kept
   const mine = (k) => {
     const id = storyIdOfKey(k);
-    return !id || !story.current || id === story.current;
+    if (!id) return true;
+    if (!story.page) return false; // not a SugarCube page: no SugarCube save is this game's
+    return !story.current || id === story.current;
   };
   const each = (store, fn) => {
     try {

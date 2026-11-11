@@ -827,6 +827,13 @@ export function mountTrainer(win, opts) {
   function originTag(e) {
     const p = S.provider;
     if (p?.imported) return h('span', { class: 'otag o-save', title: 'Imported save: not the running game' }, 'SAVE · IMPORTED');
+    // Saves in storage: which entries are confirmed as this game's
+    if (p?.kind === 'storage' && p.belongsTo) {
+      const b = p.belongsTo(e.nodeId);
+      if (b.state === 'unverified') return h('span', { class: 'otag o-unconfirmed', title: b.detail }, 'NOT CONFIRMED');
+      if (b.state === 'probable') return h('span', { class: 'otag o-probable', title: b.detail }, 'PROBABLY');
+      return null;
+    }
     if (!p?.hasSaves?.()) return null;
     const o = p.originOf(e.nodeId);
     return h('span', { class: `otag o-${o.replace('+', '')}`, title: o === 'live' ? 'Live: changes the running game' : o === 'save' ? 'Save: written to the game’s save (needs a reload or export)' : 'Live + Save: the running game and its save, linked by a verified mapping' }, o === 'live+save' ? 'LIVE+SAVE' : o.toUpperCase());
@@ -988,6 +995,7 @@ export function mountTrainer(win, opts) {
       h('div', { class: 'path' }, x.path || id),
       h('div', { class: 'chips' }, h('span', { class: `badge ${x.channel}` }, x.timing.label), h('span', { class: `badge ${x.confidence.level.toLowerCase()}` }, `${x.confidence.level} confidence`), h('span', { class: 'badge' }, x.type)),
       statusSection(id),
+      belongsSection(id),
       saveLinkSection(id),
       detectionSection(id),
       englishSection(id, x.title),
@@ -1023,6 +1031,14 @@ export function mountTrainer(win, opts) {
   }
 
   /** Live / Save / Live + Save, and how a link was established (never from names alone). */
+  /** Which game and frame this value belongs to, and how sure SaveForge is (2.3.2). */
+  function belongsSection(id) {
+    const p = S.provider;
+    if (!p?.belongsTo) return null;
+    const b = p.belongsTo(id);
+    const cls = b.state === 'current' ? 'okbox' : b.state === 'probable' ? 'warnbox' : 'badbox';
+    return h('div', null, h('h3', null, 'Belongs to'), h('div', { class: cls }, b.detail));
+  }
   function saveLinkSection(id) {
     const p = S.provider;
     if (!p?.hasSaves?.()) return null;
@@ -1589,12 +1605,28 @@ export function mountTrainer(win, opts) {
   }
 
   /** On a website with several games: writing a save whose owner SaveForge cannot tell asks first. */
+  /**
+   * A save not confirmed as this game's is written only after YOU confirm it is (2.3.2): it is
+   * then recorded as this game's save. Saves of other games are never written.
+   */
   function confirmOwner(sp) {
-    const own = hub?.ownership;
+    const own = hub?.ownership || sp?.ownership;
     if (!own || !sp?.diff) return true;
-    const keys = own.uncertainFor(sp.diff().map((d) => d.id), sp.dump);
-    if (!keys.length) return true;
-    return win.confirm(`SaveForge has seen more than one game on this website, and cannot tell which game this save belongs to:\n\n${keys.slice(0, 5).join('\n')}\n\nWrite it anyway? Only do this if it is the save of the game you are playing (${opts.gameContext?.title || 'this page'}).`);
+    const list = own.uncertainFor(sp.diff().map((d) => d.id), sp.dump);
+    if (!list.length) return true;
+    const others = list.filter((x) => own.states?.get(x.id)?.state === 'other');
+    if (others.length) {
+      toast(`Not written: ${others.map((x) => `“${x.name}”`).join(', ')} belongs to another game.`, true);
+      return false;
+    }
+    const ok = win.confirm(`SaveForge cannot confirm that this save belongs to the game you are playing (${opts.gameContext?.title || 'this page'}):\n\n${list.slice(0, 5).map((x) => x.name).join('\n')}\n\nSeveral games can share a website’s storage. Is this the save of THIS game? OK marks it as this game’s save and writes it.`);
+    if (!ok) return false;
+    for (const x of list) own.assign(x.id, true);
+    for (const x of list) {
+      const s = own.states?.get(x.id);
+      if (s) Object.assign(s, { state: 'mine', why: 'you marked it as this game’s save' });
+    }
+    return true;
   }
   async function doWriteNow() {
     if (!confirmOwner(savesOf())) return;
@@ -1842,6 +1874,7 @@ export function mountTrainer(win, opts) {
       res.detail && res.detail.length ? h('details', null, h('summary', null, 'What is running'), h('ul', null, res.detail.map((x) => h('li', null, x)))) : null,
       h('p', { class: 'note' }, 'Everything SaveForge remembers (favorites, recent, marks, learned save links, Linker mappings) belongs to this game key only. Other games on the same website have their own.'),
       saveOwnersBlock(d.saveOwners),
+      sourcesBlock(d.sources),
       opts.resetGameData
         ? h('div', { class: 'btns' }, h('button', {
             class: 'btn',
@@ -1870,6 +1903,21 @@ export function mountTrainer(win, opts) {
       h('p', { class: 'note' }, `Recognised by: ${r.evidence || '?'}. SaveForge opened in light mode: no page-global scan, no storage read, nothing read from WebAssembly memory.`),
       b ? h('p', { class: 'note' }, `Commands: ${b.sent} sent, ${b.answered} answered, ${b.timeouts} not answered${b.lastMs ? `, last answer in ${b.lastMs} ms` : ''}.`) : null,
       r.lastError ? h('div', { class: 'warnbox' }, r.lastError) : null,
+    );
+  }
+
+  /** Where every listed variable comes from (2.3.2). */
+  function sourcesBlock(s) {
+    if (!s) return null;
+    const label = { mine: 'this game’s', probable: 'probably this game’s', unverified: 'not confirmed', other: 'another game’s (hidden)' };
+    return h(
+      'div',
+      null,
+      h('h3', null, 'Where the variables come from'),
+      h('p', { class: 'note' }, `Live values: the running page in this frame (${s.frame}, ${s.href}).`),
+      s.live.length ? h('ul', null, s.live.map((x) => h('li', null, h('b', null, x.root), ` — ${x.count} value(s), ${x.source}, ${x.state}`))) : h('p', { class: 'note' }, 'No live values yet.'),
+      h('p', { class: 'note' }, 'Saves: this website’s browser storage, shared by every game it hosts. Only this game’s saves are shown with the live values; saves not confirmed appear only under Saves in storage.'),
+      s.saves.length ? h('ul', null, s.saves.map((x) => h('li', null, h('b', null, x.name), ` — ${x.kind}, ${label[x.state] || x.state}: ${x.why}`))) : h('p', { class: 'note' }, 'No saves read yet (they are read in the background, or when you open Saves in storage).'),
     );
   }
 

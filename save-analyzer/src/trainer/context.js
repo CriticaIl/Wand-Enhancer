@@ -17,6 +17,78 @@
 // back-forward cache.
 
 const DOC_ATTR = 'data-saveforge-doc';
+const CONTENT_ATTR = 'data-saveforge-content';
+
+// ---------------------------------------------------------------- the game shown, not only the address
+// Some hosts switch games inside one document (a player frame that loads the next game's script).
+// The address stays the same, so the page content says which game it is: the page's own scripts,
+// the Twine story, and the page's own global objects.
+function ownScripts(win) {
+  const out = new Set();
+  try {
+    const here = win.location.origin;
+    for (const s of win.document.querySelectorAll('script[src]')) {
+      try {
+        const u = new URL(s.src, win.location.href);
+        if (u.origin === here) out.add(u.pathname); // query strings (cache busting, JSONP) ignored
+      } catch {
+        /* bad URL */
+      }
+    }
+  } catch {
+    /* no DOM */
+  }
+  return out;
+}
+/** The page's global objects (name → value) at a moment, to tell later what the previous game left behind. */
+export function ownGlobalObjects(win) {
+  const out = new Map();
+  let names = [];
+  try {
+    names = Object.getOwnPropertyNames(win);
+  } catch {
+    return out;
+  }
+  for (const k of names) {
+    if (/^(on|webkit|__saveforge)/.test(k)) continue;
+    try {
+      const d = Object.getOwnPropertyDescriptor(win, k);
+      if (d && 'value' in d && d.value && typeof d.value === 'object' && d.value !== win) out.set(k, d.value);
+    } catch {
+      /* not readable */
+    }
+  }
+  return out;
+}
+export function contentSignature(win) {
+  let story = '';
+  try {
+    const sd = win.document.querySelector('tw-storydata');
+    story = sd ? sd.getAttribute('ifid') || sd.getAttribute('name') || '' : '';
+  } catch {
+    story = '';
+  }
+  return { scripts: ownScripts(win), story, title: safe(() => win.document.title, '') };
+}
+/** Did the page switch to another game since `a`? Returns why, or null. `gone`: global objects removed since. */
+export function contentChange(a, b, gone = 0) {
+  if (a.story !== b.story && (a.story || b.story)) return a.story && b.story ? 'the Twine story on the page changed' : a.story ? 'the Twine story was removed from the page' : 'a Twine story replaced the page’s game';
+  const removed = [...a.scripts].filter((x) => !b.scripts.has(x));
+  const added = [...b.scripts].filter((x) => !a.scripts.has(x));
+  // scripts replaced alone is not enough (bundlers remove their chunk scripts after loading them):
+  // the previous game's objects disappeared, or the page took another title
+  if (removed.length && added.length && (gone >= 1 || a.title !== b.title)) return `the game’s scripts were replaced (${removed[0].split('/').pop()} → ${added[0].split('/').pop()})`;
+  if (gone >= 5 && (removed.length || added.length || a.title !== b.title)) return `${gone} of the previous game’s objects were removed`;
+  return null;
+}
+/** Marks the game now shown by this document (part of its game key from now on). */
+export function markContent(win, sig) {
+  try {
+    win.document.documentElement.setAttribute(CONTENT_ATTR, hashStr(`${sig.story}|${[...sig.scripts].sort().join(',')}`));
+  } catch {
+    /* no DOM */
+  }
+}
 // query parameters that never select a game (tracking, cache busting, SaveForge's own)
 const NOISE = /^(utm_.*|fbclid|gclid|dclid|msclkid|yclid|mc_.*|_ga|_gl|ref|referrer|source|v|ver|t|ts|cb|cachebust|nocache|_|saveforge.*)$/i;
 
@@ -88,14 +160,19 @@ export function gameContext(win, reason = '') {
   const a = gameAddress(win);
   const doc = docToken(win);
   const depth = frameDepth(win);
+  // a page that switched games without changing its address (2.3.2) marks which game it shows now
+  const content = safe(() => win.document.documentElement.getAttribute(CONTENT_ATTR), '');
+  const key = content ? `${a.key}#content=${content}` : a.key;
   return {
-    key: a.key,
+    key,
+    addressKey: a.key,
+    content,
     origin: a.origin,
     href: safe(() => win.location.href),
     title: safe(() => win.document.title),
-    gameId: hashStr(a.key),
+    gameId: hashStr(key),
     docId: doc,
-    id: `${hashStr(a.key)}-${doc}`,
+    id: `${hashStr(key)}-${doc}`,
     depth,
     frame: depth === 0 ? 'top page' : `iframe, depth ${depth}`,
     reason,
@@ -132,14 +209,33 @@ export function watchContext(win, ctx, { onChange, onRestore, everyMs = 1000 } =
   let stopped = false;
   let restored = 0;
   let timer = 0;
+  // what the page showed when the trainer opened: its scripts, its story, its global objects
+  const sig0 = contentSignature(win);
+  const objects0 = ownGlobalObjects(win);
+  let tick = 0;
   const check = (why) => {
     if (stopped) return false;
     const now = gameAddress(win);
-    if (now.key !== ctx.key) {
+    if (now.key !== (ctx.addressKey || ctx.key)) {
       onChange?.({ from: ctx.key, to: now.key, why });
       return true;
     }
     return false;
+  };
+  /** Same address, another game (2.3.2). */
+  const checkContent = () => {
+    if (stopped) return false;
+    const sig = contentSignature(win);
+    const objects = ownGlobalObjects(win);
+    let gone = 0;
+    for (const k of objects0.keys()) if (!objects.has(k)) gone++;
+    const why = contentChange(sig0, sig, gone);
+    if (!why) return false;
+    // objects of the previous game still on the page, unchanged: never part of the new game
+    const leftover = new Map();
+    for (const [k, v] of objects0) if (objects.get(k) === v) leftover.set(k, v);
+    onChange?.({ from: ctx.key, to: ctx.addressKey || ctx.key, why: `same address, another game: ${why}`, content: sig, leftover });
+    return true;
   };
   const onPop = () => check('navigation (history)');
   const onHash = () => check('navigation (#route)');
@@ -152,7 +248,9 @@ export function watchContext(win, ctx, { onChange, onRestore, everyMs = 1000 } =
   win.addEventListener('hashchange', onHash);
   win.addEventListener('pageshow', onShow);
   timer = win.setInterval(() => {
-    if (!safe(() => win.document.hidden, false)) check('address changed (single-page navigation)');
+    if (safe(() => win.document.hidden, false)) return;
+    if (check('address changed (single-page navigation)')) return;
+    if (++tick % 2 === 0) checkContent(); // every 2 s: a few hundred property reads
   }, everyMs);
   return {
     check,

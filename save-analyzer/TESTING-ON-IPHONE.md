@@ -1,5 +1,31 @@
 # SaveForge 2.3 on iPhone: install, test and what to expect
 
+## Fixed in 2.3.2: another game's saves next to the game you play (portals such as mopoga.com)
+
+**What you saw:** on a portal, after switching games, the trainer listed `$player.money` as **SAVE** (value 0) next to the new game's **LIVE** values (Takedown, Chokehold stamina).
+
+**What it was:** a saved variable of the *previous* game. The live variables were the right game's. A portal's games are usually served from one website, and a website has one browser storage, so every game's saves sit side by side. The previous game was a SugarCube (Twine) story, and its saves were still in that storage. Two mistakes put its save next to the new game:
+1. **The SugarCube rule.** When only one SugarCube story had saves on the website, SaveForge treated it as "the current story" on **any** page there, even a fighting game.
+2. **The merge.** Every save not known to belong to another game was shown next to the live values. The "SugarCube (Twine)" you saw described that *save*, not the game you were playing.
+
+Both were reproduced with two games served from one origin inside a portal (a SugarCube story, then a fighting game), before the fix.
+
+**Now:**
+- **Each save is checked for its game.** A save is this game's only with evidence:
+  - this game wrote it while SaveForge was open
+  - it is named after this game
+  - it is the running SugarCube story's own save
+  - or you said so
+- **Saves of another engine** (a SugarCube save on a page that is not a SugarCube story) or of another story are another game's. They are never shown and never written. Diagnostics lists them.
+- **Saves that cannot be confirmed** never appear next to the live values. Under *Saves in storage* they are marked **NOT CONFIRMED** and are written only after you confirm they are this game's save. On a website where SaveForge has seen only this game, a save of the same engine is shown as **PROBABLY** (still not confirmed).
+- **Every value says where it comes from** (ⓘ → *Belongs to*): the game, frame and address for live values; the storage key and how sure SaveForge is for saves. **Diagnostics → Where the variables come from** lists all of them.
+- **A game change without an address change is noticed:** if the page swaps its game inside the same document (new scripts, a new Twine story, the old game's objects removed), the trainer reopens for the new game. Objects the old game left behind are kept out.
+
+**Please check on your iPhone (mopoga.com):**
+1. Play a game, then switch to another, and open SaveForge. No SAVE row of the previous game should appear.
+2. Tap ⓘ on a value → *Belongs to*. It names the game and frame.
+3. If a save of yours is wrongly hidden: Diagnostics → *Saves of other games here* → **This is this game's save**.
+
 ## Fixed in 2.3.1: Ren'Py games reloading when SaveForge opens
 
 **What caused it:** Ren'Py web keeps its WebAssembly memory (192 MB or more) in page variables. When the trainer opened, SaveForge listed those variables entry by entry: one item per byte, hundreds of millions of them. iOS stops a tab that uses that much memory, and Safari reloads the page. Without SaveForge, nothing touches that memory, which is why the game ran fine on its own.
@@ -51,14 +77,14 @@
 
 **Upgrading from 2.2:** older versions stored data per website. The **first game you open on each website after updating** keeps that data; other games there start fresh. Older save backups stay listed under Backups.
 
-## Which version am I running? (2.3.1)
+## Which version am I running? (2.3.2)
 Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
 
 | Where | How to see it |
 | --- | --- |
-| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.1**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.1 · build xxxxxxxx** |
-| Floating trainer | Header: **TRAINER 2.3.1**. Diagnostics → *This copy: SaveForge 2.3.1 (build xxxxxxxx)* |
-| Userscripts app | The SaveForge script shows **2.3.1** |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.2**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.2 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.3.2**. Diagnostics → *This copy: SaveForge 2.3.2 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.3.2** |
 
 **If the website still shows an older version:**
 - **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
@@ -187,7 +213,7 @@ Every part shows the same version **and build** (a fingerprint of the code; the 
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.3.1** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.3.2** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -317,6 +343,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Games in srcdoc frames and nested cross-origin frames are handled.
 - Ordinary websites still get no DOM changes, storage or errors.
 
+**Games sharing one game host (2.3.2)**, in a portal with games served from one origin:
+- A SugarCube story, then a fighting game: the fighting game shows only its own variables and saves. The story's save is listed as another game's, whether or not SaveForge was opened in the story.
+- Two SugarCube stories: each sees only its own saves.
+- A game switch without an address change is followed. An object the previous game left on the page is kept out, and Diagnostics says why.
+- Saves that cannot be confirmed are never merged into live values, and are not written without your confirmation.
+- Every value names its game, frame and save entry.
+
 **Ren'Py web (2.3.1)**, on a page with the JavaScript surface of a real Ren'Py 8 web build:
 - Activating SaveForge: no crash, no enumeration of WebAssembly memory or virtual files, first screen within a second, opens on Ren'Py's live variables.
 - No IndexedDB access until *Saves in storage* is opened. Ren'Py save variables are listed then.
@@ -344,6 +377,11 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ### Not verifiable here (please test on your iPhone)
 
+**Games sharing one game host (2.3.2, Chromium only):**
+- **mopoga.com itself** could not be opened from the test environment. The tests rebuild its layout (a portal page, games from one shared origin in frames).
+- **Saves made before SaveForge saw the game write them** have no proof of ownership. They show as NOT CONFIRMED (or PROBABLY on a site with one known game) until the game saves while SaveForge is open, or you confirm them.
+- **A game switch inside one page** is recognised from the page content (scripts, story, objects). A host that switches games without any of these changing is not noticed: use *Rescan game*.
+
 **Ren'Py (2.3.1, tested in Chromium with a Ren'Py-shaped page only):**
 - **A real Ren'Py web game was not run here.** Running a downloaded game build was not permitted in this test environment. The real build's files were read and analysed, and the fixture copies its JavaScript surface.
 - **Whether iOS's memory limit is now respected on your games:** the measured cause is fixed, but iOS may have other limits.
@@ -363,7 +401,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.3.1 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.3.2 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

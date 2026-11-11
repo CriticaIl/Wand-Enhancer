@@ -662,7 +662,9 @@ test('SugarCube save writer: edits only the current moment, keeps the encoding, 
   const ls = new Map([['(Saved Games)x.saves', LZ.compressToUTF16(JSON.stringify(bundle))], ['other', 'not a save']]);
   const ss = new Map([['(Saved Games)x.state', LZ.compressToUTF16(JSON.stringify(state))]]);
   const fake = (m) => ({ get length() { return m.size; }, key: (i) => [...m.keys()][i], getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) });
-  const win = { localStorage: fake(ls), sessionStorage: fake(ss) };
+  // a SugarCube story page (2.3.2: SugarCube saves are only ever this page's game on a SugarCube page)
+  const document = { querySelector: (sel) => (sel === 'script#script-sugarcube' ? {} : null), getElementById: () => null };
+  const win = { localStorage: fake(ls), sessionStorage: fake(ss), document };
   const sc = M.readSugarCubeStorage(win);
   assert.deepEqual(sc.saves.map((x) => x.label), ['Autosave', 'Slot 2']);
   assert.deepEqual(sc.free.map((x) => x.label), ['Slot 1']);

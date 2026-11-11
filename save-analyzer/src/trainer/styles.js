@@ -137,6 +137,8 @@ pre.code { white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-mono
 .otag { display: inline-block; font-size: 9px; font-weight: 900; letter-spacing: .06em; padding: 1px 5px; border-radius: 5px; margin-right: 6px; vertical-align: 1px; background: #1e293b; color: #93c5fd; }
 .otag.o-save { background: rgba(251,191,36,.16); color: #fbbf24; }
 .otag.o-livesave { background: rgba(61,245,167,.16); color: #3df5a7; }
+.otag.o-unconfirmed { background: rgba(248,113,113,.16); color: #f87171; }
+.otag.o-probable { background: rgba(148,163,184,.18); color: #cbd5e1; }
 .okbox { padding: 10px 12px; border-radius: 10px; background: rgba(61,245,167,.1); border: 1px solid rgba(61,245,167,.35); color: #bbf7d0; font-size: 13px; margin: 8px 0; }
 .badbox { padding: 10px 12px; border-radius: 10px; background: rgba(251,113,133,.1); border: 1px solid rgba(251,113,133,.35); color: #fecdd3; font-size: 13px; margin: 8px 0; }
 .search { padding: 8px; background: #050608; }

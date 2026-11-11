@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Arcade</title>
+<!-- Regression fixture (SaveForge 2.3.2): ONE address, several games. The page loads a game's
+     script into the same document and switches games without changing its URL (some game hosts
+     and portals' player frames work like this).
+       loadGame('quest'|'brawler')  removes the previous game's script and canvas, then loads the
+                                    next one; by default it also deletes the previous game's globals
+       ?keep=1                      the previous game's global object is left behind (stale) -->
+<style>body{margin:0;font:15px system-ui,sans-serif;background:#123;color:#fff}canvas{display:block;width:100%;height:280px;background:#000}</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+  var keep = new URLSearchParams(location.search).get('keep') === '1';
+  var current = null;
+  window.loadGame = function (name) {
+    if (current) {
+      document.getElementById('game-script').remove();
+      document.getElementById('stage').innerHTML = '';
+      clearInterval(window.__loop);
+      if (!keep) delete window[current === 'quest' ? 'quest' : 'fight'];
+    }
+    current = name;
+    document.title = name === 'quest' ? 'Moon Quest' : 'Cage Brawler';
+    var c = document.createElement('canvas');
+    c.width = 360; c.height = 280;
+    document.getElementById('stage').appendChild(c);
+    var s = document.createElement('script');
+    s.id = 'game-script';
+    s.src = name + '.js';
+    document.body.appendChild(s);
+  };
+  loadGame(new URLSearchParams(location.search).get('game') || 'quest');
+</script>
+</body>
+</html>

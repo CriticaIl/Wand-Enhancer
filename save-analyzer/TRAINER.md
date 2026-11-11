@@ -328,6 +328,41 @@ Nothing is intercepted while there are no active mappings, when *Mappings enable
 
 A game that registers its own *window capture* listeners before SaveForge can still see a remapped tap first. *Watch one tap* shows what really happens.
 
+## Games sharing one game host (2.3.2)
+
+**The report:** on mopoga.com, after switching games, `$player.money` appeared as SAVE (value 0) next to the new game's LIVE values. Reproduced in `test/same-host.test.mjs` with a portal page that frames games from one shared game host: a SugarCube story (`test/fixtures/sugarcube-real`), then a fighting game (`test/fixtures/brawler`).
+
+The LIVE values were the running game's. The SAVE values were the story's save, from the storage the two games share. Two causes:
+1. **The SugarCube rule.** `currentStory()` returned the only story id found in storage on **any** page, so the story's keys counted as the running game's.
+2. **The merge.** `mergeSaves()` listed every save entry not known to be another game's next to the live values.
+
+**Ownership of a save entry** (`save-owner.js`, `classify`), checked in this order:
+1. **SugarCube keys:**
+   - this game's when the running story's id is read from the page or matches its title
+   - another game's when the page is not a SugarCube story, or the key names another story
+   - probable when the page is a story but its id cannot be read
+2. **SaveForge's record for this website:**
+   - written by this game while watched, or marked by you → this game's
+   - written by another game → another game's
+3. **Name:** words of this game's address or title in the key, or in IndexedDB record keys → this game's.
+4. **Engine mismatch:** a save whose engine is certain from its name (SugarCube, RPG Maker `RPG File1`, Ren'Py's IndexedDB database) on a page not running that engine → another game's.
+5. **Probable:** SaveForge has seen only this game on the website, and the save is of this page's engine.
+6. **Otherwise not confirmed.**
+
+What each state allows:
+- **Merged into live sources and linked:** only this game's and probable saves.
+- **Saves in storage:** not-confirmed saves are listed there, marked NOT CONFIRMED. `applyAndReload` refuses them (`OwnershipError`) until you confirm them, which records them as this game's.
+- **Another game's saves** are filtered out of the dump, so they are never written.
+
+**Provenance:** `belongsTo(id)` on every provider gives the game, frame and address for live values (and the linked save's owner), or the save entry and its ownership. It is shown under ⓘ → *Belongs to*, and in Diagnostics → *Where the variables come from*.
+
+**Same address, another game:** the context watcher also compares the page content every 2 s. It reports a switch when:
+- the Twine story changed, or
+- the page's own scripts were replaced **and** one of the old game's objects disappeared or the title changed (bundlers remove chunk scripts after loading, which alone is not a switch), or
+- several of the old game's objects were removed.
+
+On a switch, the document is marked with a content id, which becomes part of the game key. Objects of the old game that are still on the page and unchanged are excluded from the new game's scan.
+
 ## Ren'Py web: opening safely, and live variables (2.3.1)
 
 **The crash.** Activating SaveForge on a Ren'Py web game made Safari reload the page; the game ran fine without SaveForge. Ren'Py's `renpy.js` is a classic script, so its top-level variables are page globals. They include `HEAP8`…`HEAPF64`, typed-array views of the whole WebAssembly memory (192 MB at start, `INITIAL_MEMORY=201326592` in a published build). The generic detector called `sampleNumbers()` on every page global, and `sampleNumbers` checked for typed arrays only on nested values, so it ran `Object.keys(HEAPU8)`: one string per byte. Three more paths were unguarded:

@@ -28,6 +28,16 @@ function sig(v) {
 }
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
+// saves whose engine is certain from their name, and pages whose engine SaveForge detects reliably
+const ENGINE_NAME = { sugarcube: 'SugarCube', rpgmaker: 'RPG Maker', renpy: "Ren'Py" };
+export function entryEngine(name, kind) {
+  if (kind === 'localStorage') {
+    if (/^\(Saved Games\)/.test(name)) return 'sugarcube';
+    if (/^RPG (File\d+|Global|Config)$/.test(name)) return 'rpgmaker';
+  } else if (kind === 'indexedDB' && name === '/home/web_user/.renpy') return 'renpy';
+  return null;
+}
+
 /** Storage entries of a Storage Bridge dump: [{id, kind, name, sig}] */
 export function storageEntries(dump) {
   const out = [];
@@ -136,50 +146,100 @@ export class SaveOwnership {
     this.observe({ localStorage: ls });
   }
 
+  /** Do words of THIS game appear in the entry's name, or in its record keys (IndexedDB save paths)? */
+  namedAfterMe(name, recordKeys = []) {
+    const mine = this.reg.games[this.me]?.tokens || this.tokens;
+    if (!mine.length) return false;
+    // another known game's words in the same name make it ambiguous
+    const others = Object.entries(this.reg.games).filter(([g]) => g !== this.me).flatMap(([, i]) => i.tokens || []);
+    for (const text of [name, ...recordKeys.slice(0, 50)]) {
+      const n = norm(text);
+      if (mine.some((t) => n.includes(t)) && !others.some((t) => !mine.includes(t) && n.includes(t))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whose is this entry, and how sure is SaveForge? (2.3.2)
+   *   mine        this game's: written by it while SaveForge watched, named after it, the running
+   *               SugarCube story's own key, or you said so
+   *   probable    no proof, but SaveForge has seen only this game on the website and the save is of
+   *               this page's engine (RPG Maker's "RPG File1" on an RPG Maker page…)
+   *   unverified  no evidence either way: never mixed into live variables, written only after you
+   *               confirm it is this game's save
+   *   other       another game's (hidden, never written)
+   */
+  classify(id, kind, name, recordKeys = [], unread = false) {
+    const hint = this.hint ? this.hint(name, kind) : null;
+    if (hint === 'me') return { state: 'mine', why: 'the running SugarCube story’s own save (its id was read from the page)' };
+    if (hint && typeof hint === 'object') return { state: 'other', owner: hint.owner, ownerTitle: hint.title, why: hint.title, how: 'engine' };
+    const rec = this.reg.keys[id];
+    if (rec && rec.owner === this.me) return { state: 'mine', why: rec.how === 'written' ? 'this game wrote it while SaveForge was open' : rec.how === 'you' ? 'you marked it as this game’s save' : 'named after this game' };
+    if (rec && rec.owner) return { state: 'other', owner: rec.owner, ownerTitle: this.titleOf(rec.owner), why: `${this.titleOf(rec.owner)} ${rec.how === 'written' ? 'wrote it' : rec.how === 'you' ? '(marked by you)' : '(named after it)'}` };
+    if (this.namedAfterMe(name, recordKeys)) return { state: 'mine', why: 'named after this game' };
+    const eng = entryEngine(name, kind);
+    // a database not read yet is judged once it is read (its record keys may name this game)
+    if (eng && !unread && this.pageEngines && !this.pageEngines.has(eng)) return { state: 'other', owner: `engine:${eng}`, ownerTitle: `a ${ENGINE_NAME[eng]} game`, why: `a ${ENGINE_NAME[eng]} save, and this page is not a ${ENGINE_NAME[eng]} game`, how: 'engine' };
+    if (!this.multiGame() && (hint === 'probable' || (eng && this.pageEngines?.has(eng)))) return { state: 'probable', why: `probably this game’s: the only game SaveForge has seen on this website${eng ? `, and a ${ENGINE_NAME[eng]} save like this game` : ''} — not confirmed` };
+    return { state: 'unverified', why: this.multiGame() ? 'not confirmed: several games share this website’s storage and nothing shows which one this save belongs to' : 'not confirmed: nothing shows that this game wrote it' };
+  }
+
   /** This game's view of a dump: entries of other games removed (listed in this.foreign). */
   filter(dump) {
     if (!dump) return dump;
     this.observe(dump);
     const foreign = [];
     const unknown = new Set();
-    const keep = (id, kind, name) => {
-      // engine knowledge first (SugarCube names its keys after the story): not stored, exact
-      const hint = this.hint ? this.hint(name, kind) : null;
-      if (hint === 'me') return true;
-      if (hint) {
-        foreign.push({ id, kind, name, owner: hint.owner, ownerTitle: hint.title, how: 'engine' });
+    const states = new Map();
+    const keep = (id, kind, name, recordKeys, unread = false) => {
+      const c = this.classify(id, kind, name, recordKeys, unread);
+      states.set(id, { id, kind, name, ...c });
+      if (c.state === 'other') {
+        foreign.push({ id, kind, name, owner: c.owner, ownerTitle: c.ownerTitle, how: c.how || 'registry', why: c.why });
         return false;
       }
-      const o = this.ownerOf(id);
-      if (!o) {
-        unknown.add(id);
-        return true;
-      }
-      if (o === this.me) return true;
-      foreign.push({ id, kind, name, owner: o, ownerTitle: this.titleOf(o) });
-      return false;
+      if (c.state !== 'mine') unknown.add(id);
+      return true;
     };
+    const recordKeysOf = (db) => (db.stores || []).flatMap((st) => (st.records || []).slice(0, 50).map((r) => (typeof r.key === 'string' ? r.key : '')));
     const out = { ...dump };
-    if (dump.localStorage) out.localStorage = Object.fromEntries(Object.entries(dump.localStorage).filter(([k]) => keep(`ls:${k}`, 'localStorage', k)));
-    if (dump.indexedDB) out.indexedDB = dump.indexedDB.filter((db) => !db || !db.name || keep(`idb:${db.name}`, 'indexedDB', db.name));
-    if (dump.indexedDBNotRead) out.indexedDBNotRead = dump.indexedDBNotRead.filter((n) => keep(`idb:${n}`, 'indexedDB', n));
+    if (dump.localStorage) out.localStorage = Object.fromEntries(Object.entries(dump.localStorage).filter(([k]) => keep(`ls:${k}`, 'localStorage', k, [])));
+    if (dump.indexedDB) out.indexedDB = dump.indexedDB.filter((db) => !db || !db.name || keep(`idb:${db.name}`, 'indexedDB', db.name, recordKeysOf(db)));
+    if (dump.indexedDBNotRead) out.indexedDBNotRead = dump.indexedDBNotRead.filter((n) => keep(`idb:${n}`, 'indexedDB', n, [], true));
     this.foreign = foreign;
     this.unknown = unknown;
+    this.states = states;
     return out;
   }
 
-  /** Entry ids (of edited storage node ids) whose owner is unknown while the site has several games. */
-  uncertainFor(nodeIds, dump) {
-    if (!this.multiGame()) return [];
-    const out = new Set();
-    for (const id of nodeIds) {
-      const seg = String(id).split('/').map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~'));
-      let eid = null;
-      if (seg[1] === 'localStorage') eid = `ls:${seg[2]}`;
-      else if (seg[1] === 'indexedDB') eid = `idb:${dump?.indexedDB?.[Number(seg[2])]?.name}`;
-      if (eid && this.unknown.has(eid)) out.add(eid.replace(/^(ls|idb):/, ''));
+  /** The entry (localStorage key / IndexedDB database) a storage node id belongs to. */
+  entryOf(nodeId, dump) {
+    const seg = String(nodeId).split('/').map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~'));
+    if (seg[1] === 'localStorage') return `ls:${seg[2]}`;
+    if (seg[1] === 'indexedDB') {
+      const n = dump?.indexedDB?.[Number(seg[2])]?.name;
+      return n ? `idb:${n}` : null;
     }
-    return [...out];
+    return null;
+  }
+  stateOf(nodeId, dump) {
+    const e = this.entryOf(nodeId, dump);
+    return (e && this.states?.get(e)) || { state: 'unverified', why: 'not confirmed', name: e ? e.replace(/^(ls|idb):/, '') : '?' };
+  }
+  /** May this save variable be shown next to (and linked with) the live variables? Only this game's. */
+  mergeable(nodeId, dump) {
+    const st = this.stateOf(nodeId, dump).state;
+    return st === 'mine' || st === 'probable';
+  }
+
+  /** Storage entries of unverified owner among the edited nodes (writing them needs your confirmation). */
+  uncertainFor(nodeIds, dump) {
+    const out = new Map();
+    for (const id of nodeIds) {
+      const st = this.stateOf(id, dump);
+      if (st.state === 'unverified' || st.state === 'other') out.set(this.entryOf(id, dump), st.name);
+    }
+    return [...out.entries()].map(([id, name]) => ({ id, name }));
   }
 
   /** "This is this game's save" (Diagnostics), or forget the owner. */
@@ -199,6 +259,7 @@ export class SaveOwnership {
       foreign: this.foreign,
       unknown: [...this.unknown].map((x) => x.replace(/^(ls|idb):/, '')),
       multi: this.multiGame(),
+      entries: [...(this.states?.values() || [])].map((x) => ({ name: x.name, kind: x.kind, state: x.state, why: x.why })),
     };
   }
 }
