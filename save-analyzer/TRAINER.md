@@ -26,7 +26,7 @@ Each integration uses only objects the engine publishes on `window`. When an eng
 | **Construct 2** | **Live** | `cr_getC2Runtime().all_global_vars[].data` | Changes are picked up on the next tick. |
 | **Phaser 3** | **Live** | The global game instance's `registry.list`, plus each scene's custom properties and `data.list`. | Game objects and Phaser internals are skipped. |
 | **Generic HTML5** | **Live\*** | Global variables are found by comparing `window` with a fresh frame's `window`, scored as game state or website data, then walked with caps on depth and node count. | This works for games that keep state in globals. If a game keeps state in closures or modules, nothing is found. The game may recompute or overwrite edited values, so these edits are marked *Live (unverified)*. |
-| **Ren'Py web** | Apply & Reload | Ren'Py web runs Python in WebAssembly. Its only bridge is Python→JS (`emscripten.run_script`, see `renpy/webloader.py`), and there is no JS→Python API. | Save slots in IndexedDB (`/home/web_user/.renpy`, store `FILE_DATA`) are decoded with SaveForge's safe pickle reader, edited, rebuilt and written back. Ren'Py web builds skip the save-token check. |
+| **Ren'Py web** | Live through Ren'Py (recent builds) · Apply & Reload | Ren'Py web runs Python in WebAssembly, which SaveForge never reads or writes. Recent builds have a JavaScript→Python channel (`window.renpy_exec`, Ren'Py's `web/renpy-pre.js` and `exec_js_cmd` in `renpy/display/core.py`), which SaveForge uses to read and set store variables through Ren'Py itself (2.3.1, see below). | Save slots in IndexedDB (`/home/web_user/.renpy`, store `FILE_DATA`) are decoded with SaveForge's safe pickle reader, edited, rebuilt and written back, on request. Ren'Py web builds skip the save-token check. |
 | **Construct 3** | Apply & Reload | By default the runtime runs in a Web Worker, which the page can't reach. | Saves in localforage/IndexedDB can be edited. |
 | **Twine Harlowe** | Apply & Reload | Story state is private to the engine. | Saves in localStorage can be edited. |
 | **GameMaker HTML5** | Apply & Reload | Runtime variables are obfuscated and can't be identified reliably. | INI/JSON saves in storage can be edited. |
@@ -327,6 +327,46 @@ Nothing is intercepted while there are no active mappings, when *Mappings enable
 | Elements inside cross-origin frames | Only when SaveForge runs in that frame (the userscript does) | Same |
 
 A game that registers its own *window capture* listeners before SaveForge can still see a remapped tap first. *Watch one tap* shows what really happens.
+
+## Ren'Py web: opening safely, and live variables (2.3.1)
+
+**The crash.** Activating SaveForge on a Ren'Py web game made Safari reload the page; the game ran fine without SaveForge. Ren'Py's `renpy.js` is a classic script, so its top-level variables are page globals. They include `HEAP8`…`HEAPF64`, typed-array views of the whole WebAssembly memory (192 MB at start, `INITIAL_MEMORY=201326592` in a published build). The generic detector called `sampleNumbers()` on every page global, and `sampleNumbers` checked for typed arrays only on nested values, so it ran `Object.keys(HEAPU8)`: one string per byte. Three more paths were unguarded:
+- **The learning sampler** (`sampleIds`, every 2–4 s): `Object.keys` on the same globals, and on `FS` file contents such as the game archive.
+- **Find a value:** it read typed arrays deliberately.
+- **The live tree:** it used `Object.keys` on big arrays.
+
+**Measured** with `tools/measure-activation.mjs`, in Chromium with V8's heap capped at 1.5 GB, on `test/fixtures/renpy-web`. That fixture mirrors a published Ren'Py 8 web build's JavaScript surface (globals, virtual filesystem, IDBFS saves, the `_renpy_cmd` channel). These are Chromium numbers, not iPhone Safari.
+
+| | 2.3.0 | 2.3.1 |
+| --- | --- | --- |
+| Activation, 192 MB WebAssembly memory | **renderer crashed** in every run (peak ≈ 2.64 GB, +2.5 GB) | usable after **0.63 s**, +20 MB (113 → 133 MB), no long tasks |
+| 64 MB | crashed (peak 2.75 GB) | — |
+| 16 MB | survived: 1.17 GB peak, a **6.4 s** freeze (14.6 s blocked), one useless "variable" (`GL.counter`) | — |
+| + 5,000 game variables | — | 0.73 s, +39 MB, 3,000 values listed (capped) |
+| Ren'Py not answering (loading) | — | panel at once, message after the 8 s wait |
+| Older Ren'Py without `renpy_exec` | — | explanation screen in 0.63 s |
+| Ordinary game (20,000-variable stress page) | 1.38 s, +122 MB, 13,884 variables | 1.48 s, +126 MB, 13,884 variables |
+
+The real build was found, read and statically analysed (its `renpy.js`, `renpy-pre.js`, `index.html`). Running it in this test environment was not permitted, so the measurements use the fixture.
+
+**Fixes** (`src/trainer/safe-walk.js`, used by every walker):
+- **Binary data is never enumerated:** typed arrays, ArrayBuffer, DataView and WebAssembly objects.
+- **Arrays are enumerated by index, capped**, never with `Object.keys` on the whole array.
+- **An Emscripten page's runtime globals are never scanned:** `Module`, `FS`, `HEAP*`, `wasmMemory`, `GL`, `Asyncify`… Diagnostics lists them as excluded. Find a value skips WebAssembly memory; small typed arrays a game keeps itself are still searched.
+
+**Light mode for Ren'Py web.** Ren'Py is recognised by `renpy_exec`, its `renpy.js`/`renpy-pre.js` scripts, `Module` loading `renpy.data`, or its page layout. On a Ren'Py page the trainer:
+- **does not run at opening:** no page-global scan, no SugarCube probe, no storage read, no save auto-sync
+- **keeps nothing after closing**
+- **reads saves only on request:** *Saves in storage* (IndexedDB) still works and verifies its writes
+- **shows its first screen at once**, then lists the variables
+
+**Live variables through Ren'Py** (`src/trainer/renpy-live.js`):
+- **The channel.** Ren'Py runs Python that JavaScript writes into `window._renpy_cmd`, on its PERIODIC event while an interaction runs. SaveForge sends one expression, `exec(<script>, {'__builtins__': __builtins__})`, which creates **no store variables**. Ren'Py's own `renpy_exec` wrapper leaves its JSON result in the store variable `result`, which would end up in saves and overwrite a game variable of that name.
+- **What is listed.** The game's variables are `renpy.python.store_dicts['store'].ever_been_changed`: `default` variables and everything assigned while playing, which is what Ren'Py saves. Only simple values are listed: bool, int, float, and str up to 500 characters, including those inside lists, dicts and the game's own objects (one level). Ren'Py's own store variables appear on request. Integers beyond JavaScript's range, non-finite floats and tuples are shown read-only.
+- **Editing.** The new value must match the type the game has. It is set in the store, then `renpy.restart_interaction()` redraws the screens, and Ren'Py reads the value back. It is verified when Ren'Py still has it 1.5 s later. Locks are off for Ren'Py.
+- **Refresh.** Values are refreshed in rotating batches of 300 (paused while minimized). The list is read again every 30 s.
+- **When Ren'Py does not answer** (a loading screen, a paused tab), the command is taken back after 6–8 s so it never runs later, and the panel says why.
+- **Tests.** The Python is tested with CPython, run the way `py_exec` runs it (`tools/renpy_exec_harness.py`, `test/renpy-live.test.mjs`). Python 2 (Ren'Py 7 web) was not tested.
 
 ## Game targeting and one trainer (2.3)
 

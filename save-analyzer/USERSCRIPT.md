@@ -123,7 +123,7 @@ The script has `@version` and `@updateURL` pointing at GitHub Pages. The Userscr
 ## What it can't do (Safari limits)
 
 - **Editing a game's memory live** only works where the engine publishes its state to the page (RPG Maker MV/MZ, SugarCube 2, Construct 2, games with global variables).
-  - **Ren'Py web:** runs Python inside WebAssembly.
+  - **Ren'Py web:** runs Python inside WebAssembly. SaveForge never reads that memory. Recent Ren'Py builds let SaveForge read and change store variables through Ren'Py itself (2.3.1); older ones offer the saves instead.
   - **Construct 3:** usually runs in a worker.
   - **Harlowe:** keeps its state private.
   - **What still works for these:** edit their saves through **Apply & Reload**.

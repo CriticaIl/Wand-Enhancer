@@ -3,6 +3,7 @@
 // state somewhere page scripts cannot reach (a Web Worker, WebAssembly, a
 // closure), it is reported as not live-editable instead of being faked.
 
+import { boundedKeys, isBinary, isEmscripten, runtimeGlobal } from './safe-walk.js';
 import { applyMutation, classifyGlobal, countChanges, sampleNumbers, scoreLeaf, screenNumbers } from './game-state.js';
 import { buildLiveTree, buildLiveTreeAsync } from './live-tree.js';
 import { childId, escapeSegment } from '../core/model.js';
@@ -46,7 +47,7 @@ export function liveLimitations(win) {
     }
   };
   if (has('RenPyWeb') || /renpy/i.test(win.document?.title || '') || win.document?.querySelector?.('script[src*="renpy"]')) {
-    out.push({ id: 'renpy-web', name: "Ren'Py web", reason: "Ren'Py web runs the game's Python inside WebAssembly and only offers Python→JavaScript calls, so its variables cannot be changed live. Edit the save files instead (Apply & Reload)." });
+    out.push({ id: 'renpy-web', name: "Ren'Py web", reason: "Ren'Py web runs the game's Python inside WebAssembly; SaveForge never reads or writes that memory. Recent builds offer a JavaScript interface to Ren'Py (renpy_exec): SaveForge uses it to read and change store variables through Ren'Py itself. Without it, the saves can be inspected and edited (verified) under Saves in storage." });
   }
   if (has('Harlowe') || win.document?.querySelector?.('tw-story')) {
     out.push({ id: 'harlowe', name: 'Twine (Harlowe)', reason: 'Harlowe keeps story state private, so it cannot be edited live. Saves in browser storage can be edited with Apply & Reload.' });
@@ -275,6 +276,8 @@ function genericGlobals(win, hasEngine) {
   }
   const pageGlobals = [];
   const prefiltered = []; // shown in Diagnostics as excluded, never scanned
+  const runtimeWhy = new Map(); // global -> why it is never scanned (WebAssembly runtime, binary data)
+  const emscripten = isEmscripten(win);
   const lexical = lexicalGlobals(win);
   /** (Re)lists the page's own globals. Called again by Rescan: games often create their state after the first look. */
   const collect = () => {
@@ -301,6 +304,14 @@ function genericGlobals(win, hasEngine) {
       if (!d || !('value' in d)) continue;
       const v = d.value;
       if (typeof v === 'function' || v === undefined) continue;
+      // WebAssembly runtimes (Emscripten: Ren'Py web, Unity, Godot…) and binary data are never game
+      // variables, and enumerating them can use gigabytes (the 2.3.0 Ren'Py crash)
+      const why = runtimeGlobal(k, v, emscripten);
+      if (why) {
+        if (prefiltered.length < 200) prefiltered.push(k);
+        runtimeWhy.set(k, why);
+        continue;
+      }
       // DOM nodes, windows and frames (an <iframe id="x"> creates a global that is
       // the frame's window; reading anything from a cross-origin one throws)
       if (typeof v === 'object' && v !== null && isNodeOrWindow(v, win)) continue;
@@ -345,7 +356,7 @@ function genericGlobals(win, hasEngine) {
       return changes ? applyMutation(r, changes.get(k) || 0) : r;
     });
     results.sort((x, y) => y.score - x.score);
-    for (const k of prefiltered) results.push({ name: k, kind: 'website', score: 0, known: true, reasons: ['known library, analytics or engine global (handled by an engine adapter if it is one)'] });
+    for (const k of prefiltered) results.push({ name: k, kind: 'website', score: 0, known: true, reasons: [runtimeWhy.get(k) || 'known library, analytics or engine global (handled by an engine adapter if it is one)'] });
     for (const r of results) if (r.reasons[0]?.startsWith('known ')) r.known = true;
   };
   const markOf = (id) => {
@@ -370,7 +381,7 @@ function genericGlobals(win, hasEngine) {
     const alias = (k) => {
       const v = read(k);
       if (!v || typeof v !== 'object') return false;
-      return gameObjs.some((g) => g !== v && safe(() => Object.keys(g).some((x) => Object.getOwnPropertyDescriptor(g, x)?.value === v)));
+      return gameObjs.some((g) => g !== v && safe(() => boundedKeys(g, 2000).some((x) => Object.getOwnPropertyDescriptor(g, x)?.value === v)));
     };
     const kindOf = new Map(cls.map((r) => [r.name, r.kind]));
     return keys.filter((k) => kindOf.get(k) === 'game' || !alias(k));
@@ -381,11 +392,11 @@ function genericGlobals(win, hasEngine) {
     const seen = new Set();
     const walk = (v, id, depth) => {
       if (out.size >= limit || depth > 6 || !v || typeof v !== 'object' || seen.has(v)) return;
-      if (isNodeOrWindow(v, win)) return;
+      if (isNodeOrWindow(v, win) || isBinary(v)) return; // typed arrays / WebAssembly memory: never enumerated
       seen.add(v);
       let ks;
       try {
-        ks = Object.keys(v);
+        ks = boundedKeys(v, 300);
       } catch {
         return;
       }

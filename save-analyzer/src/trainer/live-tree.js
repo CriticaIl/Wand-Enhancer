@@ -7,6 +7,7 @@
 // depth so huge engine object graphs stay responsive.
 
 import { childId, makeNode } from '../core/model.js';
+import { boundedKeys, isBinary } from './safe-walk.js';
 
 const SKIP_TAGS = new Set(['Window', 'HTMLDocument', 'Document', 'Promise', 'WeakMap', 'WeakSet', 'Map', 'Set', 'ArrayBuffer', 'DataView', 'RegExp', 'Error', 'CanvasRenderingContext2D', 'WebGLRenderingContext', 'WebGL2RenderingContext', 'AudioContext', 'AudioBuffer', 'Image', 'HTMLImageElement', 'HTMLCanvasElement', 'Worker', 'WebSocket', 'XMLHttpRequest']);
 
@@ -17,6 +18,7 @@ function tagOf(v) {
 function skippable(v) {
   if (typeof v !== 'object' || v === null) return false;
   if (typeof v.nodeType === 'number' && typeof v.nodeName === 'string') return true; // DOM
+  if (isBinary(v)) return true; // typed arrays, ArrayBuffers, WebAssembly memory
   const tag = tagOf(v);
   if (SKIP_TAGS.has(tag) || /Array$/.test(tag) && tag !== 'Array') return true; // typed arrays
   try {
@@ -76,7 +78,8 @@ export function createLiveTreeWalker(rootObj, opts = {}) {
         queue[qi++] = null; // release for GC
         let names;
         try {
-          names = item.keys || Object.keys(item.obj);
+          // arrays by index, capped: Object.keys on a 10-million-item array is itself a memory spike
+          names = item.keys || boundedKeys(item.obj, Math.max(maxNodes, 10000));
         } catch {
           continue;
         }

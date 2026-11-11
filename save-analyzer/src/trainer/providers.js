@@ -486,13 +486,18 @@ export class LiveProvider extends BaseProvider {
       return { state: 'locked', detail: l.reapplied ? `Locked at ${l.value}: the game changed it ${l.reapplied} time(s), SaveForge put it back each time.` : `Locked at ${l.value}.` };
     }
     const node = this.node(id);
-    if (node && !node.editable) return { state: 'readonly', detail: node.meta.readOnlyReason || 'This value cannot be edited.' };
+    if (node && (!node.editable || node.meta?.readOnlyReason)) return { state: 'readonly', detail: node.meta?.readOnlyReason || 'This value cannot be edited.' };
     return this.status.get(id) || null;
   }
 
   /** Writes through the engine's own setter when it has one, else directly. Returns how it was written. */
   write(id, v) {
     this.checkContext();
+    if (this.engine.writeAsync) {
+      // through the game (its answer arrives later); never into a local copy only
+      this.engine.writeAsync(id, v).catch(() => {});
+      return this.engine.name;
+    }
     const r = this.resolve(id);
     if (!r) throw new Error('This value is no longer reachable in the game (it may have been replaced). Tap Rescan game.');
     let how = 'direct';
@@ -512,6 +517,7 @@ export class LiveProvider extends BaseProvider {
     for (const { id, value } of list) {
       const node = this.node(id);
       if (!node || !node.editable) throw new Error('This value is read-only.');
+      if (node.meta?.readOnlyReason) throw new Error(node.meta.readOnlyReason);
       const v = coerceLive(node, value);
       const before = this.value(id);
       if (before === undefined && !this.resolve(id)) throw new Error('This value is no longer reachable in the game. Tap Rescan game.');
@@ -534,6 +540,7 @@ export class LiveProvider extends BaseProvider {
 
   /** Write, read back from the game's own object, then watch for the game putting it back. */
   applyAndVerify(id, wanted, before) {
+    if (this.engine.writeAsync) return this.applyAsync(id, wanted, before);
     let how;
     try {
       how = this.write(id, wanted);
@@ -585,9 +592,60 @@ export class LiveProvider extends BaseProvider {
     });
   }
 
+  /**
+   * Engines that change values through the game itself and answer later (Ren'Py: Python runs
+   * the change on its next event): sent → the game's answer (its value afterwards) → read again
+   * from the game after a while. Verified only if the game still has the value then.
+   */
+  async applyAsync(id, wanted, before) {
+    const sent = { state: 'checking', wanted, detail: `Sent to ${this.engine.name}; waiting for its answer…`, at: Date.now() };
+    this.status.set(id, sent);
+    this.emit('status', [id]);
+    const fail = (detail, observed) => {
+      const st = { state: 'failed', wanted, observed, detail, at: Date.now() };
+      if (this.status.get(id) === sent || this.status.get(id)?.wanted === wanted) this.status.set(id, st);
+      this.emit('status', [id]);
+      return st;
+    };
+    let res;
+    try {
+      this.checkContext();
+      res = await this.engine.writeAsync(id, wanted);
+    } catch (e) {
+      return fail(`Not changed: ${e.message}`);
+    }
+    if (this.disposed || this.status.get(id) !== sent) return this.status.get(id); // closed, or superseded by a newer edit
+    const now = res.value;
+    let st;
+    if (sameValue(now, wanted)) st = { state: 'checking', wanted, observed: now, detail: `${this.engine.name} set it to ${now}; checking that the game keeps it…` };
+    else if (sameValue(now, before)) return fail(`The game kept ${now}.`, now);
+    else st = { state: 'adjusted', wanted, observed: now, detail: `The game adjusted it to ${now}.` };
+    st.at = Date.now();
+    this.status.set(id, st);
+    this.emit('status', [id]);
+    await new Promise((r) => this.timers.setTimeout(r, VERIFY_AFTER[VERIFY_AFTER.length - 1]));
+    if (this.disposed || this.status.get(id) !== st) return this.status.get(id);
+    let again;
+    try {
+      again = this.engine.readAsync ? await this.engine.readAsync(id) : { ok: true, value: this.value(id) };
+    } catch (e) {
+      again = { ok: false, error: e.message };
+    }
+    if (this.disposed || this.status.get(id) !== st) return this.status.get(id);
+    let done;
+    if (!again.ok) done = { ...st, state: st.state === 'adjusted' ? 'adjusted' : 'checking', at: Date.now(), detail: `${st.detail.replace(/; checking.*$/, '.')} It could not be read again yet${again.error ? ` (${again.error})` : ''}.` };
+    else if (sameValue(again.value, now)) done = { ...st, state: st.state === 'adjusted' ? 'adjusted' : 'verified', observed: again.value, at: Date.now(), detail: st.state === 'adjusted' ? st.detail : `Applied and verified: ${this.engine.name} still has ${again.value} after ${VERIFY_AFTER[VERIFY_AFTER.length - 1] / 1000} s.` };
+    else done = { state: 'reverted', wanted, observed: again.value, at: Date.now(), detail: `The game changed it back to ${again.value}. It probably recalculates this value; look for the variable it is calculated from.` };
+    this.status.set(id, done);
+    if (done.state === 'verified' && this.engine.markVerified) this.engine.markVerified(id);
+    this.emit('status', [id]);
+    return done;
+  }
+
   // ---------------------------------------------------------------- locking / freezing
   canLock(id) {
     if (this.isSave(id)) return false;
+    if (this.engine.noLocks) return false;
     const node = this.node(id);
     if (!node || !node.editable || !(node.type === 'int' || node.type === 'float' || node.type === 'bool' || node.type === 'string')) return false;
     const st = this.status.get(id);
@@ -637,6 +695,7 @@ export class LiveProvider extends BaseProvider {
     if (this.relearnTimer) this.timers.clearTimeout(this.relearnTimer), (this.relearnTimer = 0);
     if (this.unlearn) this.unlearn();
     if (this.engine.stopLearning) this.engine.stopLearning();
+    if (this.engine.ownedByProvider) this.engine.dispose?.();
     this.disposed = true;
   }
   /** SaveForge timers this scan keeps running right now (Diagnostics). */

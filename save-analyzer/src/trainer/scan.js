@@ -7,6 +7,7 @@
 // but it cannot see variables hidden in closures, modules or WebAssembly.
 
 import { childId, makeNode } from '../core/model.js';
+import { boundedKeys, isEmscripten, runtimeGlobal, typedArrayScanLimit, wasmBuffers } from './safe-walk.js';
 
 const SKIP_TAGS = /^(Window|HTMLDocument|Document|Promise|WeakMap|WeakSet|ArrayBuffer|DataView|RegExp|Error|CanvasRenderingContext2D|WebGL2?RenderingContext|AudioContext|AudioBuffer|Worker|WebSocket|XMLHttpRequest|CSSStyleDeclaration|DOMRect)$/;
 
@@ -45,6 +46,10 @@ export function firstScan(win, target, { maxNodes = 200000, timeBudgetMs = 2500,
   let visited = 0;
   let truncated = false;
   const roots = [];
+  // WebAssembly runtimes are never searched: their memory is not game variables (and editing it
+  // blindly could corrupt the game); small typed arrays a game keeps itself still are
+  const emscripten = isEmscripten(win);
+  const heaps = wasmBuffers(win);
   for (const k of Object.getOwnPropertyNames(win)) {
     if (/^__saveforge/.test(k)) continue;
     let d;
@@ -54,6 +59,7 @@ export function firstScan(win, target, { maxNodes = 200000, timeBudgetMs = 2500,
       continue;
     }
     if (!d || !('value' in d)) continue;
+    if (emscripten && runtimeGlobal(k, d.value, true) && !typedArrayScanLimit(d.value, heaps)) continue;
     roots.push([k, d.value]);
   }
   // breadth-first so shallow, likely-relevant values are found before deep engine internals
@@ -74,11 +80,12 @@ export function firstScan(win, target, { maxNodes = 200000, timeBudgetMs = 2500,
     seen.add(obj);
     let keys;
     try {
-      keys = Object.keys(obj);
+      const tn = ArrayBuffer.isView(obj) ? typedArrayScanLimit(obj, heaps) : -1;
+      if (tn === 0) continue; // a big buffer or a view of WebAssembly memory
+      keys = tn > 0 ? Array.from({ length: tn }, (_, i) => String(i)) : boundedKeys(obj, 5000);
     } catch {
       continue;
     }
-    if (keys.length > 5000) keys = keys.slice(0, 5000);
     for (const key of keys) {
       visited++;
       let d;

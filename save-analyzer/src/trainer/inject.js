@@ -15,6 +15,8 @@ import { createSignal, finishStartup, interruptedStartup, PerfLog, PROFILES, res
 import { probeSugarCube, sugarCubeBridge, storyMarkers, pageBridge } from './sugarcube-live.js';
 import { sugarCubeDirect } from './engines.js';
 import { mountTrainer } from './ui.js';
+import { renpyEngine, renpyUnavailableEngine, renpyWebInfo } from './renpy-live.js';
+import { buildLiveTree } from './live-tree.js';
 
 /** Iframes on this page that are big enough to be a game, with what we can know about them. */
 export function listGameFrames(win, reports = []) {
@@ -153,13 +155,32 @@ export function openTrainer(win, extra = {}) {
     }
   }
 
+  // Ren'Py web (2.3.1): opens light — no page-global scan, no storage read, no SugarCube probe.
+  // Its variables come from Ren'Py itself (renpy-live.js) when the build allows it.
+  const rp = renpyWebInfo(win);
+  const lightweight = rp.renpy;
+  const renpyEngines = () => {
+    if (!rp.exec) return [renpyUnavailableEngine(win, rp, { buildLiveTree })];
+    const eng = renpyEngine(win, { buildLiveTree });
+    eng.actions = [
+      {
+        label: "Show Ren'Py's own variables too",
+        hint: "Also list the engine's store variables (config-like flags Ren'Py defines), not only the game's.",
+        run: async () => {
+          await eng.setShowAll(!eng.showsAll());
+          win.__saveforgeTrainer?.provider?.()?.relearn?.();
+        },
+      },
+    ];
+    return [eng];
+  };
   const st0 = perf.start('detect engines');
-  let engines = cache ? cache.engines : detectLiveEngines(win, { generic: !(interrupted || safeMode) });
+  let engines = cache ? cache.engines : lightweight ? renpyEngines() : detectLiveEngines(win, { generic: !(interrupted || safeMode) });
   let limitations = liveLimitations(win);
   // SugarCube: when window.SugarCube is not visible from here, find out why and use the
   // page bridge if SaveForge runs in an isolated userscript/extension world
   let scProbe = cache ? cache.scProbe : null;
-  if (!cache && !engines.some((e) => e.id === 'sugarcube')) {
+  if (!cache && !lightweight && !engines.some((e) => e.id === 'sugarcube')) {
     scProbe = probeSugarCube(win);
     if (scProbe.verdict === 'bridge') engines.unshift(sugarCubeBridge(win, pageBridge(win).rpc));
   }
@@ -210,8 +231,9 @@ export function openTrainer(win, extra = {}) {
       if (safeMode) return p; // Safe Mode: no save reading, no background work
       finishStartup(win);
       win.__saveforgeStarting = false;
-      // save variables appear as soon as the saves are read (never blocks the live list)
-      hub.ensure().then(() => !closed && !p.disposed && p.attachSaves(hub));
+      // save variables appear as soon as the saves are read (never blocks the live list);
+      // Ren'Py keeps its saves as files in IndexedDB: read only when you open Saves in storage
+      if (!lightweight) hub.ensure().then(() => !closed && !p.disposed && p.attachSaves(hub));
       return p;
     },
   });
@@ -268,6 +290,7 @@ export function openTrainer(win, extra = {}) {
       resources: resourcesNow(),
       scan: scanStatus(),
       saveOwners: hub.ownership ? hub.ownership.report() : null,
+      renpy: lightweight ? renpyReport() : null,
       context: contextInfo ? await contextInfo() : { world: 'page', detail: 'Running in the page’s own JavaScript context (bookmarklet, extension or same-site frame).' },
       frame: frameLabel(win),
       href: safe(() => win.location.href),
@@ -421,6 +444,8 @@ export function openTrainer(win, extra = {}) {
       // keep scan results for a while so reopening is instant; timers are paused, locks released
       const P = resolveSettingsSync();
       if (P && P.keepResults === false) return false;
+      // Ren'Py: listing again is one cheap request, and a kept copy would be stale: nothing is kept
+      if (lightweight) return false;
       const ttl = P && P.lowMemory ? 3 * 60 * 1000 : 10 * 60 * 1000;
       for (const pr of providers.values()) {
         pr.unlockAll?.();
@@ -555,7 +580,25 @@ export function openTrainer(win, extra = {}) {
   function resolveSettingsSync() {
     return settingsNow;
   }
-  if (!interrupted && !safeMode) scWatch();
+  if (!interrupted && !safeMode && !lightweight) scWatch();
+  // the "Inspect the saves" action of the Ren'Py screen needs the controller
+  for (const e of engines) if (e.id === 'renpy-info') e.actions = [{ label: 'Inspect the saves (Saves in storage)', hint: "Reads Ren'Py's save files from the browser storage (on request only).", run: () => ctl.selectSource('storage') }];
+  function renpyReport() {
+    const e = engines.find((x) => x.id === 'renpy' || x.id === 'renpy-info');
+    return {
+      evidence: rp.evidence,
+      exec: rp.exec,
+      reason: rp.reason,
+      connected: !!(e && e.id === 'renpy' && e.info),
+      version: e?.info?.version || '',
+      name: e?.info?.name || '',
+      listed: e?.scanReport?.()?.listed ?? null,
+      total: e?.info?.total ?? null,
+      gameVariables: e?.info?.ebc ?? null,
+      bridge: e?.bridgeStats ? e.bridgeStats() : null,
+      lastError: e?.lastError ? e.lastError() : '',
+    };
+  }
   return ctl;
 }
 

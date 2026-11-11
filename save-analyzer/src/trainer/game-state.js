@@ -14,6 +14,7 @@
 //   - website-like key names (title, url, slug, rating, plays, thumbnail, locale…)
 //   - URL strings, text-heavy objects
 
+import { boundedKeys, isBinary } from './safe-walk.js';
 import { toEnglish } from '../core/translate.js';
 
 export const INCLUDE_THRESHOLD = 0.35;
@@ -122,15 +123,16 @@ export function sampleNumbers(value, limit = 400) {
   const out = new Map();
   const seen = new Set();
   const walk = (v, path, depth) => {
-    if (out.size >= limit || depth > 4 || !v || typeof v !== 'object' || seen.has(v)) return;
+    // the value itself is checked too (2.3.1): HEAPU8 given here was Object.keys'd byte by byte
+    if (out.size >= limit || depth > 4 || !v || typeof v !== 'object' || seen.has(v) || isPlatformObject(v)) return;
     seen.add(v);
     let keys;
     try {
-      keys = Object.keys(v);
+      keys = boundedKeys(v, 200);
     } catch {
       return;
     }
-    for (const k of keys.slice(0, 200)) {
+    for (const k of keys) {
       let d;
       try {
         d = Object.getOwnPropertyDescriptor(v, k);
@@ -169,11 +171,11 @@ function stats(value) {
     seen.add(v);
     let keys;
     try {
-      keys = Object.keys(v);
+      keys = boundedKeys(v, 150);
     } catch {
       return;
     }
-    for (const k of keys.slice(0, 150)) {
+    for (const k of keys) {
       if (--budget <= 0) return;
       let d;
       try {
@@ -208,6 +210,7 @@ function stats(value) {
 }
 
 function isPlatformObject(v) {
+  if (isBinary(v)) return true;
   try {
     if (typeof v.nodeType === 'number' && typeof v.nodeName === 'string') return true;
     if (v.window === v) return true;

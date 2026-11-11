@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>The Question</title>
+<!-- Regression fixture (SaveForge 2.3.1): the JavaScript surface of a real Ren'Py 8 web build,
+     as read from a published build's renpy.js / renpy-pre.js (Ren'Py's sample game "The Question"):
+       - renpy.js is a classic script, so every top-level var is a page global: Module, buffer,
+         HEAP8…HEAPF64 (views of the whole WebAssembly memory, 192 MB at start), wasmMemory,
+         wasmTable, FS / MEMFS / IDBFS (the game's files as Uint8Arrays), GL, EGL, ENV, PATH, TTY,
+         PIPEFS, SOCKFS, JSEvents, Asyncify, Browser
+       - renpy-pre.js defines progress(), renpy_exec / renpy_get / renpy_set and the context menu;
+         renpy_exec writes Python into window._renpy_cmd, which Ren'Py reads on its PERIODIC event
+         (about 20 times a second while an interaction runs) and runs with py_exec in the store
+       - saves live in IndexedDB "/home/web_user/.renpy" (Emscripten IDBFS, store FILE_DATA)
+     Python cannot run here: runtime.js emulates the Ren'Py store and executes the commands
+     SaveForge sends from the JSON header they carry (the Python itself is tested with CPython in
+     test/renpy-live.test.mjs). renpy_exec's own wrapper is emulated too, including what it does to
+     the store: it leaves its JSON result in store.result.
+     Query parameters:
+       ?mem=MB     WebAssembly memory at start (default 192, like the real build)
+       ?zipmb=MB   size of game.zip in the virtual filesystem (default 10)
+       ?files=N    number of runtime files in the virtual filesystem (default 300, ~15 MB)
+       ?interaction=0   Ren'Py never reads _renpy_cmd (loading screen / blocked)
+       ?noexec=1   a Ren'Py web build without renpy_exec (older versions)
+       ?big=N      also N extra game variables (a big game) -->
+<style>
+  html { background: #444; font-family: sans-serif; }
+  body { margin: 0; }
+  #canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; border: 0; }
+  #ContextContainer { position: absolute; left: 0; top: 0; color: #fff; }
+  #ContextButton { color: #d3d3d3; font-size: xx-large; padding: 10px; }
+  #hud { position: absolute; right: 8px; bottom: 8px; color: #fff; font: 14px monospace; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+<div id="ContextContainer"><a id="ContextButton">≡</a></div>
+<div id="hud"></div>
+<script src="renpy-pre.js"></script>
+<script src="runtime.js"></script>
+</body>
+</html>

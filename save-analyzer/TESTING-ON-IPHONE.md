@@ -1,5 +1,24 @@
 # SaveForge 2.3 on iPhone: install, test and what to expect
 
+## Fixed in 2.3.1: Ren'Py games reloading when SaveForge opens
+
+**What caused it:** Ren'Py web keeps its WebAssembly memory (192 MB or more) in page variables. When the trainer opened, SaveForge listed those variables entry by entry: one item per byte, hundreds of millions of them. iOS stops a tab that uses that much memory, and Safari reloads the page. Without SaveForge, nothing touches that memory, which is why the game ran fine on its own.
+
+**Measured** (Chromium with a phone-like memory limit; details in TRAINER.md):
+- **2.3.0:** the page crashed every time, after growing by about 2.5 GB.
+- **2.3.1:** the trainer is usable in about 0.6 s, uses about 20 MB more, and the game never pauses.
+
+**Now on Ren'Py web games:**
+- **Light mode:** SaveForge opens at once without scanning anything heavy and without reading storage. The WebAssembly memory is never read or written.
+- **Live variables** (recent Ren'Py versions): money, flags, relationship points, names… are listed and can be edited. SaveForge asks Ren'Py itself to change the value, and the game redraws its screens. A ✓ appears when Ren'Py confirms the value 1.5 s later. Ren'Py applies changes while the game waits for you (dialogue or a menu). **Save in-game to keep them.** Rolling back past the change undoes it.
+- **Older Ren'Py web games** without this interface: SaveForge explains why, and offers **Inspect the saves** (the saves in storage, read only when you tap it).
+- **Diagnostics → Ren'Py web** shows whether SaveForge is connected, the Ren'Py version, and how many commands Ren'Py answered.
+
+**Please check on your iPhone:**
+1. **Does the Ren'Py game still reload when you open SaveForge?** This was fixed for the cause that was measured. If it still reloads, open SaveForge again on the reloaded page and use Safe Mode, then send Diagnostics.
+2. **Does the panel say "Ren'Py (live)" and list your game's variables?** Older Ren'Py versions cannot.
+3. **Edit one value while the game shows dialogue.** Does the ✓ appear, and does the game use the value?
+
 ## Fixed in 2.3: the wrong game, and duplicate menus
 
 **What caused it (found and reproduced by tests before fixing):**
@@ -32,14 +51,14 @@
 
 **Upgrading from 2.2:** older versions stored data per website. The **first game you open on each website after updating** keeps that data; other games there start fresh. Older save backups stay listed under Backups.
 
-## Which version am I running? (2.3.0)
+## Which version am I running? (2.3.1)
 Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
 
 | Where | How to see it |
 | --- | --- |
-| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.0**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.0 · build xxxxxxxx** |
-| Floating trainer | Header: **TRAINER 2.3.0**. Diagnostics → *This copy: SaveForge 2.3.0 (build xxxxxxxx)* |
-| Userscripts app | The SaveForge script shows **2.3.0** |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.1**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.1 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.3.1**. Diagnostics → *This copy: SaveForge 2.3.1 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.3.1** |
 
 **If the website still shows an older version:**
 - **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
@@ -168,7 +187,7 @@ Every part shows the same version **and build** (a fingerprint of the code; the 
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.3.0** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.3.1** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -298,6 +317,17 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Games in srcdoc frames and nested cross-origin frames are handled.
 - Ordinary websites still get no DOM changes, storage or errors.
 
+**Ren'Py web (2.3.1)**, on a page with the JavaScript surface of a real Ren'Py 8 web build:
+- Activating SaveForge: no crash, no enumeration of WebAssembly memory or virtual files, first screen within a second, opens on Ren'Py's live variables.
+- No IndexedDB access until *Saves in storage* is opened. Ren'Py save variables are listed then.
+- The game's variables are listed (from `ever_been_changed`) and Ren'Py's own are not. Big integers are read-only.
+- Editing sets the value through Ren'Py, verified by reading it back. The game's display updates, and no store variable (`result`) is created. Values the game changes are picked up.
+- Ren'Py not answering: the panel stays usable and explains, and the command is taken back.
+- An older build without `renpy_exec`: an explanation, and the saves on request.
+- Closing leaves no timers or callbacks; the raw page view is safe.
+- The Python run in CPython as Ren'Py runs it: no store variables created, a game variable named `result` untouched, type checks, read-back, `restart_interaction`.
+- Every walker on an Emscripten-shaped window: no heap or file enumeration. Find a value still finds the game's own values.
+
 **Game targeting and one trainer (2.3):**
 - Two games on one website: Game B shows none of Game A's favorites, and Game A's save is neither offered nor written. Game A keeps its favorite.
 - Single-page navigation: after closing, the old game's kept scan is not reused. While the trainer is open, it switches to the new game by itself. Edits never reach the old game's objects, and a write prepared for the old game is refused.
@@ -314,6 +344,13 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ### Not verifiable here (please test on your iPhone)
 
+**Ren'Py (2.3.1, tested in Chromium with a Ren'Py-shaped page only):**
+- **A real Ren'Py web game was not run here.** Running a downloaded game build was not permitted in this test environment. The real build's files were read and analysed, and the fixture copies its JavaScript surface.
+- **Whether iOS's memory limit is now respected on your games:** the measured cause is fixed, but iOS may have other limits.
+- **Ren'Py 7 web builds (Python 2):** the script is written for Python 2 but was tested with Python 3 only.
+- **Which Ren'Py versions have `renpy_exec`:** it is in current Ren'Py 8 web builds. SaveForge detects it rather than assuming.
+- **Screens that show a value only on the next interaction:** Ren'Py redraws screens after a change, but text already shown in dialogue does not change.
+
 **2.3 targeting and duplicates (tested in Chromium only):**
 - **Your games and portals.** The tests use made-up twin games, a portal, and frames with swapped games. Real portals may load games in ways the tests do not cover (for example, replacing the game without changing the address: tap *Rescan game* then).
 - **Safari's back-forward cache.** The tests simulate Safari's page-restore event; real restoration was not observed on an iPhone.
@@ -326,7 +363,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.3.0 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.3.1 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

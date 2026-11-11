@@ -474,7 +474,7 @@ export function mountTrainer(win, opts) {
     const p = S.provider;
     const items = [];
     if (!p.entries.length) {
-      items.push({ kind: 'nav', label: 'No game variables found here', icon: 'info', count: '', hint: 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
+      items.push({ kind: 'nav', label: p.engine?.emptyLabel || 'No game variables found here', icon: 'info', count: '', hint: p.engine?.emptyHint || 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
     }
     if (p.reloadSummary) items.push({ kind: 'nav', label: `After reload: ${p.reloadSummary.ok}/${p.reloadSummary.total} edits kept`, icon: p.reloadSummary.ok === p.reloadSummary.total ? 'shield' : 'info', count: '', hint: p.reloadSummary.ok === p.reloadSummary.total ? 'Every value written with Apply & Reload was still in storage after the game reloaded.' : 'The game overwrote some values when it reloaded (for example an autosave). Recent shows which.', view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
     const lim = scanLimitItem(p);
@@ -1769,6 +1769,7 @@ export function mountTrainer(win, opts) {
       null,
       h('h2', null, 'Diagnostics'),
       gameBlock(d),
+      renpyBlock(d.renpy),
       h('dl', { class: 'kv' }, h('dt', null, 'This frame'), h('dd', null, d.frame || '?'), h('dt', null, 'Address'), h('dd', null, d.href || '?'), h('dt', null, 'Script context'), h('dd', null, d.context ? `${d.context.world}: ${d.context.detail}` : '?')),
       d.context && d.context.world === 'isolated' ? h('div', { class: 'badbox' }, 'SaveForge is running in an isolated extension context, so it cannot see or change the game’s JavaScript. Edits would only change SaveForge’s own copy. In the Userscripts app make sure the script has “@inject-into page”, or use the trainer bookmarklet.') : null,
       !d.engines.some((e) => e.id !== 'generic') && !included.length && gameFrame
@@ -1854,6 +1855,21 @@ export function mountTrainer(win, opts) {
             },
           }, 'Reset this game’s trainer data'))
         : null,
+    );
+  }
+
+  /** Ren'Py web: how SaveForge talks to it, or why it cannot (2.3.1). */
+  function renpyBlock(r) {
+    if (!r) return null;
+    const b = r.bridge;
+    return h(
+      'div',
+      null,
+      h('h3', null, "Ren'Py web"),
+      h('div', { class: r.connected ? 'okbox' : 'warnbox' }, r.connected ? `Connected through Ren'Py's JavaScript interface${r.version ? ` (Ren'Py ${r.version})` : ''}: ${r.listed ?? 0} value(s) listed${r.total && r.total > (r.listed || 0) ? ` of ${r.total}` : ''}, from ${r.gameVariables ?? '?'} game variable(s).` : r.reason || "Not connected to Ren'Py."),
+      h('p', { class: 'note' }, `Recognised by: ${r.evidence || '?'}. SaveForge opened in light mode: no page-global scan, no storage read, nothing read from WebAssembly memory.`),
+      b ? h('p', { class: 'note' }, `Commands: ${b.sent} sent, ${b.answered} answered, ${b.timeouts} not answered${b.lastMs ? `, last answer in ${b.lastMs} ms` : ''}.`) : null,
+      r.lastError ? h('div', { class: 'warnbox' }, r.lastError) : null,
     );
   }
 
