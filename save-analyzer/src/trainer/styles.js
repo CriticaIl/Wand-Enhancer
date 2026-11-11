@@ -146,6 +146,7 @@ pre.code { white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-mono
 .answer-value.pattern { font-size: 14px; font-weight: 500; }
 .answer-notes { margin: 4px 0 0 18px; padding: 0; font-size: 12px; }
 .evidence pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 140px; overflow: auto; }
+.savesfound-text { white-space: pre-wrap; word-break: break-word; font-size: 11px; max-height: 320px; overflow: auto; background: rgba(0,0,0,.25); padding: 6px; border-radius: 6px; }
 .copybuf { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; }
 .otag.o-unconfirmed { background: rgba(248,113,113,.16); color: #f87171; }
 .otag.o-probable { background: rgba(148,163,184,.18); color: #cbd5e1; }

@@ -8,7 +8,7 @@ import { frameLabel, LiveProvider } from './providers.js';
 import { clearPrefix, createStore } from './store.js';
 import { gameAddress, gameContext, gameTokens, markContent, watchContext } from './context.js';
 import { SaveOwnership } from './save-owner.js';
-import { currentStory, isSugarCubePage, storyIdOfKey } from './sugarcube-saves.js';
+import { currentStory, isSugarCubePage, listSugarCubeKeys, passageOnScreen, sessionMatch, storyIdOfKey } from './sugarcube-saves.js';
 import { SaveHub } from './save-hub.js';
 import { BUILD, VERSION } from '../version.js';
 import { createSignal, finishStartup, interruptedStartup, PerfLog, PROFILES, resolveSettings } from './perf.js';
@@ -318,6 +318,7 @@ export function openTrainer(win, extra = {}) {
       resources: resourcesNow(),
       scan: scanStatus(),
       saveOwners: hub.ownership ? hub.ownership.report() : null,
+      savesFound: lightweight ? null : savesFoundReport(),
       renpy: lightweight ? renpyReport() : null,
       sources: sourcesReport(),
       context: contextInfo ? await contextInfo() : { world: 'page', detail: 'Running in the page’s own JavaScript context (bookmarklet, extension or same-site frame).' },
@@ -366,6 +367,29 @@ export function openTrainer(win, extra = {}) {
   };
 
   /** The SugarCube connection report and an exact State path lookup (Diagnostics). */
+  /** Diagnostics -> Saves found (2.3.7): every SugarCube key, its owner and why. Read-only. */
+  function savesFoundReport() {
+    const o = hub.ownership;
+    const story = safe(() => currentStory(win));
+    const keys = safe(() => listSugarCubeKeys(win)) || [];
+    for (const k of keys) {
+      if (k.store !== 'localStorage' || !o) continue;
+      const id = `ls:${k.key}`;
+      const c = (o.states && o.states.get(id)) || safe(() => o.classify(id, 'localStorage', k.key, []));
+      if (c) k.owner = { state: c.state, why: c.why, ownerTitle: c.ownerTitle || null };
+      const rec = o.reg && o.reg.keys ? o.reg.keys[id] : null;
+      if (rec) k.record = { owner: rec.owner, ownerTitle: o.titleOf(rec.owner), how: rec.how, at: rec.at, me: rec.owner === o.me };
+    }
+    return {
+      game: { key: gctx.key, title: gctx.title || '' },
+      story: story ? { current: story.current, verified: story.verified, page: story.page, how: story.how, ids: story.ids } : null,
+      passage: safe(() => passageOnScreen(win)),
+      session: safe(() => sessionMatch(win)),
+      games: o ? Object.entries(o.reg.games).map(([key, g]) => ({ key, title: g.title, me: key === o.me })) : [],
+      savesRead: !!hub.provider,
+      keys,
+    };
+  }
   function sugarCubeReport() {
     const eng = engines.find((e) => e.id === 'sugarcube');
     const probe = eng ? { verdict: eng.bridged ? 'bridge' : 'direct', reason: eng.bridged ? 'Connected through the page bridge (SaveForge runs isolated from the page).' : 'Connected directly to SugarCube.State.', steps: (scProbe && scProbe.steps) || [], markers: storyMarkers(win.document) } : probeSugarCube(win);

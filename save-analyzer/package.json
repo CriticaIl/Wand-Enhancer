@@ -1,6 +1,6 @@
 {
   "name": "saveforge",
-  "version": "2.3.6",
+  "version": "2.3.7",
   "private": true,
   "description": "Offline HTML5 / Ren'Py game save analyzer and mod menu generator",
   "type": "module",

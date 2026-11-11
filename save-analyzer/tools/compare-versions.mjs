@@ -19,7 +19,9 @@ const { chromium } = createRequire(ROOT)('playwright');
 const [, , scenario = 'shared-host', ...specs] = process.argv;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript' };
 const server = createServer((req, res) => {
-  const p = normalize(join(ROOT, decodeURIComponent(new URL(req.url, 'http://x').pathname)));
+  // /html/<upload id>/ serves the SugarCube fixture, like itch.io's per-upload game paths
+  const pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/html\/\d+\//, '/test/fixtures/sugarcube-real/');
+  const p = normalize(join(ROOT, pathname));
   try {
     const f = p.endsWith('/') ? join(p, 'index.html') : p;
     res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream' }).end(readFileSync(f));
@@ -43,6 +45,26 @@ async function run(label, path) {
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  if (scenario.startsWith('new-upload')) {
+    // day 1: the game at upload 1111; SaveForge open while the game autosaves (owner recorded);
+    // day 2 (a new tab): the developer uploaded a new build, now at /html/2222/
+    const q = `?hidden=1&story=cah&globals=1${scenario === 'new-upload-plain' ? '&plainpassage=1' : ''}`;
+    await page.goto(`${host}/html/1111/${q}&go=Shop`);
+    await page.waitForTimeout(800);
+    await openTrainer(page);
+    await page.evaluate(() => document.querySelector('#passages a[data-passage]').click()); // the game's own link (the trainer panel covers it)
+    await page.waitForTimeout(600);
+    await page.evaluate(() => window.__saveforgeTrainer.syncSaves?.());
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => window.__saveforgeTrainer.destroy());
+    await page.waitForTimeout(500);
+    const page2 = await ctx.newPage();
+    page2.on('pageerror', (e) => errors.push(e.message));
+    await page2.goto(`${host}/html/2222/${q}&go=Shop`);
+    await page2.waitForTimeout(800);
+    await openTrainer(page2);
+    return report(label, page2, errors, ctx);
+  }
   if (scenario === 'shared-host') {
     await page.goto(`${host}${STORY}?story=other&go=Shop`);
     await page.waitForTimeout(800);
@@ -52,6 +74,9 @@ async function run(label, path) {
   await page.goto(`${host}${STORY}?hidden=1&story=cah&globals=1&go=Shop,Street`);
   await page.waitForTimeout(800);
   await openTrainer(page);
+  return report(label, page, errors, ctx);
+}
+async function report(label, page, errors, ctx) {
   const r = await page.evaluate(() => {
     const t = window.__saveforgeTrainer;
     const p = t.provider();
@@ -65,6 +90,14 @@ async function run(label, path) {
       money: rows.filter((x) => /money/.test(`${x.path} ${x.label}`)).map((x) => `${x.label} (${x.origin})`).slice(0, 2),
       fromOther: rows.filter((x) => /other\.saves/.test(x.path)).length,
       compat: compat.trim().slice(0, 70),
+      hidden: (() => {
+        try {
+          const o = t.saveHub?.ownership || p.saves?.ownership;
+          return (o?.foreign || []).map((f) => `${f.name} -> ${f.ownerTitle} (${f.how})`);
+        } catch {
+          return '?';
+        }
+      })(),
     };
   });
   console.log(JSON.stringify({ version: label, ...r, errors: errors.slice(0, 2) }));

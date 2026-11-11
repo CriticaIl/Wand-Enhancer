@@ -16,6 +16,7 @@
          state.delta (delta-encoded history) and state.index
      Query parameters:
        ?story=id  another story (its own story id, title and ifid) — two games on one host
+       ?plainpassage=1  (2.3.7) a customized runtime whose passage element has no data-passage
        ?globals=1  (2.3.6) the story also keeps some state in page globals of its own (like a game
                   that the generic scanner partly reads), so SaveForge opens on generic page state
        ?init=ms   publish window.SugarCube only after this delay (late start)
@@ -120,7 +121,7 @@
   };
   function render() {
     var v = history[active].variables;
-    document.getElementById('passages').innerHTML = '<div id="passage-' + history[active].title.toLowerCase() + '" data-passage="' + history[active].title + '" class="passage">' + passages[history[active].title].html + '</div>';
+    document.getElementById('passages').innerHTML = (params.get('plainpassage') === '1' ? '<div class="passage">' : '<div id="passage-' + history[active].title.toLowerCase() + '" data-passage="' + history[active].title + '" class="passage">') + passages[history[active].title].html + '</div>';
     document.getElementById('hud').textContent = '💵 ' + v.player.money + ' · Day ' + v.day;
     sessionStorage.setItem(SKEY, LZString.compressToUTF16(JSON.stringify(marshal())));
   }

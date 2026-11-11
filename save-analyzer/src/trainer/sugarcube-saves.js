@@ -239,6 +239,84 @@ export function sessionMatch(win) {
   }
   return hits.length === 1 ? hits[0] : null;
 }
+/**
+ * Every SugarCube key in this website's storage, UNFILTERED (Diagnostics -> Saves found, 2.3.7):
+ * [{store, key, story, size, shape, saves: [{slot, passage, date, money}], why}]. Read-only; values
+ * over 8 MB are listed with their size and not decoded (Safari memory). `money`: every variable
+ * path containing "money" in the save's CURRENT moment, with its value.
+ */
+export function listSugarCubeKeys(win, { find = /money/i } = {}) {
+  const out = [];
+  const moneyOf = (vars) => {
+    const hits = [];
+    let budget = 3000;
+    const walk = (o, path, depth) => {
+      if (!o || typeof o !== 'object' || depth > 4 || hits.length >= 6) return;
+      for (const k of Object.keys(o)) {
+        if (--budget < 0) return;
+        const v = o[k];
+        const p = path ? `${path}.${k}` : k;
+        if (find.test(k) && (typeof v === 'number' || typeof v === 'string')) hits.push(`$${p} = ${String(v).slice(0, 24)}`);
+        else if (v && typeof v === 'object' && !ArrayBuffer.isView(v)) walk(v, p, depth + 1);
+      }
+    };
+    walk(vars, '', 0);
+    return hits;
+  };
+  const oneSave = (slot, sv) => {
+    try {
+      const { moments, index } = momentsOf(sv.state);
+      const m = moments[index] || {};
+      return { slot, passage: m.title || sv.title || '?', date: sv.date || null, money: moneyOf(m.variables) };
+    } catch (e) {
+      return { slot, passage: '?', date: null, money: [], error: e.message };
+    }
+  };
+  for (const store of ['localStorage', 'sessionStorage']) {
+    let st;
+    try {
+      st = win[store];
+      if (typeof st.length !== 'number') throw new Error('no storage');
+    } catch {
+      out.push({ store, key: '', story: null, size: 0, shape: 'blocked', saves: [], why: `${store} cannot be read here` });
+      continue;
+    }
+    for (let i = 0; i < st.length; i++) {
+      const key = st.key(i);
+      const story = storyIdOfKey(key);
+      if (!story) continue;
+      const raw = st.getItem(key) || '';
+      const row = { store, key, story, size: raw.length, shape: 'unknown', saves: [], why: '' };
+      if (raw.length > 8 * 1024 * 1024) {
+        row.shape = 'not decoded (over 8 MB)';
+        out.push(row);
+        continue;
+      }
+      const d = decodeStored(raw);
+      if (!d) {
+        row.shape = 'not decodable (not JSON or LZString)';
+        out.push(row);
+        continue;
+      }
+      const o = d.obj;
+      row.codec = d.codec;
+      if (isState(o)) {
+        row.shape = 'session state (the running playthrough)';
+        row.saves.push(oneSave('session', { state: o }));
+      } else if (isSave(o)) {
+        row.shape = 'one save';
+        row.saves.push(oneSave('save', o));
+      } else if ('autosave' in o || Array.isArray(o.slots)) {
+        row.shape = 'saves bundle (autosave + slots)';
+        if (isSave(o.autosave)) row.saves.push(oneSave('autosave', o.autosave));
+        (o.slots || []).forEach((sv, n) => isSave(sv) && row.saves.push(oneSave(`slot ${n + 1}`, sv)));
+        if (!row.saves.length) row.why = 'no save in it (empty autosave and slots)';
+      } else row.shape = `other SugarCube data (${Object.keys(o).slice(0, 4).join(', ') || 'empty'})`;
+      out.push(row);
+    }
+  }
+  return out;
+}
 /** Cheap signature of both storages (keys, lengths, edges) — avoids decoding everything again. */
 function storageSig(win) {
   let s = '';

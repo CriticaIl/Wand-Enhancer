@@ -477,6 +477,10 @@ export function mountTrainer(win, opts) {
       items.push({ kind: 'nav', label: p.engine?.emptyLabel || 'No game variables found here', icon: 'info', count: '', hint: p.engine?.emptyHint || 'This page exposes no game state SaveForge can read. Open Diagnostics: the game may be in a frame, or keep its state where Safari does not allow access.', view: { type: 'diagnostics' } });
     }
     if (p.reloadSummary) items.push({ kind: 'nav', label: `After reload: ${p.reloadSummary.ok}/${p.reloadSummary.total} edits kept`, icon: p.reloadSummary.ok === p.reloadSummary.total ? 'shield' : 'info', count: '', hint: p.reloadSummary.ok === p.reloadSummary.total ? 'Every value written with Apply & Reload was still in storage after the game reloaded.' : 'The game overwrote some values when it reloaded (for example an autosave). Recent shows which.', view: { type: 'list', title: 'Recent', dynamic: 'recent' } });
+    const hiddenSc = (hub?.ownership?.foreign || []).filter((f) => /^\(Saved Games\)/.test(f.name));
+    if (hiddenSc.length && (p.kind === 'live' || p.kind === 'storage')) {
+      items.push({ kind: 'nav', label: `Hidden as another game’s: ${hiddenSc.length} SugarCube save(s)`, icon: 'info', count: '', hint: `${hiddenSc.map((x) => `“${x.name}”: ${x.why}`).join(' · ')}. Diagnostics → Saves found in storage shows each save and its variables.`, view: { type: 'diagnostics' } });
+    }
     if (p.heldBack) {
       const hb = p.heldBack;
       items.push({ kind: 'nav', label: `Not confirmed as this game’s: ${hb.saves.length} save(s), not listed`, icon: 'info', count: '', hint: `${hb.saves.map((x) => `“${x.name}”: ${x.why}`).join(' · ')}. Their values are not mixed with the LIVE variables (Saves in storage still lists them). Diagnostics → Where the variables come from shows each save’s reason.`, view: { type: 'diagnostics' } });
@@ -1879,6 +1883,7 @@ export function mountTrainer(win, opts) {
       ]),
       res.detail && res.detail.length ? h('details', null, h('summary', null, 'What is running'), h('ul', null, res.detail.map((x) => h('li', null, x)))) : null,
       h('p', { class: 'note' }, 'Everything SaveForge remembers (favorites, recent, marks, learned save links, Linker mappings) belongs to this game key only. Other games on the same website have their own.'),
+      savesFoundBlock(d.savesFound),
       saveOwnersBlock(d.saveOwners),
       sourcesBlock(d.sources),
       opts.resetGameData
@@ -1924,6 +1929,55 @@ export function mountTrainer(win, opts) {
       s.live.length ? h('ul', null, s.live.map((x) => h('li', null, h('b', null, x.root), ` — ${x.count} value(s), ${x.source}, ${x.state}`))) : h('p', { class: 'note' }, 'No live values yet.'),
       h('p', { class: 'note' }, 'Saves: this website’s browser storage, shared by every game it hosts. Only this game’s saves are shown with the live values; saves not confirmed appear only under Saves in storage.'),
       s.saves.length ? h('ul', null, s.saves.map((x) => h('li', null, h('b', null, x.name), ` — ${x.kind}, ${label[x.state] || x.state}: ${x.why}`))) : h('p', { class: 'note' }, 'No saves read yet (they are read in the background, or when you open Saves in storage).'),
+    );
+  }
+
+  /** How many SAVE rows of the main list come from each storage key (2.3.7). */
+  function listedPerKey() {
+    const out = new Map();
+    const p = S.provider;
+    const o = hub?.ownership;
+    if (!p || !o || !hub.provider) return out;
+    for (const e of p.entries || []) {
+      if (e.origin !== 'save' && e.origin !== 'live+save') continue;
+      const sid = e.saveId || e.saveLink?.saveId;
+      const ent = sid ? o.entryOf(sid, hub.provider.dump) : null;
+      if (ent) out.set(ent, (out.get(ent) || 0) + 1);
+    }
+    return out;
+  }
+  /** Every SugarCube save found in storage, unfiltered: whose it is, and why it is or is not listed (2.3.7). */
+  function savesFoundText(f) {
+    const listed = listedPerKey();
+    const lines = [];
+    lines.push(`SaveForge ${opts.sfVersion || '?'} (build ${opts.sfBuild || '?'}) - saves found`);
+    lines.push(`This game: ${f.game.title || '(no title)'} | key ${f.game.key}`);
+    if (f.story) lines.push(`Running story: ${f.story.current || 'not identified'}${f.story.verified ? ' (confirmed)' : ''} - ${f.story.how}. Story ids in storage: ${(f.story.ids || []).join(', ') || 'none'}`);
+    lines.push(`Passage on screen (data-passage): ${f.passage || 'none found'}. Session match: ${f.session ? `${f.session.id} (${f.session.key})` : 'none'}`);
+    lines.push(`Games SaveForge has seen on this website (${f.games.length}): ${f.games.map((g) => `${g.title || '?'} [${g.key}]${g.me ? ' (this one)' : ''}`).join('; ')}`);
+    lines.push(f.savesRead ? 'Saves read: yes' : 'Saves read: not yet (open Saves in storage, or wait a few seconds)');
+    if (!f.keys.length) lines.push('No SugarCube key in localStorage or sessionStorage.');
+    for (const k of f.keys) {
+      const n = listed.get(`ls:${k.key}`) || 0;
+      const status = k.store === 'sessionStorage' ? 'session state: not listed as SAVE rows (used by Edit SugarCube save)' : !k.owner ? 'owner not checked' : k.owner.state === 'other' ? 'HIDDEN as another game’s save' : k.owner.state === 'unverified' ? 'HELD BACK: not confirmed' : n ? `LISTED: ${n} SAVE row(s)` : f.savesRead ? 'owned, but no SAVE row listed' : 'owned (saves not read yet)';
+      lines.push(`- [${k.store}] ${k.key} | ${k.size} chars | ${k.shape}${k.why ? ` | ${k.why}` : ''}`);
+      if (k.owner) lines.push(`    owner: ${k.owner.state}${k.owner.ownerTitle ? ` (${k.owner.ownerTitle})` : ''} - ${k.owner.why}`);
+      if (k.record) lines.push(`    SaveForge record: ${k.record.me ? 'this game' : `${k.record.ownerTitle} [${k.record.owner}]`}, ${k.record.how}${k.record.at ? `, ${new Date(k.record.at).toISOString().slice(0, 10)}` : ''}`);
+      lines.push(`    shown: ${status}`);
+      for (const s of k.saves.slice(0, 12)) lines.push(`    ${s.slot}: passage “${s.passage}”${s.date ? `, ${new Date(s.date).toISOString().slice(0, 16).replace('T', ' ')}` : ''}; ${s.money.length ? s.money.join(', ') : 'no variable named *money*'}${s.error ? ` (error: ${s.error})` : ''}`);
+    }
+    return lines.join('\n');
+  }
+  function savesFoundBlock(f) {
+    if (!f) return null;
+    const text = savesFoundText(f);
+    return h(
+      'div',
+      { class: 'savesfound' },
+      h('h3', null, `Saves found in storage (${f.keys.filter((k) => k.store === 'localStorage').length} story save key(s))`),
+      h('p', { class: 'note' }, 'Every SugarCube key of this website, before any filtering: whose save SaveForge thinks it is, why, and whether its values are listed. Read-only.'),
+      h('pre', { class: 'savesfound-text' }, text),
+      h('div', { class: 'btns' }, h('button', { class: 'btn mini', onclick: () => copyText(text) }, 'Copy saves report')),
     );
   }
 
