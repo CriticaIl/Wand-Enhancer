@@ -1,5 +1,35 @@
 # SaveForge 2.3 on iPhone: install, test and what to expect
 
+## New in 2.3.3: Input Inspector (optional, manual)
+
+When a game asks you to type something (a password for a door, a riddle's answer, a name), the **Input Inspector** shows which text the game itself checks for.
+
+**How to use it:**
+1. Tap the game's textbox (optional).
+2. Open SaveForge → **Input Inspector** → **Find Answers**.
+
+**What it does and doesn't do:**
+- **It runs only when you press the button.** Tapping or typing in a textbox never starts it.
+- **If the page has several textboxes,** you choose one. The one you tapped is preselected.
+- **Each answer comes with:**
+  - a **Copy** button
+  - how the game compares it ("letter case does not matter", "spaces are ignored")
+  - what happens next ("goes to passage Vault")
+  - the variable it is connected to
+  - **Evidence:** where it was found, and the game's code
+- **If the game's logic can't be read, it says *Answer not found*** and what it read. It never guesses.
+- **It never types into the game, never submits anything, and never inspects login, password or payment fields.**
+
+**Engines:**
+- **SugarCube:** from the story's passages, even when the story keeps its variables private.
+- **Harlowe:** from passages.
+- **Ren'Py web:** the conditions after `renpy.input`, through Ren'Py's own interface.
+- **RPG Maker:** name-input checks in events.
+- **Plain HTML games:** from the code attached to the textbox.
+- **Not readable:** Construct, GameMaker, Unity and Godot compile their logic, so the result there is *Answer not found*.
+
+Details and the research behind it: INPUT-INSPECTOR.md.
+
 ## Fixed in 2.3.2: another game's saves next to the game you play (portals such as mopoga.com)
 
 **What you saw:** on a portal, after switching games, the trainer listed `$player.money` as **SAVE** (value 0) next to the new game's **LIVE** values (Takedown, Chokehold stamina).
@@ -77,14 +107,14 @@ Both were reproduced with two games served from one origin inside a portal (a Su
 
 **Upgrading from 2.2:** older versions stored data per website. The **first game you open on each website after updating** keeps that data; other games there start fresh. Older save backups stay listed under Backups.
 
-## Which version am I running? (2.3.2)
+## Which version am I running? (2.3.3)
 Every part shows the same version **and build** (a fingerprint of the code; the same build means the same code):
 
 | Where | How to see it |
 | --- | --- |
-| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.2**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.2 · build xxxxxxxx** |
-| Floating trainer | Header: **TRAINER 2.3.2**. Diagnostics → *This copy: SaveForge 2.3.2 (build xxxxxxxx)* |
-| Userscripts app | The SaveForge script shows **2.3.2** |
+| SaveForge website | Next to “Save analyzer · mod menu”: **· v2.3.3**. Tap **ⓘ** (top right) → *Version*: **SaveForge 2.3.3 · build xxxxxxxx** |
+| Floating trainer | Header: **TRAINER 2.3.3**. Diagnostics → *This copy: SaveForge 2.3.3 (build xxxxxxxx)* |
+| Userscripts app | The SaveForge script shows **2.3.3** |
 
 **If the website still shows an older version:**
 - **The cache.** GitHub Pages lets browsers keep files for up to 10 minutes, so a deploy can take that long to appear. Pull down to reload, or tap ⓘ → **Reload latest version** (clears SaveForge's offline copy and reloads).
@@ -213,7 +243,7 @@ Every part shows the same version **and build** (a fingerprint of the code; the 
    | **Always visible** | The ⬢ button appears on every site you allow (hide it per site with a long-press) | `https://criticail.github.io/Wand-Enhancer/save-analyzer/standalone/saveforge-trainer-always.user.js` |
 
    Install only one. If both are installed, the first one to load wins and the other stays inactive.
-3. If you already had SaveForge, the Userscripts popup offers **2.3.2** as an update. You can also open the link again and tap Install.
+3. If you already had SaveForge, the Userscripts popup offers **2.3.3** as an update. You can also open the link again and tap Install.
 
 ## 2. Opening SaveForge
 
@@ -343,6 +373,17 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 - Games in srcdoc frames and nested cross-origin frames are handled.
 - Ordinary websites still get no DOM changes, storage or errors.
 
+**Input Inspector (2.3.3):**
+- Nothing runs on focus or typing, only on Find Answers.
+- The tapped SugarCube textbox: answers with how they are compared, what happens, the connected variables, evidence and a working Copy. The game's textbox keeps your text, and no event is dispatched into the page.
+- Several textboxes: a chooser. The login form's fields are not offered, and are counted as not inspected.
+- "Answer not found" where no check exists, and never a guess.
+- A story with private State: still found from its passages.
+- A plain HTML game: a check in a named function. A listener a page cannot see is explained.
+- Ren'Py: the conditions after `renpy.input`, with the normalisation before them.
+- The Ren'Py Python, run in CPython against a fake AST.
+- Analysis units: SugarCube, Harlowe, JavaScript, Python and RPG Maker patterns, impossible checks, sensitive fields.
+
 **Games sharing one game host (2.3.2)**, in a portal with games served from one origin:
 - A SugarCube story, then a fighting game: the fighting game shows only its own variables and saves. The story's save is listed as another game's, whether or not SaveForge was opened in the story.
 - Two SugarCube stories: each sees only its own saves.
@@ -377,6 +418,12 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 
 ### Not verifiable here (please test on your iPhone)
 
+**Input Inspector (2.3.3, Chromium only):**
+- **Real games:** fixtures imitate SugarCube's markup (from its source), Ren'Py's AST (from its source) and plain pages. RPG Maker name checks are unit-tested on event data only.
+- **Harlowe 3:** its source was not available, so support works from passage text (the documented syntax).
+- **Copy on iPhone:** Safari may ask for permission, or block clipboard access. SaveForge then tells you to select the text.
+- **Answers built at run time:** answers computed from other values (`answer === secret`, where secret is set elsewhere) are not literal, and show as *Answer not found*.
+
 **Games sharing one game host (2.3.2, Chromium only):**
 - **mopoga.com itself** could not be opened from the test environment. The tests rebuild its layout (a portal page, games from one shared origin in frames).
 - **Saves made before SaveForge saw the game write them** have no proof of ownership. They show as NOT CONFIRMED (or PROBABLY on a site with one known game) until the game saves while SaveForge is open, or you confirm them.
@@ -401,7 +448,7 @@ A ✓ means the game's own variable holds your value. If the screen still shows 
 **Userscripts on iOS:**
 - Whether Userscripts on *your* iOS version runs the script in the page context on every site. Diagnostics → *Script context* tells you. "isolated" means edits cannot reach the game.
 - Whether Userscripts injects into cross-origin game frames on the sites you use. This depends on the extension's per-site permissions.
-- Whether the Userscripts popup offers the 2.3.2 update automatically (its update check is known to be imperfect).
+- Whether the Userscripts popup offers the 2.3.3 update automatically (its update check is known to be imperfect).
 
 **Mobile Safari behaviour:**
 - Three-finger tap on iOS. Safari or the system may claim the gesture in some situations; `#saveforge` is the fallback.

@@ -71,6 +71,54 @@ def helper():
 )
 sd.ever_been_changed.update(['money', 'day', 'met_lucy', 'player_name', 'affection', 'inventory', 'position', 'player', 'huge', 'ratio', 'not_finite', 'long_text', '_private', 'result', 'helper'])
 
+# the script around a renpy.input (renpy/ast.py node classes, by name, with filename/linenumber/next)
+class Python(object):
+    def __init__(self, source, line):
+        self.code = types.SimpleNamespace(source=source)
+        self.filename = 'game/script.rpy'
+        self.linenumber = line
+        self.next = None
+
+
+class If(object):
+    def __init__(self, entries, line):
+        self.entries = entries
+        self.filename = 'game/script.rpy'
+        self.linenumber = line
+        self.next = None
+
+
+class While(object):
+    def __init__(self, condition, block, line):
+        self.condition = condition
+        self.block = block
+        self.filename = 'game/script.rpy'
+        self.linenumber = line
+        self.next = None
+
+
+class Say(object):
+    def __init__(self, what):
+        self.what = what
+
+
+class Jump(object):
+    def __init__(self, target):
+        self.target = target
+        self.next = None
+
+
+ask = Python('answer = renpy.input("The password?", length=20)', 40)
+norm = Python('answer = answer.strip().lower()', 41)
+check = If([('answer == "swordfish"', [Jump('vault')]), ('answer in ("open sesame", "mellon")', [Say('The door opens.')]), ('True', [Say('Wrong.')])], 43)
+loop = While('answer != "again"', [ask], 39)
+after = Jump('end')
+ask.next = norm
+norm.next = check
+check.next = loop
+loop.next = after
+renpy.game = types.SimpleNamespace(context=lambda: types.SimpleNamespace(current=('game/script.rpy', 40)), script=types.SimpleNamespace(lookup=lambda name: ask))
+
 before = set(store.__dict__.keys())
 with open(sys.argv[1]) as f:
     for cmd in f.read().split('\n'):

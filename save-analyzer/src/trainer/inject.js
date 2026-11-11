@@ -17,6 +17,7 @@ import { sugarCubeDirect } from './engines.js';
 import { mountTrainer } from './ui.js';
 import { renpyEngine, renpyUnavailableEngine, renpyWebInfo } from './renpy-live.js';
 import { buildLiveTree } from './live-tree.js';
+import { createInputInspector } from './input-inspector.js';
 
 /** Iframes on this page that are big enough to be a game, with what we can know about them. */
 export function listGameFrames(win, reports = []) {
@@ -440,7 +441,19 @@ export function openTrainer(win, extra = {}) {
   };
 
   let watcher = null;
+  // Input Inspector (2.3.3): created now, but it reads nothing until you press Find Answers
+  const inputInspector = createInputInspector(win, {
+    renpyCall:
+      lightweight && rp.exec
+        ? (op, args) => {
+            const e = engines.find((x) => x.id === 'renpy');
+            if (!e || !e.call) throw new Error("Not connected to Ren'Py.");
+            return e.call(op, args);
+          }
+        : null,
+  });
   const ctl = mountTrainer(win, {
+    inputInspector,
     gameContext: gctx,
     guard,
     resetGameData: () => resetGameData(),

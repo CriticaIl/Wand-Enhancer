@@ -328,6 +328,10 @@ Nothing is intercepted while there are no active mappings, when *Mappings enable
 
 A game that registers its own *window capture* listeners before SaveForge can still see a remapped tap first. *Watch one tap* shows what really happens.
 
+## Input Inspector (2.3.3)
+
+A manual, optional section of the trainer that reads which text a game checks a textbox for. Plan, research per engine, safety rules and tests: [INPUT-INSPECTOR.md](INPUT-INSPECTOR.md). The analysis is in `src/trainer/input-inspector.js`. Ren'Py's `input` operation is in `src/trainer/renpy-live.js`.
+
 ## Games sharing one game host (2.3.2)
 
 **The report:** on mopoga.com, after switching games, `$player.money` appeared as SAVE (value 0) next to the new game's LIVE values. Reproduced in `test/same-host.test.mjs` with a portal page that frames games from one shared game host: a SugarCube story (`test/fixtures/sugarcube-real`), then a fighting game (`test/fixtures/brawler`).

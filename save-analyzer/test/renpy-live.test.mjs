@@ -89,3 +89,22 @@ test('set: same type as the game’s value, written through the store, read back
   assert.deepEqual(r.store, { money: 500, met_lucy: true, hp: 7, affection: { eileen: 3, lucy: 4 }, inventory: ['key', 'lamp'], result: "the game's own variable called result" });
   assert.equal(r.restarts, 4, 'renpy.restart_interaction() after each successful change');
 });
+
+test('input (Input Inspector, 2.3.3): the statement waiting for renpy.input and the conditions after it, read as text', { skip }, async () => {
+  const { renpyAnswers } = await import('../src/trainer/input-inspector.js');
+  const r = run([{ op: 'input' }]);
+  const [a] = r.answers;
+  assert.equal(a.ok, true, a.error);
+  assert.deepEqual(a.data.current, { type: 'Python', file: 'game/script.rpy', line: 40, source: 'answer = renpy.input("The password?", length=20)' });
+  assert.deepEqual(a.data.steps.map((s) => s.source), ['answer = answer.strip().lower()']);
+  assert.deepEqual(a.data.checks.map((c) => c.cond), ['answer == "swordfish"', 'answer in ("open sesame", "mellon")', 'True', 'answer != "again"']);
+  assert.deepEqual(a.data.checks[0].then, [{ jump: 'vault' }]);
+  assert.equal(a.data.checks[3].loop, true);
+  assert.deepEqual(r.new_store_names, [], 'nothing added to the store');
+  // and SaveForge's reading of it
+  const res = renpyAnswers(a.data);
+  assert.deepEqual(res.answers.map((x) => x.value), ['swordfish', 'open sesame', 'mellon', 'again']);
+  assert.ok(res.answers.every((x) => x.notes.some((n) => /letter case does not matter/.test(n))));
+  assert.equal(res.answers[0].evidence.where, 'game/script.rpy:43');
+  assert.match(res.answers[3].how, /NOT this/, 'while answer != "again": the loop ends when it is "again"');
+});

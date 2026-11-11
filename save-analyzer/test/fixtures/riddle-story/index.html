@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>The Gate (SugarCube)</title>
+<!-- Regression fixture (SaveForge 2.3.3, Input Inspector): a page shaped like a published SugarCube 2
+     story at a passage with textboxes. Markup as SugarCube makes it (src/macro/macros/textbox.js,
+     src/engine.js): <input class="macro-textbox" name="textbox-<slug>">, the current passage as
+     div.passage[data-passage], sources in tw-passagedata. The page also has a login form (never
+     inspected). ?private=1: no window.SugarCube (a story that keeps State private).
+     window.__events counts input/change/submit/click events NOT made by the user (untrusted). -->
+<style>body{margin:0;font:16px system-ui,sans-serif;background:#111;color:#eee;padding:12px}input{font:inherit;margin:4px 0}</style>
+</head>
+<body>
+<tw-storydata name="The Gate" startnode="1" ifid="C0FFEE00-0000-4000-8000-000000000003" format="SugarCube" format-version="2.37.3" hidden>
+<tw-passagedata pid="1" name="Gate" tags="">The gate asks for the password.
+&lt;&lt;textbox &quot;$answer&quot; &quot;&quot; &quot;Check&quot;&gt;&gt;
+Your name: &lt;&lt;textbox &quot;$hero&quot; &quot;Max&quot;&gt;&gt;</tw-passagedata>
+<tw-passagedata pid="2" name="Check" tags="">&lt;&lt;if $answer.toLowerCase().trim() is &quot;swordfish&quot;&gt;&gt;&lt;&lt;set $gateOpen to true&gt;&gt;[[Vault]]
+&lt;&lt;elseif $answer is &quot;Swordfish!&quot;&gt;&gt;Almost.
+&lt;&lt;else&gt;&gt;Wrong. [[Gate]]&lt;&lt;/if&gt;&gt;</tw-passagedata>
+<tw-passagedata pid="3" name="Vault" tags="">You are in.</tw-passagedata>
+</tw-storydata>
+<script id="twine-user-script" type="text/twine-javascript">/* story JavaScript: nothing about the answer */ setup.version = 2;</script>
+<div id="passages"><div id="passage-gate" data-passage="Gate" class="passage">
+  <p>The gate asks for the password.</p>
+  <input id="textbox-answer" name="textbox-answer" type="text" class="macro-textbox" tabindex="0">
+  <p>Your name: <input id="textbox-hero" name="textbox-hero" type="text" class="macro-textbox" value="Max"></p>
+</div></div>
+<form id="login" method="post" action="/login"><input name="username" placeholder="User name"> <input type="password" name="pw"> <button>Sign in</button></form>
+<script>
+  var vars = { answer: '', hero: 'Max', gateOpen: false };
+  if (!/private=1/.test(location.search)) window.SugarCube = { State: { get variables() { return vars; }, passage: 'Gate' } };
+  document.querySelectorAll('.macro-textbox').forEach(function (el) {
+    el.addEventListener('change', function () { vars[el.name.replace('textbox-', '')] = el.value; });
+  });
+  window.__events = 0;
+  ['input', 'change', 'submit', 'click', 'keydown'].forEach(function (t) {
+    document.addEventListener(t, function (e) { if (!e.isTrusted) window.__events++; }, true);
+  });
+  document.getElementById('login').addEventListener('submit', function (e) { e.preventDefault(); window.__submitted = true; });
+</script>
+</body>
+</html>

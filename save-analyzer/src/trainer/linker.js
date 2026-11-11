@@ -208,6 +208,10 @@ export function startRecording(win) {
   return recording;
 }
 
+/** Listeners recorded for a target while the Linker records (Input Inspector reads them as text). */
+export function recordedListeners(target) {
+  return recorded(target);
+}
 function recorded(target) {
   try {
     return REC.get(target) || [];

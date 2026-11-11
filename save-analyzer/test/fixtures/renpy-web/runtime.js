@@ -144,6 +144,18 @@ function __saveforgeOp(args) {
     __render();
     return { v: get(path) };
   }
+  if (args.op === 'input') {
+    // ?input=1: Ren'Py waits in "$ answer = renpy.input(...)" (the Python side reads this from the AST)
+    if (__q.get('input') !== '1') return { current: { type: 'Say', file: 'game/script.rpy', line: 12, source: '' }, checks: [], steps: [] };
+    return {
+      current: { type: 'Python', file: 'game/script.rpy', line: 40, source: 'answer = renpy.input("The password?", length=20)' },
+      steps: [{ type: 'Python', file: 'game/script.rpy', line: 41, source: 'answer = answer.strip().lower()' }],
+      checks: [
+        { type: 'If', file: 'game/script.rpy', line: 43, cond: 'answer == "swordfish"', then: [{ jump: 'vault' }] },
+        { type: 'If', file: 'game/script.rpy', line: 43, cond: 'True', then: [{ say: 'Wrong.' }] },
+      ],
+    };
+  }
   throw new Error('unknown op');
 }
 // Ren'Py's PERIODIC event: read window._renpy_cmd, delete it, run it in the store

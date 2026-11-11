@@ -494,6 +494,7 @@ export function mountTrainer(win, opts) {
     for (const a of p.actions || []) items.push({ kind: 'action', label: a.label, icon: 'refresh', hint: a.hint, run: a.run });
     if (p.kind === 'live') items.push({ kind: 'nav', label: 'Update game display', icon: 'refresh', count: '', hint: 'Make the game redraw its screen after an edit, and see how this game draws.', view: { type: 'display', id: S.recent[0] || null } });
     items.push({ kind: 'nav', label: 'Find a value', icon: 'search', count: '', hint: 'Unknown game? Type a number you see on screen, change it in the game, scan again: SaveForge finds the real variable.', view: { type: 'findvalue' } });
+    if (opts.inputInspector) items.push({ kind: 'nav', label: 'Input Inspector', icon: 'key', count: '', hint: 'Which text does the game check a textbox for? Nothing runs until you press Find Answers.', view: { type: 'inputs' } });
     items.push({ kind: 'action', label: 'Rescan game', icon: 'refresh', hint: 'Look for the game again: engines that finished loading, new variables, new saves.', run: () => rescanGame() });
     if (hub && (p.kind === 'live' || p.kind === 'storage')) {
       if (hub.stale) items.unshift({ kind: 'nav', label: 'The game saved new progress', icon: 'info', count: '', hint: 'Your pending save edits were made on older save data. Open to write them anyway is refused; sync to discard them and read the new save.', view: { type: 'apply' } });
@@ -579,7 +580,7 @@ export function mountTrainer(win, opts) {
       clear(compatEl).append(h('span', { class: `cdot ${c.level}` }), c.label);
     }
     const v = top();
-    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : v.type === 'scsave' ? 'SugarCube save' : v.type === 'import' ? 'Import from Save Editor' : v.type === 'impexport' ? 'Export imported save' : 'About';
+    const crumb = v.type === 'home' ? 'Main menu' : v.type === 'list' ? v.title : v.type === 'search' ? 'Search' : v.type === 'info' ? 'Information' : v.type === 'edit' ? 'Edit value' : v.type === 'backups' ? 'Backups & restore' : v.type === 'apply' ? 'Apply & Reload' : v.type === 'diagnostics' ? 'Diagnostics' : v.type === 'findvalue' ? 'Find a value' : v.type === 'display' ? 'Update game display' : v.type === 'settings' ? 'Settings' : v.type === 'locks' ? 'Locked values' : /^link/.test(v.type) ? getLinkerUI().crumb(v) : v.type === 'scsave' ? 'SugarCube save' : v.type === 'import' ? 'Import from Save Editor' : v.type === 'impexport' ? 'Export imported save' : v.type === 'inputs' ? 'Input Inspector' : 'About';
     const ch = S.provider?.channel;
     subEl.append(h('span', { class: 'crumb' }, crumb), ch ? h('span', { class: `badge ${ch}` }, CHANNEL_LABEL[ch]) : null, h('span', { class: 'count' }, ''));
   }
@@ -631,6 +632,7 @@ export function mountTrainer(win, opts) {
     if (v.type === 'apply') return renderApply();
     if (v.type === 'about') return renderAbout();
     if (v.type === 'diagnostics') return renderDiagnostics();
+    if (v.type === 'inputs') return renderInputs(v);
     if (v.type === 'findvalue') return renderFindValue();
     if (v.type === 'display') return renderDisplay(v.id);
     if (v.type === 'settings') return renderSettings();
@@ -2310,6 +2312,121 @@ export function mountTrainer(win, opts) {
     toast('Values re-read from the game');
   }
 
+  // ---------- Input Inspector (2.3.3): 100% manual — see INPUT-INSPECTOR.md
+  // While the trainer is open, remember WHICH game textbox you last focused (the element only: its
+  // text and attributes are not read here), so Find Answers can start with it. Nothing is inspected
+  // on focus, click or typing.
+  let lastField = null;
+  const onFocusIn = (e) => {
+    const t = e.target;
+    if (t && t !== host && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) lastField = t;
+  };
+  if (opts.inputInspector) doc.addEventListener('focusin', onFocusIn, true);
+
+  function renderInputs(v) {
+    const sheet = h(
+      'div',
+      { class: 'sheet inputs' },
+      h('h2', null, 'Input Inspector'),
+      h('p', { class: 'note' }, 'Finds the answers a game checks a textbox for, in the game’s own logic, with the evidence. Nothing runs until you press Find Answers. SaveForge never types into the game or submits anything, and never inspects login, password or payment fields.'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn go findanswers', onclick: () => findAnswers(v) }, ic('search'), 'Find Answers')),
+    );
+    bodyEl.append(sheet);
+    setDesc('Tap the game’s textbox first (optional), then press Find Answers.');
+    if (v.choose) {
+      sheet.append(h('h3', null, 'Which textbox?'));
+      for (const c of v.choose) sheet.append(h('button', { class: 'btn choice', onclick: () => runInspect(v, c) }, c.label, h('small', null, ` · ${engineName(c.engine)}${c === v.pre ? ' · the one you tapped' : ''}`)));
+    }
+    if (v.excluded) sheet.append(h('p', { class: 'note' }, `${v.excluded} field(s) on this page were not inspected: login, password, account or payment fields.`));
+    if (v.busy) sheet.append(h('p', { class: 'note' }, 'Reading the game’s logic…'));
+    if (v.result) sheet.append(inputResult(v.result, v));
+  }
+  function engineName(e) {
+    return { sugarcube: 'SugarCube', harlowe: 'Harlowe', renpy: "Ren'Py", rpgmaker: 'RPG Maker', html: 'page code' }[e] || e;
+  }
+  function findAnswers(v) {
+    const { candidates, excluded } = opts.inputInspector.candidates();
+    v.excluded = excluded.length;
+    v.result = null;
+    v.choose = null;
+    if (!candidates.length) {
+      v.result = { found: false, why: excluded.length ? 'The only text fields here are login, password or account fields; they are never inspected.' : 'No game textbox is on this page (a game that draws its own text input on a canvas offers none).', inspected: [] };
+      return renderAll();
+    }
+    const pre = lastField && lastField.isConnected ? candidates.find((c) => c.el === lastField) : null;
+    v.pre = pre || null;
+    v.others = candidates.length > 1 ? candidates : null;
+    if (pre) return runInspect(v, pre);
+    if (candidates.length === 1) return runInspect(v, candidates[0]);
+    v.choose = candidates;
+    renderAll();
+  }
+  async function runInspect(v, c) {
+    v.choose = null;
+    v.busy = true;
+    v.result = null;
+    renderAll();
+    const r = await opts.inputInspector.inspect(c);
+    if (destroyed) return;
+    v.busy = false;
+    v.result = { ...r, label: c.label };
+    if (top() === v) renderAll();
+  }
+  async function copyText(text) {
+    try {
+      await win.navigator.clipboard.writeText(text);
+      return toast(`Copied “${text.length > 30 ? `${text.slice(0, 29)}…` : text}”`);
+    } catch {
+      /* no clipboard permission: select it in SaveForge's own panel */
+    }
+    const ta = h('textarea', { class: 'copybuf', readonly: true });
+    ta.value = text;
+    root.append(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = doc.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    ta.remove();
+    toast(ok ? 'Copied' : 'Copy is not allowed here: select the answer and copy it', !ok);
+  }
+  function inputResult(r, v) {
+    const f = r.field || {};
+    const vars = new Set([f.variable, ...(r.answers || []).flatMap((a) => a.sets || [])].filter(Boolean));
+    const kv = (pairs) => h('dl', { class: 'kv' }, pairs.filter((x) => x && x[1] !== undefined && x[1] !== '' && x[1] !== null).flatMap(([k, val]) => [h('dt', null, k), h('dd', null, String(val))]));
+    const answers = (r.answers || []).map((a) =>
+      h(
+        'div',
+        { class: `answer${a.impossible ? ' impossible' : ''}` },
+        h('div', { class: 'answer-head' }, a.value !== null ? h('code', { class: 'answer-value' }, a.value) : h('code', { class: 'answer-value pattern' }, a.pattern), a.value !== null ? h('button', { class: 'btn mini copy', onclick: () => copyText(a.value) }, 'Copy') : null),
+        h('div', { class: 'note' }, a.how),
+        a.notes && a.notes.length ? h('ul', { class: 'answer-notes' }, a.notes.map((n) => h('li', null, n))) : null,
+        a.impossible ? h('div', { class: 'warnbox' }, a.impossible) : null,
+        a.outcome ? h('div', { class: 'note' }, `Then the game ${a.outcome}.`) : null,
+        h('details', { class: 'evidence' }, h('summary', null, `Evidence: ${a.evidence.where}${a.evidence.line ? `, line ${a.evidence.line}` : ''}${a.more && a.more.length ? ` (+${a.more.length} more)` : ''}`), h('pre', null, a.evidence.code)),
+      ),
+    );
+    return h(
+      'div',
+      { class: 'inputresult' },
+      h('h3', null, `Textbox: ${r.label || 'game input'}`),
+      kv([
+        ['Engine', r.engine],
+        ['Connected to', [...vars].join(', ')],
+        ['Value in the game now', f.value],
+        ['How it was matched', f.match],
+        ['Before the check', (f.steps || []).join(' · ')],
+      ]),
+      r.found ? h('h3', null, `Answers the game checks for (${answers.length})`) : h('div', { class: 'badbox answer-not-found' }, h('b', null, 'Answer not found'), r.why ? ` — ${r.why}` : ''),
+      answers.length ? answers : null,
+      r.inspected && r.inspected.length ? h('details', null, h('summary', null, `What was read (${r.inspected.length})`), h('ul', null, r.inspected.map((x) => h('li', null, x)))) : null,
+      h('p', { class: 'note' }, 'Nothing was typed into the game and nothing was submitted. Answers come only from comparisons in the game’s own code.'),
+      v.others ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => ((v.choose = v.others), (v.result = null), renderAll()) }, 'Inspect another textbox')) : null,
+    );
+  }
+
   // ---------- live value polling (values can change while the game runs)
   const poll = win.setInterval(() => {
     if (S.minimized || !S.provider || S.provider.kind !== 'live' || doc.hidden) return;
@@ -2348,6 +2465,8 @@ export function mountTrainer(win, opts) {
       linkerUI?.dispose();
       scSavesUI?.dispose();
       doc.removeEventListener('visibilitychange', syncPaused);
+      doc.removeEventListener('focusin', onFocusIn, true);
+      lastField = null;
       for (const u of unsubs.splice(0)) u();
       // keep the scan results (paused) so reopening does not scan again, unless turned off
       const keep = keepWanted && S.providers.size && opts.keepOnClose ? opts.keepOnClose(new Map([...S.providers].filter(([k]) => k !== 'imported'))) : false;
@@ -2367,7 +2486,14 @@ export function mountTrainer(win, opts) {
       if (sc) detail.push(`SugarCube save check: ${sc} timer(s)`);
       const ln = linkerUI?.listenerCount?.() || 0;
       if (ln) detail.push(`Button & Textbox Linker: ${ln} listener(s)`);
-      return destroyed ? { timers: 0, listeners: 0, observers: 0, detail: [] } : { timers: 1 + sc, listeners: 1 + ln, observers: 0, detail };
+      if (opts.inputInspector) detail.push('Input Inspector: 1 listener (which textbox you focused, nothing read)');
+      return destroyed ? { timers: 0, listeners: 0, observers: 0, detail: [] } : { timers: 1 + sc, listeners: 1 + ln + (opts.inputInspector ? 1 : 0), observers: 0, detail };
+    },
+    /** How many times the Input Inspector ran (tests: it runs only on Find Answers). */
+    inputInspectorRuns: () => opts.inputInspector?.runs ?? 0,
+    openInputInspector: () => {
+      setMinimized(false);
+      push({ type: 'inputs' });
     },
     openDiagnostics: () => {
       setMinimized(false);

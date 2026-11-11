@@ -174,8 +174,58 @@ def op_set():
     l = leaf(path, resolve(path), True)
     return {'v': l['v'] if l else None}
 
+def node_info(n):
+    return {'type': type(n).__name__, 'file': str(getattr(n, 'filename', '') or ''), 'line': int(getattr(n, 'linenumber', 0) or 0)}
+
+def summarize(block):
+    out = []
+    for x in list(block or [])[:3]:
+        t = type(x).__name__
+        if t == 'Say':
+            out.append({'say': str(getattr(x, 'what', '') or '')[:120]})
+        elif t == 'Jump':
+            out.append({'jump': str(getattr(x, 'target', '') or '')})
+        elif t == 'Python':
+            out.append({'py': str(getattr(getattr(x, 'code', None), 'source', '') or '')[:120]})
+    return out
+
+def op_input():
+    # Input Inspector (2.3.3): the statement Ren'Py is executing (renpy.input waits inside it) and
+    # the conditions that follow it, as source text. Nothing is executed.
+    ctx = renpy.game.context()
+    cur = renpy.game.script.lookup(ctx.current)
+    info = node_info(cur)
+    try:
+        info['source'] = str(cur.code.source)[:500]
+    except Exception:
+        info['source'] = ''
+    checks = []
+    steps = []
+    n = getattr(cur, 'next', None)
+    seen = set()
+    while n is not None and len(seen) < 40 and id(n) not in seen:
+        seen.add(id(n))
+        t = type(n).__name__
+        if t == 'If':
+            for cond, block in n.entries:
+                c = node_info(n)
+                c.update({'cond': str(cond)[:400], 'then': summarize(block)})
+                checks.append(c)
+        elif t == 'While':
+            c = node_info(n)
+            c.update({'cond': str(n.condition)[:400], 'then': summarize(n.block), 'loop': True})
+            checks.append(c)
+        elif t == 'Python':
+            c = node_info(n)
+            c.update({'source': str(getattr(getattr(n, 'code', None), 'source', '') or '')[:300]})
+            steps.append(c)
+        elif t in ('Jump', 'Return'):
+            break
+        n = getattr(n, 'next', None)
+    return {'current': info, 'checks': checks, 'steps': steps}
+
 try:
-    data = {'list': op_list, 'get': op_get, 'set': op_set}[ARGS['op']]()
+    data = {'list': op_list, 'get': op_get, 'set': op_set, 'input': op_input}[ARGS['op']]()
     reply = {'id': ARGS['id'], 'ok': True, 'data': data}
 except Exception as e:
     reply = {'id': ARGS['id'], 'ok': False, 'error': '%s: %s' % (e.__class__.__name__, e)}
@@ -376,6 +426,8 @@ export function renpyEngine(win, { buildLiveTree, max = 3000 } = {}) {
       return info;
     },
     bridgeStats: () => bridge.stats(),
+    /** One operation through Ren'Py's channel (the Input Inspector's 'input'). */
+    call: (op, args = {}) => bridge.call(op, args),
     lastError: () => lastError,
     async prepare() {
       await list();

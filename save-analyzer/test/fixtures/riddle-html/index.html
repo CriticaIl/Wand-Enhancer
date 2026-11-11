@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Echo Riddle</title>
+<!-- Regression fixture (SaveForge 2.3.3, Input Inspector): a plain HTML game with a riddle box
+     checked by a named function, a notes box no code checks, and a box whose listener was added
+     with addEventListener (invisible to a web page). -->
+<style>body{margin:0;font:16px system-ui,sans-serif;background:#123;color:#eee;padding:12px}</style>
+</head>
+<body>
+<p>I speak without a mouth. What am I?</p>
+<input id="ans" aria-label="Riddle answer"> <button onclick="check()">Answer</button>
+<p id="out"></p>
+<p><input id="notes" placeholder="Your notes"></p>
+<p><input id="secret" aria-label="Secret word"></p>
+<script>
+  function check() {
+    var a = document.getElementById('ans').value.trim().toLowerCase();
+    if (a === 'echo') { document.getElementById('out').textContent = 'Correct!'; window.solved = true; }
+    else document.getElementById('out').textContent = 'No.';
+  }
+  document.getElementById('secret').addEventListener('change', function (e) { if (e.target.value === 'hidden') window.found = true; });
+  window.__events = 0;
+  ['input', 'change', 'submit', 'click', 'keydown'].forEach(function (t) {
+    document.addEventListener(t, function (e) { if (!e.isTrusted) window.__events++; }, true);
+  });
+</script>
+</body>
+</html>

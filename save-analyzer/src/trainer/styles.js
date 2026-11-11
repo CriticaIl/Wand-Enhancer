@@ -137,6 +137,16 @@ pre.code { white-space: pre-wrap; word-break: break-word; font: 11px/1.4 ui-mono
 .otag { display: inline-block; font-size: 9px; font-weight: 900; letter-spacing: .06em; padding: 1px 5px; border-radius: 5px; margin-right: 6px; vertical-align: 1px; background: #1e293b; color: #93c5fd; }
 .otag.o-save { background: rgba(251,191,36,.16); color: #fbbf24; }
 .otag.o-livesave { background: rgba(61,245,167,.16); color: #3df5a7; }
+.inputs .btn.choice { display: block; width: 100%; text-align: left; margin: 6px 0; }
+.inputs .btn.choice small { opacity: .7; }
+.answer { margin: 8px 0; padding: 10px; border-radius: 12px; background: rgba(255,255,255,.05); }
+.answer.impossible { opacity: .75; }
+.answer-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.answer-value { font-size: 17px; font-weight: 700; word-break: break-all; }
+.answer-value.pattern { font-size: 14px; font-weight: 500; }
+.answer-notes { margin: 4px 0 0 18px; padding: 0; font-size: 12px; }
+.evidence pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 140px; overflow: auto; }
+.copybuf { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; }
 .otag.o-unconfirmed { background: rgba(248,113,113,.16); color: #f87171; }
 .otag.o-probable { background: rgba(148,163,184,.18); color: #cbd5e1; }
 .okbox { padding: 10px 12px; border-radius: 10px; background: rgba(61,245,167,.1); border: 1px solid rgba(61,245,167,.35); color: #bbf7d0; font-size: 13px; margin: 8px 0; }
